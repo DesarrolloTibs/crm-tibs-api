@@ -6,6 +6,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ClientsModule } from './clients/clients.module';
 import { InteractionsModule } from './interactions/interactions.module';
 import { RemindersModule } from './reminders/reminders.module';
+import { OpportunitiesModule } from './opportunities/opportunities.module';
+import { AuthModule } from './auth/auth.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -29,6 +32,9 @@ import { RemindersModule } from './reminders/reminders.module';
     ClientsModule,
     InteractionsModule,
     RemindersModule,
+    OpportunitiesModule,
+    AuthModule,
+    UsersModule,
   ],
   controllers: [AppController],
   providers: [AppService],
