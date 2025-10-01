@@ -54,7 +54,12 @@ export class CreateOpportunityDto {
   @IsEnum(DeliveryType)
   @IsNotEmpty()
   tipo_entrega: DeliveryType;
-
+ @ApiPropertyOptional({ description: 'Monto total', minimum: 0, type: Number })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  monto_total?: number;
+  
   @ApiPropertyOptional({ description: 'Tipo de licenciamiento', enum: Licensing })
   @IsEnum(Licensing)
   @IsOptional()

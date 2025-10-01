@@ -3,6 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './entities/user.entity';
 import * as bcrypt from 'bcrypt';
+import { CreateUserDto } from './dto/create-user.dto';
+
+import { UpdateUserDto } from './dto/update-user.dto';
+import { Role } from 'role.enum';
 
 @Injectable()
 export class UsersService implements OnModuleInit {
@@ -20,11 +24,13 @@ export class UsersService implements OnModuleInit {
         password: hashedPassword,
         email: 'admin@demo.com',
         isActive: true,
+        role: Role.Admin,
       });
     }
   }
 
-  async findOneByUsername(email: string): Promise<User> {
+  async findOneByEmail(email: string): Promise<User> {
+    console.log('Searching for user by email:', email);
     const user = await this.userRepository.findOne({ where: { email } });
     if (!user) throw new NotFoundException('Usuario no encontrado');
     return user;
@@ -36,13 +42,22 @@ export class UsersService implements OnModuleInit {
     return user;
   }
 
-  async create(userData: Partial<User>): Promise<User> {
+  async create(userData: CreateUserDto): Promise<User> {
+    const hashedPassword = await bcrypt.hash(userData.password, 10);
     const user = this.userRepository.create(userData);
+    user.password = hashedPassword;
     return this.userRepository.save(user);
   }
 
-  async update(id: string, userData: Partial<User>): Promise<User> {
-    await this.userRepository.update(id, userData);
+  async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
+    if (updateUserDto.password) {
+      updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
+    }
+    // Primero, asegúrate de que el usuario exista para evitar errores en la actualización.
+    const userToUpdate = await this.findOneById(id);
+    if (!userToUpdate) throw new NotFoundException(`Usuario con ID "${id}" no encontrado.`);
+
+    await this.userRepository.update(id, updateUserDto);
     return this.findOneById(id);
   }
 
@@ -52,5 +67,9 @@ export class UsersService implements OnModuleInit {
 
   async findAll(): Promise<User[]> {
     return this.userRepository.find();
+  }
+
+  async findAllActive(): Promise<User[]> {
+    return this.userRepository.find({ where: { isActive: true } });
   }
 }

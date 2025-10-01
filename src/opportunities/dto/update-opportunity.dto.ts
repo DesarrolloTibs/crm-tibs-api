@@ -44,6 +44,12 @@ export class UpdateOpportunityDto {
   @IsOptional()
   tipo_entrega?: DeliveryType;
 
+   
+    @IsNumber()
+    @Min(0)
+    @IsOptional()
+    monto_total?: number;
+
   @IsEnum(Licensing)
   @IsOptional()
   licenciamiento?: Licensing;

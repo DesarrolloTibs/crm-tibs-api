@@ -21,6 +21,10 @@ export class ClientsService {
     return this.clientRepository.find();
   }
 
+  findAllActive(): Promise<Client[]> {
+    return this.clientRepository.find({ where: { estatus: true } });
+  }
+
   async findOne(id: string): Promise<Client> {
     const client = await this.clientRepository.findOneBy({ id });
     if (!client) {

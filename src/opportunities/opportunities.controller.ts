@@ -33,6 +33,8 @@ export class OpportunitiesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateOpportunityDto: UpdateOpportunityDto,
   ) {
+
+    console.log('Update DTO:', updateOpportunityDto); // Debug log  
     return this.opportunitiesService.update(id, updateOpportunityDto);
   }
 

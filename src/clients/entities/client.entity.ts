@@ -22,4 +22,7 @@ export class Client {
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   telefono: string;
+
+  @Column({ type: 'boolean', default: true })
+  estatus: boolean;
 }

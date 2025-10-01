@@ -31,4 +31,8 @@ export class CreateClientDto {
   @IsString()
   @IsOptional()
   telefono?: string;
+
+  @ApiPropertyOptional({ description: 'Estatus del cliente', default: true })
+  @IsOptional()
+  estatus?: boolean;
 }

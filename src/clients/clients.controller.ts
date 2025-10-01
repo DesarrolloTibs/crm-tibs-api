@@ -20,6 +20,11 @@ export class ClientsController {
     return this.clientsService.findAll();
   }
 
+  @Get('active')
+  findAllActive() {
+    return this.clientsService.findAllActive();
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.clientsService.findOne(id);
