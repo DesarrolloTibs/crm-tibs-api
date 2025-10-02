@@ -2,6 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMan
 import { Client } from '../../clients/entities/client.entity';
 import { Interaction } from '../../interactions/entities/interaction.entity';
 import { Reminder } from '../../reminders/entities/reminder.entity';
+import { User } from '../../users/entities/user.entity';
 
 export enum OpportunityStage {
   NUEVO = 'Nuevo',
@@ -60,6 +61,10 @@ export class Opportunity {
 
   @Column({ type: 'uuid', nullable: true }) // Assuming ejecutivo_id is a user ID
   ejecutivo_id: string;
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: 'ejecutivo_id' })
+  ejecutivo: User;
 
   @Column({ type: 'enum', enum: OpportunityStage, default: OpportunityStage.NUEVO })
   etapa: OpportunityStage;

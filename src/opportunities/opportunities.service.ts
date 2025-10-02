@@ -20,7 +20,7 @@ export class OpportunitiesService {
 
   findAll(etapa?: OpportunityStage): Promise<Opportunity[]> {
     const findOptions: FindManyOptions<Opportunity> = {
-      relations: ['cliente'],
+      relations: ['cliente', 'ejecutivo'],
     };
 
     if (etapa) {
@@ -31,7 +31,7 @@ export class OpportunitiesService {
   }
 
   async findOne(id: string): Promise<Opportunity> {
-    const opportunity = await this.opportunityRepository.findOne({ where: { id }, relations: ['cliente'] });
+    const opportunity = await this.opportunityRepository.findOne({ where: { id }, relations: ['cliente', 'ejecutivo'] });
     if (!opportunity) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
     }
