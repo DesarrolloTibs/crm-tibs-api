@@ -1,6 +1,8 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Query, UseGuards, ParseBoolPipe } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Query, UseGuards, ParseBoolPipe, Res } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
+import type { Response } from 'express';
+import { join } from 'path';
 
 import { OpportunitiesService } from './opportunities.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
@@ -61,6 +63,16 @@ export class OpportunitiesController {
     // The file object is available thanks to Multer
     // We can now pass its path or other details to the service
     return this.opportunitiesService.addProposalDocument(id, file.path);
+  }
+
+  @Get(':id/proposal/download')
+  async downloadProposal(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res() res: Response,
+  ) {
+    const filePath = await this.opportunitiesService.getProposalDocumentPath(id);
+    const absolutePath = join(process.cwd(), filePath);
+    return res.sendFile(absolutePath);
   }
 
   @Patch(':id/archive')

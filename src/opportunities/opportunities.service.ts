@@ -92,4 +92,12 @@ export class OpportunitiesService {
     opportunity.archived = archiveOpportunityDto.archived;
     return this.opportunityRepository.save(opportunity);
   }
+
+  async getProposalDocumentPath(id: string): Promise<string> {
+    const opportunity = await this.findOne(id);
+    if (!opportunity.proposalDocumentPath) {
+      throw new NotFoundException(`Proposal document not found for opportunity with ID "${id}"`);
+    }
+    return opportunity.proposalDocumentPath;
+  }
 }
