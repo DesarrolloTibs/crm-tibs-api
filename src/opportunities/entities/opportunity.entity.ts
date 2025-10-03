@@ -98,4 +98,7 @@ export class Opportunity {
 
   @OneToMany(() => Reminder, (reminder) => reminder.opportunity)
   reminders: Reminder[];
+
+  @Column({ type: 'boolean', default: false, name: 'archived' })
+  archived: boolean;
 }

@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindManyOptions, Repository } from 'typeorm';
+import { FindManyOptions, Repository, FindOptionsWhere } from 'typeorm';
 import { Opportunity, OpportunityStage } from './entities/opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
+import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 
 @Injectable()
 export class OpportunitiesService {
@@ -18,15 +19,25 @@ export class OpportunitiesService {
     return this.opportunityRepository.save(opportunity);
   }
 
-  findAll(etapa?: OpportunityStage): Promise<Opportunity[]> {
+  findAll(etapa?: OpportunityStage, showArchived = false): Promise<Opportunity[]> {
+    const where: FindOptionsWhere<Opportunity> = { archived: showArchived };
+
+    if (etapa) {
+      where.etapa = etapa;
+    }
+
+    const findOptions: FindManyOptions<Opportunity> = {
+      relations: ['cliente', 'ejecutivo'],
+      where,
+    };
+
+    return this.opportunityRepository.find(findOptions);
+  }
+
+  findAllUnfiltered(): Promise<Opportunity[]> {
     const findOptions: FindManyOptions<Opportunity> = {
       relations: ['cliente', 'ejecutivo'],
     };
-
-    if (etapa) {
-      findOptions.where = { etapa };
-    }
-
     return this.opportunityRepository.find(findOptions);
   }
 
@@ -65,6 +76,12 @@ export class OpportunitiesService {
   async addProposalDocument(id: string, filePath: string): Promise<Opportunity> {
     const opportunity = await this.findOne(id);
     opportunity.proposalDocumentPath = filePath;
+    return this.opportunityRepository.save(opportunity);
+  }
+
+  async archive(id: string, archiveOpportunityDto: ArchiveOpportunityDto): Promise<Opportunity> {
+    const opportunity = await this.findOne(id);
+    opportunity.archived = archiveOpportunityDto.archived;
     return this.opportunityRepository.save(opportunity);
   }
 }

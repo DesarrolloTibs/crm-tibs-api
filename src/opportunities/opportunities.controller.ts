@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Query, UseGuards, ParseBoolPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 
 import { OpportunitiesService } from './opportunities.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
+import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { OpportunityStage } from './entities/opportunity.entity';
 
 @Controller('opportunities')
@@ -19,8 +20,16 @@ export class OpportunitiesController {
   }
 
   @Get()
-  findAll(@Query('etapa') etapa?: OpportunityStage) {
-    return this.opportunitiesService.findAll(etapa);
+  findAll(
+    @Query('etapa') etapa?: OpportunityStage,
+    @Query('showArchived', new ParseBoolPipe({ optional: true })) showArchived?: boolean,
+  ) {
+    return this.opportunitiesService.findAll(etapa, showArchived);
+  }
+
+  @Get('all')
+  findAllUnfiltered() {
+    return this.opportunitiesService.findAllUnfiltered();
   }
 
   @Get(':id')
@@ -52,5 +61,13 @@ export class OpportunitiesController {
     // The file object is available thanks to Multer
     // We can now pass its path or other details to the service
     return this.opportunitiesService.addProposalDocument(id, file.path);
+  }
+
+  @Patch(':id/archive')
+  archive(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() archiveOpportunityDto: ArchiveOpportunityDto,
+  ) {
+    return this.opportunitiesService.archive(id, archiveOpportunityDto);
   }
 }
