@@ -2,7 +2,8 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePi
 import { AuthGuard } from '@nestjs/passport';
 import { ClientsService } from './clients.service';
 import { CreateClientDto } from './dto/create-client.dto';
-import { UpdateClientDto } from './dto/update-client.dto';
+import { UpdateClientDto, UpdateClientStatusDto } from './dto/update-client.dto';
+
 
 @Controller('clients')
 @UseGuards(AuthGuard('jwt'))
@@ -38,8 +39,11 @@ export class ClientsController {
     return this.clientsService.update(id, updateClientDto);
   }
 
-  @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.clientsService.remove(id);
+  @Patch(':id/status')
+  updateStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateClientStatusDto: UpdateClientStatusDto,
+  ) {
+    return this.clientsService.updateStatus(id, updateClientStatusDto);
   }
 }

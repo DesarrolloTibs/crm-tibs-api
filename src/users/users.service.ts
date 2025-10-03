@@ -5,7 +5,8 @@ import { User } from './entities/user.entity';
 import * as bcrypt from 'bcrypt';
 import { CreateUserDto } from './dto/create-user.dto';
 
-import { UpdateUserDto } from './dto/update-user.dto';
+
+import { UpdateUserDto, UpdateUserStatusDto } from './dto/update-user.dto';
 import { Role } from 'role.enum';
 
 @Injectable()
@@ -61,8 +62,10 @@ export class UsersService implements OnModuleInit {
     return this.findOneById(id);
   }
 
-  async remove(id: string): Promise<void> {
-    await this.userRepository.delete(id);
+  async updateStatus(id: string, updateUserStatusDto: UpdateUserStatusDto): Promise<User> {
+    const user = await this.findOneById(id);
+    user.isActive = updateUserStatusDto.isActive;
+    return this.userRepository.save(user);
   }
 
   async findAll(): Promise<User[]> {

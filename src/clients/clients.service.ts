@@ -3,7 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Client } from './entities/client.entity';
 import { CreateClientDto } from './dto/create-client.dto';
-import { UpdateClientDto } from './dto/update-client.dto';
+import { UpdateClientDto, UpdateClientStatusDto } from './dto/update-client.dto';
+
 
 @Injectable()
 export class ClientsService {
@@ -44,10 +45,9 @@ export class ClientsService {
     return this.clientRepository.save(client);
   }
 
-  async remove(id: string): Promise<void> {
-    const result = await this.clientRepository.delete(id);
-    if (result.affected === 0) {
-      throw new NotFoundException(`Client with ID "${id}" not found`);
-    }
+  async updateStatus(id: string, updateClientStatusDto: UpdateClientStatusDto): Promise<Client> {
+    const client = await this.findOne(id);
+    client.estatus = updateClientStatusDto.estatus;
+    return this.clientRepository.save(client);
   }
 }

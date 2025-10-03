@@ -21,7 +21,8 @@ import {
   ApiCreatedResponse, ApiBody, ApiNoContentResponse,
 } from '@nestjs/swagger';
 import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
+
+import { UpdateUserDto, UpdateUserStatusDto } from './dto/update-user.dto';
 
 
 @ApiTags('users')
@@ -70,10 +71,13 @@ export class UsersController {
     return this.usersService.update(id, updateUserDto);
   }
 
-  @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiNoContentResponse({ description: 'Usuario eliminado exitosamente.' })
-  remove(@Param('id') id: string): Promise<void> {
-    return this.usersService.remove(id);
+  @Patch(':id/status')
+  @ApiOkResponse({ description: 'Estado del usuario actualizado exitosamente.', type: User })
+  @ApiBody({ type: UpdateUserStatusDto })
+  updateStatus(
+    @Param('id') id: string,
+    @Body() updateUserStatusDto: UpdateUserStatusDto,
+  ): Promise<User> {
+    return this.usersService.updateStatus(id, updateUserStatusDto);
   }
 }
