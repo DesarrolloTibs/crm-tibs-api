@@ -53,4 +53,9 @@ export class UpdateOpportunityDto {
   @IsEnum(Licensing)
   @IsOptional()
   licenciamiento?: Licensing;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  tipoCambio?: number;
 }

@@ -64,4 +64,10 @@ export class CreateOpportunityDto {
   @IsEnum(Licensing)
   @IsOptional()
   licenciamiento?: Licensing;
+
+  @ApiPropertyOptional({ description: 'Tipo de cambio, solo aplica si la moneda es USD', type: Number })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  tipoCambio?: number;
 }

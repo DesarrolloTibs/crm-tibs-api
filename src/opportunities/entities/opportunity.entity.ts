@@ -101,4 +101,13 @@ export class Opportunity {
 
   @Column({ type: 'boolean', default: false, name: 'archived' })
   archived: boolean;
+
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    nullable: true, // Permite que el valor sea NULL en la base de datos
+    comment: 'Tipo de cambio aplicado si la moneda es USD',
+  })
+  tipoCambio: number | null; // Le dice a TypeScript que la propiedad puede ser un número o nulo
 }

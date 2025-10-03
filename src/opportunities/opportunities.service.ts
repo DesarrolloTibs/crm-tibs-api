@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindManyOptions, Repository, FindOptionsWhere } from 'typeorm';
+import { FindManyOptions, Repository, FindOptionsWhere, IsNull } from 'typeorm';
 import { Opportunity, OpportunityStage } from './entities/opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
@@ -15,7 +15,13 @@ export class OpportunitiesService {
 
   create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
     const total = (createOpportunityDto.monto_licenciamiento || 0) + (createOpportunityDto.monto_servicios || 0);
-    const opportunity = this.opportunityRepository.create({ ...createOpportunityDto, monto_total: total });
+    const opportunityData = { ...createOpportunityDto, monto_total: total };
+
+    // Si la moneda no es USD, nos aseguramos de que tipoCambio sea nulo.
+    if (opportunityData.moneda !== 'USD') {
+      opportunityData.tipoCambio = 0;
+    }
+    const opportunity = this.opportunityRepository.create(opportunityData);
     return this.opportunityRepository.save(opportunity);
   }
 
@@ -50,18 +56,20 @@ export class OpportunitiesService {
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
-    const existingOpportunity = await this.findOne(id);
-    
-    const newTotal = (updateOpportunityDto.monto_licenciamiento ?? existingOpportunity.monto_licenciamiento) + (updateOpportunityDto.monto_servicios ?? existingOpportunity.monto_servicios);
-
     const opportunity = await this.opportunityRepository.preload({
       id: id,
       ...updateOpportunityDto,
-      monto_total: newTotal,
     });
 
     if (!opportunity) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
+    }
+
+    // Recalculamos el monto total y aplicamos la lógica del tipo de cambio.
+    opportunity.monto_total = (opportunity.monto_licenciamiento ?? 0) + (opportunity.monto_servicios ?? 0);
+
+    if (opportunity.moneda !== 'USD') {
+      opportunity.tipoCambio = 0;
     }
     return this.opportunityRepository.save(opportunity);
   }
