@@ -17,7 +17,7 @@ export class UsersService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    const adminExists = await this.userRepository.findOne({ where: { username: 'admin' } });
+    const adminExists = await this.userRepository.findOne({ where: { email: 'ivonne.cabriales@tibs.com.mx' } });
     if (!adminExists) {
       const hashedPassword = await bcrypt.hash('Admin2026!', 10);
       await this.userRepository.save({
