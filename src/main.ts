@@ -5,8 +5,13 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
  app.setGlobalPrefix('api'); 
-  // Enable CORS for frontend communication
-  app.enableCors();
+  // Configuración explícita de CORS para permitir la comunicación con el frontend
+  app.enableCors({
+    origin: true, // O puedes ser más específico: ['http://localhost:4200', 'https://tu-frontend.com']
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    allowedHeaders: 'Content-Type, Accept, Authorization',
+    credentials: true,
+  });
 
   const config = new DocumentBuilder()
     .setTitle('CRM API')
