@@ -8,22 +8,29 @@ import {
   Param,
   Patch,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
   NotFoundException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
 import { AuthGuard } from '@nestjs/passport';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiCreatedResponse,
+  ApiNoContentResponse,
   ApiOkResponse,
+  ApiOperation,
   ApiTags,
-  ApiCreatedResponse, ApiBody, ApiNoContentResponse,
 } from '@nestjs/swagger';
 import { CreateUserDto } from './dto/create-user.dto';
 
 import { UpdateUserDto, UpdateUserStatusDto } from './dto/update-user.dto';
-
+import { FileInterceptor } from '@nestjs/platform-express';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -79,5 +86,32 @@ export class UsersController {
     @Body() updateUserStatusDto: UpdateUserStatusDto,
   ): Promise<User> {
     return this.usersService.updateStatus(id, updateUserStatusDto);
+  }
+
+  @Post(':id/profile-image')
+  @ApiOperation({ summary: 'Subir o actualizar la imagen de perfil para un usuario específico' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Archivo de imagen',
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadProfileImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    // El objeto 'file' está disponible gracias a Multer.
+    // Su propiedad 'path' contiene la ruta donde se guardó el archivo.
+    // Ahora pasamos el ID del usuario y la ruta del archivo al servicio.
+    // Nota: Multer guarda la ruta con barras invertidas en Windows.
+    // 1. Normalizamos las barras a '/'
+    // 2. Nos aseguramos de que la ruta comience con '/' para que sea una URL relativa válida.
+    const imageUrl = `/${file.path.replace(/\\/g, '/')}`;
+    return this.usersService.updateProfileImage(id, imageUrl);
   }
 }

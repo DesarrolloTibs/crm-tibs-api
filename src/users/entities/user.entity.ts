@@ -29,4 +29,7 @@ export class User {
 
   @Column({ default: true })
   isActive: boolean;
+
+  @Column({ type: 'varchar', nullable: true })
+  profileImageUrl: string | null;
 }

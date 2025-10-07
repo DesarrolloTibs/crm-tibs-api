@@ -75,4 +75,18 @@ export class UsersService implements OnModuleInit {
   async findAllActive(): Promise<User[]> {
     return this.userRepository.find({ where: { isActive: true } });
   }
+
+  /**
+   * Actualiza la URL de la imagen de perfil de un usuario.
+   * También elimina la imagen anterior del sistema de archivos si existe.
+   * @param userId - El ID del usuario a actualizar.
+   * @param imageUrl - La nueva URL de la imagen de perfil.
+   * @returns La entidad del usuario actualizada.
+   */
+  async updateProfileImage(userId: string, imageUrl: string): Promise<User> {
+    // Reutilizamos findOneById que ya maneja el caso de usuario no encontrado.
+    const user = await this.findOneById(userId);
+    user.profileImageUrl = imageUrl;
+    return this.userRepository.save(user);
+  }
 }
