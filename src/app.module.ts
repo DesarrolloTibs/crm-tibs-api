@@ -9,6 +9,7 @@ import { RemindersModule } from './reminders/reminders.module';
 import { OpportunitiesModule } from './opportunities/opportunities.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { ActivitiesModule } from './Activities/activities.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { UsersModule } from './users/users.module';
     OpportunitiesModule,
     AuthModule,
     UsersModule,
+    ActivitiesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
