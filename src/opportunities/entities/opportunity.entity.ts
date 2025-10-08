@@ -89,7 +89,7 @@ export class Opportunity {
   tipo_entrega: DeliveryType;
 
 
-  @Column({ type: 'enum', enum: Licensing })
+  @Column({ type: 'enum', enum: Licensing, nullable: true })
   licenciamiento: Licensing;
 
   @OneToMany(() => Interaction, (interaction) => interaction.opportunity)
