@@ -1,14 +1,16 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Query, UseGuards, ParseBoolPipe, Res } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Query, UseGuards, ParseBoolPipe, Res, InternalServerErrorException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 import type { Response } from 'express';
 import { join } from 'path';
+import { GetUser } from 'src/auth/decorators/get-user.decorator';
 
 import { OpportunitiesService } from './opportunities.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { OpportunityStage } from './entities/opportunity.entity';
+import { User } from 'src/users/entities/user.entity';
 
 @Controller('opportunities')
 @UseGuards(AuthGuard('jwt'))
@@ -30,8 +32,13 @@ export class OpportunitiesController {
   }
 
   @Get('all')
-  findAllUnfiltered() {
-    return this.opportunitiesService.findAllUnfiltered();
+  findAllUnfiltered(@GetUser() user: User) {
+    // Asegurarnos de que el objeto user está presente
+    if (!user) {
+      throw new InternalServerErrorException('No se pudo obtener la información del usuario.');
+    }
+    console.log('Current User:', user); // Debug log
+    return this.opportunitiesService.findAllUnfiltered(user);
   }
 
   @Get(':id')

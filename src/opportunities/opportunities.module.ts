@@ -8,10 +8,12 @@ import { extname } from 'path';
 import { Opportunity } from './entities/opportunity.entity';
 import { OpportunitiesService } from './opportunities.service';
 import { OpportunitiesController } from './opportunities.controller';
+import { UsersModule } from 'src/users/users.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Opportunity]),
+    UsersModule,
     MulterModule.register({
       storage: diskStorage({
         destination: (req, file, cb) => {
