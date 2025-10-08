@@ -34,7 +34,6 @@ export enum DeliveryType {
 }
 
 export enum Licensing {
-   '' = '',
   MICROSOFT = 'Microsoft',
   IBM = 'IBM',
   QLIK = 'Qlik',
