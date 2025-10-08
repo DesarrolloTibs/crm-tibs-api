@@ -34,6 +34,7 @@ export enum DeliveryType {
 }
 
 export enum Licensing {
+   '' = '',
   MICROSOFT = 'Microsoft',
   IBM = 'IBM',
   QLIK = 'Qlik',
@@ -88,8 +89,8 @@ export class Opportunity {
   tipo_entrega: DeliveryType;
 
 
-  @Column({ type: 'enum', enum: [...Object.values(Licensing), ''], nullable: true })
-  licenciamiento: Licensing | '' | null;
+  @Column({ type: 'enum', enum: Licensing })
+  licenciamiento: Licensing;
 
   @OneToMany(() => Interaction, (interaction) => interaction.opportunity)
   interactions: Interaction[];
