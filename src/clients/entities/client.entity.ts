@@ -1,4 +1,5 @@
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
+import { User } from '../../users/entities/user.entity';
 
 @Entity('clients')
 export class Client {
@@ -25,4 +26,11 @@ export class Client {
 
   @Column({ type: 'boolean', default: true })
   estatus: boolean;
+
+  @Column({ type: 'uuid', nullable: true })
+  ejecutivo_id: string;
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: 'ejecutivo_id' })
+  ejecutivo: User;
 }

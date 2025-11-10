@@ -1,4 +1,4 @@
-import { IsString, IsEmail, IsNotEmpty, IsOptional } from 'class-validator';
+import { IsString, IsEmail, IsNotEmpty, IsOptional, IsUUID } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateClientDto {
@@ -35,4 +35,9 @@ export class CreateClientDto {
   @ApiPropertyOptional({ description: 'Estatus del cliente', default: true })
   @IsOptional()
   estatus?: boolean;
+
+  @ApiPropertyOptional({ description: 'ID del ejecutivo asignado' })
+  @IsUUID()
+  @IsOptional()
+  ejecutivo_id?: string;
 }
