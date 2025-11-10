@@ -19,7 +19,13 @@ export class ClientsService {
   }
 
   findAll(): Promise<Client[]> {
-    return this.clientRepository.find();
+    return this.clientRepository.find({
+      order: {
+        empresa: 'ASC',
+        nombre: 'ASC',
+        apellido: 'ASC',
+      },
+    });
   }
 
   findAllActive(): Promise<Client[]> {
