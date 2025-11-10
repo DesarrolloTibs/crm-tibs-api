@@ -6,6 +6,10 @@ export class UpdateOpportunityDto {
   @IsOptional()
   nombre_proyecto?: string;
 
+  @IsString()
+  @IsOptional()
+  description?: string;
+
   @IsUUID()
   @IsOptional()
   cliente_id?: string;

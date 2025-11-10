@@ -50,6 +50,9 @@ export class Opportunity {
   @Column({ type: 'varchar', length: 255 })
   nombre_proyecto: string;
 
+  @Column({ type: 'varchar', length: 1000, nullable: true })
+  description: string;
+
   @Column({ type: 'uuid' })
   cliente_id: string;
 

@@ -8,6 +8,11 @@ export class CreateOpportunityDto {
   @IsNotEmpty()
   nombre_proyecto: string;
 
+  @ApiPropertyOptional({ description: 'Descripción de la oportunidad' })
+  @IsString()
+  @IsOptional()
+  description?: string;
+
   @ApiProperty({ description: 'ID del cliente', format: 'uuid' })
   @IsUUID()
   @IsNotEmpty()
