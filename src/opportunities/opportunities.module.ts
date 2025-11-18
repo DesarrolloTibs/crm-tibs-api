@@ -9,11 +9,13 @@ import { Opportunity } from './entities/opportunity.entity';
 import { OpportunitiesService } from './opportunities.service';
 import { OpportunitiesController } from './opportunities.controller';
 import { UsersModule } from 'src/users/users.module';
+import { OpportunityTrackingsModule } from 'src/opportunity-trackings/opportunity-trackings.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Opportunity]),
     UsersModule,
+    OpportunityTrackingsModule,
     MulterModule.register({
       storage: diskStorage({
         destination: (req, file, cb) => {

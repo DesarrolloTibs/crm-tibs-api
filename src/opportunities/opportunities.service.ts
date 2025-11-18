@@ -8,6 +8,7 @@ import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { UsersService } from 'src/users/users.service';
 import { User } from 'src/users/entities/user.entity';
 import { Role } from 'role.enum';
+import { OpportunityTrackingsService } from 'src/opportunity-trackings/opportunity-trackings.service';
 
 @Injectable()
 export class OpportunitiesService {
@@ -15,9 +16,10 @@ export class OpportunitiesService {
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
     private readonly usersService: UsersService,
+    private readonly opportunityTrackingsService: OpportunityTrackingsService,
   ) {}
 
-  create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
+  async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
     const total = (createOpportunityDto.monto_licenciamiento || 0) + (createOpportunityDto.monto_servicios || 0);
     const opportunityData = { ...createOpportunityDto, monto_total: total };
 
@@ -26,7 +28,16 @@ export class OpportunitiesService {
       opportunityData.tipoCambio = 0;
     }
     const opportunity = this.opportunityRepository.create(opportunityData);
-    return this.opportunityRepository.save(opportunity);
+    const savedOpportunity = await this.opportunityRepository.save(opportunity);
+
+    // Create the initial tracking record
+    await this.opportunityTrackingsService.create({
+      opportunity_id: savedOpportunity.id,
+      stage: savedOpportunity.etapa,
+      changed_by_id: savedOpportunity.ejecutivo_id, // Assuming the creator is the executive
+    });
+
+    return savedOpportunity;
   }
 
   findAll(etapa?: OpportunityStage, showArchived = false): Promise<Opportunity[]> {
@@ -77,6 +88,13 @@ console.log('Full Current User:', fullCurrentUser); // Debug log
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
+    const existingOpportunity = await this.findOne(id);
+    if (!existingOpportunity) {
+      throw new NotFoundException(`Opportunity with ID "${id}" not found`);
+    }
+
+    const originalStage = existingOpportunity.etapa;
+
     const opportunity = await this.opportunityRepository.preload({
       id: id,
       ...updateOpportunityDto,
@@ -92,7 +110,18 @@ console.log('Full Current User:', fullCurrentUser); // Debug log
     if (opportunity.moneda !== 'USD') {
       opportunity.tipoCambio = 0;
     }
-    return this.opportunityRepository.save(opportunity);
+    
+    const savedOpportunity = await this.opportunityRepository.save(opportunity);
+
+    if (updateOpportunityDto.etapa && updateOpportunityDto.etapa !== originalStage) {
+      await this.opportunityTrackingsService.create({
+        opportunity_id: savedOpportunity.id,
+        stage: savedOpportunity.etapa,
+        changed_by_id: savedOpportunity.ejecutivo_id, // Assuming the updater is the executive
+      });
+    }
+
+    return savedOpportunity;
   }
 
   async remove(id: string): Promise<void> {

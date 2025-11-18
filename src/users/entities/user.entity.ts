@@ -4,7 +4,10 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  OneToMany,
 } from 'typeorm';
+import { OpportunityTracking } from '../../opportunity-trackings/entities/opportunity-tracking.entity';
+
 
 import { Exclude } from 'class-transformer';
 import { Role } from 'role.enum';
@@ -32,4 +35,7 @@ export class User {
 
   @Column({ type: 'varchar', nullable: true })
   profileImageUrl: string | null;
+
+  @OneToMany(() => OpportunityTracking, (tracking) => tracking.changedBy)
+  opportunityTrackings: OpportunityTracking[];
 }

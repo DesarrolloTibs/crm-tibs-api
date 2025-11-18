@@ -13,7 +13,10 @@ export enum ActivityType {
   PRESENTACION_SERVICIOS_PRESENCIAL = 'Presentación Servicios Presencial',
   PRESENTACION_SERVICIOS_EN_LINEA = 'Presentación Servicios En Línea',
   EVENTO = 'Evento',
-  SEGUIMIENTO_OPORTUNIDAD = 'Seguimiento Oportunidad',
+  SEGUIMIENTO_OPORTUNIDAD = 'Seguimiento Oportunidad Línea',
+  Llamada = 'Llamada',
+  SEGUIMIENTO_OPORTUNIDAD_PRESENCIAL = 'Seguimiento Oportunidad Presencial',
+  OTROS = 'Otros',
 }
 
 @Entity('activities')

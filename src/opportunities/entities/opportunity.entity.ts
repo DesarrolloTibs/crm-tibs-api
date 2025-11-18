@@ -3,6 +3,7 @@ import { Client } from '../../clients/entities/client.entity';
 import { Interaction } from '../../interactions/entities/interaction.entity';
 import { Reminder } from '../../reminders/entities/reminder.entity';
 import { User } from '../../users/entities/user.entity';
+import { OpportunityTracking } from '../../opportunity-trackings/entities/opportunity-tracking.entity';
 
 export enum OpportunityStage {
   NUEVO = 'Nuevo',
@@ -115,4 +116,7 @@ export class Opportunity {
     comment: 'Tipo de cambio aplicado si la moneda es USD',
   })
   tipoCambio: number | null; // Le dice a TypeScript que la propiedad puede ser un número o nulo
+
+  @OneToMany(() => OpportunityTracking, (tracking) => tracking.opportunity)
+  tracking: OpportunityTracking[];
 }

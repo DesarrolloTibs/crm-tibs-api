@@ -10,6 +10,7 @@ import { OpportunitiesModule } from './opportunities/opportunities.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { ActivitiesModule } from './Activities/activities.module';
+import { OpportunityTrackingsModule } from './opportunity-trackings/opportunity-trackings.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { ActivitiesModule } from './Activities/activities.module';
     AuthModule,
     UsersModule,
     ActivitiesModule,
+    OpportunityTrackingsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
