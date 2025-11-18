@@ -30,7 +30,7 @@ export class Activity {
   @Column({ type: 'varchar', length: 80 })
   activity: string;
 
-  @Column({ type: 'enum', enum: ActivityType })
+  @Column({ type: 'enum', enum: ActivityType, nullable: true })
   activityType: ActivityType;
 
   @Column({ type: 'uuid', nullable: true })
