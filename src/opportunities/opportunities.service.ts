@@ -9,6 +9,8 @@ import { UsersService } from 'src/users/users.service';
 import { User } from 'src/users/entities/user.entity';
 import { Role } from 'role.enum';
 import { OpportunityTrackingsService } from 'src/opportunity-trackings/opportunity-trackings.service';
+import { ClientsService } from 'src/clients/clients.service';
+import { ClientCategory } from 'src/clients/entities/client.entity';
 
 @Injectable()
 export class OpportunitiesService {
@@ -17,6 +19,7 @@ export class OpportunitiesService {
     private readonly opportunityRepository: Repository<Opportunity>,
     private readonly usersService: UsersService,
     private readonly opportunityTrackingsService: OpportunityTrackingsService,
+    private readonly clientsService: ClientsService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
@@ -36,6 +39,12 @@ export class OpportunitiesService {
       stage: savedOpportunity.etapa,
       changed_by_id: savedOpportunity.ejecutivo_id, // Assuming the creator is the executive
     });
+
+    if (savedOpportunity.etapa === OpportunityStage.GANADA) {
+      await this.clientsService.update(savedOpportunity.cliente_id, {
+        category: ClientCategory.CLIENTE,
+      });
+    }
 
     return savedOpportunity;
   }
@@ -118,6 +127,12 @@ console.log('Full Current User:', fullCurrentUser); // Debug log
         opportunity_id: savedOpportunity.id,
         stage: savedOpportunity.etapa,
         changed_by_id: savedOpportunity.ejecutivo_id, // Assuming the updater is the executive
+      });
+    }
+
+    if (savedOpportunity.etapa === OpportunityStage.GANADA) {
+      await this.clientsService.update(savedOpportunity.cliente_id, {
+        category: ClientCategory.CLIENTE,
       });
     }
 
