@@ -14,7 +14,7 @@ export enum OpportunityStage {
   GANADA = 'Ganada',
   PERDIDA = 'Perdida',
   CANCELADA = 'Cancelada',
-  STANDBY = 'StandBy',
+  STANDBY = 'Standby',
 }
 
 export enum Currency {
@@ -117,6 +117,9 @@ export class Opportunity {
     comment: 'Tipo de cambio aplicado si la moneda es USD',
   })
   tipoCambio: number | null; // Le dice a TypeScript que la propiedad puede ser un número o nulo
+
+  @Column({ type: 'date', nullable: true, name: 'estimated_closure_date' })
+  estimated_closure_date: Date;
 
   @OneToMany(() => OpportunityTracking, (tracking) => tracking.opportunity)
   tracking: OpportunityTracking[];

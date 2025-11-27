@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { OpportunityStage, Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
 
@@ -75,4 +75,9 @@ export class CreateOpportunityDto {
   @Min(0)
   @IsOptional()
   tipoCambio?: number;
+
+  @ApiPropertyOptional({ description: 'Fecha estimada de cierre' })
+  @IsDateString()
+  @IsOptional()
+  estimated_closure_date?: Date;
 }
