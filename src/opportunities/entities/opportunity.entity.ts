@@ -14,6 +14,7 @@ export enum OpportunityStage {
   GANADA = 'Ganada',
   PERDIDA = 'Perdida',
   CANCELADA = 'Cancelada',
+  STANDBY = 'StandBy',
 }
 
 export enum Currency {
