@@ -1,5 +1,6 @@
-import { IsString, IsEmail, IsNotEmpty, IsOptional, IsUUID } from 'class-validator';
+import { IsString, IsEmail, IsNotEmpty, IsOptional, IsUUID, IsEnum } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ClientCategory } from '../entities/client.entity';
 
 export class CreateClientDto {
   @ApiProperty({ description: 'Nombre del cliente' })
@@ -40,4 +41,13 @@ export class CreateClientDto {
   @IsUUID()
   @IsOptional()
   ejecutivo_id?: string;
+
+  @ApiPropertyOptional({
+    description: 'Categoría del cliente',
+    enum: ClientCategory,
+    default: ClientCategory.CONTACTO,
+  })
+  @IsEnum(ClientCategory)
+  @IsOptional()
+  category?: ClientCategory;
 }

@@ -1,6 +1,12 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
+export enum ClientCategory {
+  CONTACTO = 'Contacto',
+  LEAD = 'Lead',
+  CLIENTE = 'Cliente',
+}
+
 @Entity('clients')
 export class Client {
   @PrimaryGeneratedColumn('uuid')
@@ -23,6 +29,13 @@ export class Client {
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   telefono: string;
+
+  @Column({
+    type: 'enum',
+    enum: ClientCategory,
+    default: ClientCategory.LEAD,
+  })
+  category: ClientCategory;
 
   @Column({ type: 'boolean', default: true })
   estatus: boolean;
