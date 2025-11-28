@@ -1,0 +1,10 @@
+
+{
+    "apps": [{
+     "name": "friday-api",
+     "script": "dist/src/main.js",
+     "args":"start",
+     "watch":false,
+	 "ignore_watch" : [ "*.log"]
+   }]
+}
