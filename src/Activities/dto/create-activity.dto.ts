@@ -8,6 +8,7 @@ import {
   IsUUID,
   ValidateIf,
   MaxLength,
+  IsBoolean,
 } from 'class-validator';
 import { ActivityType } from '../entities/activity.entity';
 
@@ -28,13 +29,52 @@ export class CreateActivityDto {
   @IsNotEmpty()
   activityType: ActivityType;
 
-  @ApiPropertyOptional({
-    description: 'ID de la oportunidad asociada (opcional)',
-    format: 'uuid',
-  })
-  // Solo valida como UUID si el valor no es un string vacío.
-  @ValidateIf((object, value) => value !== null && value !== '')
-  @IsUUID()
-  @IsOptional()
-  opportunityId?: string | null;
-}
+    @ApiPropertyOptional({
+
+      description: 'ID de la oportunidad asociada (opcional)',
+
+      format: 'uuid',
+
+    })
+
+    // Solo valida como UUID si el valor no es un string vacío.
+
+    @ValidateIf((object, value) => value !== null && value !== '')
+
+    @IsUUID()
+
+    @IsOptional()
+
+    opportunityId?: string | null;
+
+  
+
+    @ApiPropertyOptional({
+
+      description: 'ID del cliente asociado (opcional)',
+
+      format: 'uuid',
+
+    })
+
+    @ValidateIf((object, value) => value !== null && value !== '')
+
+    @IsUUID()
+
+    @IsOptional()
+
+    clientId?: string | null;
+
+  
+
+    @ApiPropertyOptional({ description: 'Indicador de historial (opcional)' })
+
+    @IsBoolean()
+
+    @IsOptional()
+
+    flaghistory?: boolean;
+
+  }
+
+  

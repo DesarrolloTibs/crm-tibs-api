@@ -5,9 +5,10 @@ import { ActivitiesController } from './activities.controller';
 
 import { UsersModule } from 'src/users/users.module';
 import { Activity } from './entities/activity.entity';
+import { InteractionsModule } from 'src/interactions/interactions.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Activity]), UsersModule],
+  imports: [TypeOrmModule.forFeature([Activity]), UsersModule, InteractionsModule],
   controllers: [ActivitiesController],
   providers: [ActivitiesService],
 })

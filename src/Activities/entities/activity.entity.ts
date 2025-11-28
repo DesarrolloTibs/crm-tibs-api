@@ -7,6 +7,7 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { Opportunity } from '../../opportunities/entities/opportunity.entity';
+import { Client } from 'src/clients/entities/client.entity';
 
 export enum ActivityType {
   CORREO = 'Correo',
@@ -39,6 +40,16 @@ export class Activity {
   @ManyToOne(() => Opportunity, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'opportunityId' })
   opportunity: Opportunity;
+
+  @Column({ type: 'uuid', nullable: true })
+  clientId: string | null;
+
+  @ManyToOne(() => Client, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'clientId' })
+  client: Client;
+
+  @Column({ type: 'boolean', nullable: true })
+  flaghistory: boolean;
 
   @Column({ type: 'uuid' })
   userId: string;

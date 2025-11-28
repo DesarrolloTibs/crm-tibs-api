@@ -8,5 +8,6 @@ import { Interaction } from './entities/interaction.entity';
   imports: [TypeOrmModule.forFeature([Interaction])],
   controllers: [InteractionsController],
   providers: [InteractionsService],
+  exports: [InteractionsService],
 })
 export class InteractionsModule {}

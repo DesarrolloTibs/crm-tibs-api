@@ -12,6 +12,7 @@ import { Role } from 'role.enum';
 import { UsersService } from 'src/users/users.service';
 import { Activity } from './entities/activity.entity';
 import { CreateActivityDto } from './dto/create-activity.dto';
+import { InteractionsService } from 'src/interactions/interactions.service';
 import { UpdateActivityDto } from './dto/update-activity.dto';
 
 @Injectable()
@@ -22,6 +23,7 @@ export class ActivitiesService {
     @InjectRepository(Activity)
     private readonly activityRepository: Repository<Activity>,
     private readonly usersService: UsersService,
+    private readonly interactionsService: InteractionsService,
   ) {}
 
   async create(
@@ -46,12 +48,28 @@ export class ActivitiesService {
       createActivityDto.opportunityId = null;
     }
 
+    if (createActivityDto.clientId === '') {
+      createActivityDto.clientId = null;
+    }
+
     const activity = this.activityRepository.create({
       ...createActivityDto,
       user: { id: userId } as User,
     });
 
-    return await this.activityRepository.save(activity);
+    const savedActivity = await this.activityRepository.save(activity);
+
+    if (
+      savedActivity.flaghistory &&
+      savedActivity.opportunityId &&
+      savedActivity.activity
+    ) {
+      await this.interactionsService.create({
+        opportunity_id: savedActivity.opportunityId,
+        comment: savedActivity.activity,
+      });
+    }
+    return savedActivity;
   }
 
   async findAll(
@@ -121,6 +139,10 @@ export class ActivitiesService {
       updateActivityDto.opportunityId = null;
     }
 
+    if (updateActivityDto.clientId === '') {
+      updateActivityDto.clientId = null;
+    }
+
     // Preload fusiona la entidad existente con los nuevos datos del DTO
     const activityToUpdate = await this.activityRepository.preload({
       id,
@@ -131,7 +153,20 @@ export class ActivitiesService {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada para actualizar.`);
     }
     // Guardamos la entidad actualizada y la retornamos
-    return this.activityRepository.save(activityToUpdate);
+    const savedActivity = await this.activityRepository.save(activityToUpdate);
+
+    if (
+      savedActivity.flaghistory &&
+      savedActivity.opportunityId &&
+      savedActivity.activity
+    ) {
+      await this.interactionsService.create({
+        opportunity_id: savedActivity.opportunityId,
+        comment: savedActivity.activity,
+      });
+    }
+
+    return savedActivity;
   }
 
   async remove(id: string, user: User): Promise<void> {
