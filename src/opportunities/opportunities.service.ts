@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindManyOptions, Repository, FindOptionsWhere, IsNull, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import { FindManyOptions, Repository, FindOptionsWhere, IsNull, Between, MoreThanOrEqual, LessThanOrEqual, Brackets } from 'typeorm';
 import { Opportunity, OpportunityStage } from './entities/opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
@@ -52,66 +52,79 @@ export class OpportunitiesService {
   findAll(
     etapa?: OpportunityStage,
     showArchived = false,
-    startDate?: Date,
-    endDate?: Date,
   ): Promise<Opportunity[]> {
-    const where: FindOptionsWhere<Opportunity> = { archived: showArchived };
+    const currentYear = new Date().getFullYear();
+    const excludedStages = [
+      OpportunityStage.GANADA,
+      OpportunityStage.PERDIDA,
+      OpportunityStage.CANCELADA,
+      OpportunityStage.STANDBY,
+    ];
+
+    const qb = this.opportunityRepository.createQueryBuilder('opportunity');
+
+    qb.leftJoinAndSelect('opportunity.cliente', 'cliente')
+      .leftJoinAndSelect('opportunity.ejecutivo', 'ejecutivo')
+      .where('opportunity.archived = :showArchived', { showArchived });
 
     if (etapa) {
-      where.etapa = etapa;
+      qb.andWhere('opportunity.etapa = :etapa', { etapa });
     }
+    
+    qb.andWhere(new Brackets(sqb => {
+        sqb.where('opportunity.etapa NOT IN (:...excludedStages)', { excludedStages })
+           .orWhere(
+               `(
+                   SELECT EXTRACT(YEAR FROM MAX(ot."changedAt"))
+                   FROM opportunity_trackings ot
+                   WHERE ot.opportunity_id = opportunity.id
+                   AND ot.stage::text = opportunity.etapa::text
+               ) >= :currentYear`, { currentYear }
+           );
+    }));
 
-    if (startDate && endDate) {
-      where.createdAt = Between(startDate, endDate);
-    } else if (startDate) {
-      where.createdAt = MoreThanOrEqual(startDate);
-    } else if (endDate) {
-      where.createdAt = LessThanOrEqual(endDate);
-    }
-
-    const findOptions: FindManyOptions<Opportunity> = {
-      relations: ['cliente', 'ejecutivo'],
-      where,
-    };
-
-    return this.opportunityRepository.find(findOptions);
+    return qb.getMany();
   }
 
   async findAllUnfiltered(
     currentUser: User,
-    startDate?: Date,
-    endDate?: Date,
   ): Promise<Opportunity[]> {
-    // 1. Obtenemos el ID del usuario de forma segura desde el payload del token.
+    const currentYear = new Date().getFullYear();
+    const excludedStages = [
+      OpportunityStage.GANADA,
+      OpportunityStage.PERDIDA,
+      OpportunityStage.CANCELADA,
+      OpportunityStage.STANDBY,
+    ];
+
+    const qb = this.opportunityRepository.createQueryBuilder('opportunity');
+
     const currentUserId = currentUser.id || (currentUser as any).userId;
     if (!currentUserId) {
       throw new InternalServerErrorException('No se pudo identificar al usuario actual.');
     }
 
-    // 2. Cargamos la entidad completa del usuario para obtener su rol.
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
-    console.log('Full Current User:', fullCurrentUser); // Debug log
-    const where: FindOptionsWhere<Opportunity> = {};
-
-    // 3. Usamos la información completa y fiable para la lógica de autorización.
     if (fullCurrentUser.role !== Role.Admin) {
-      where.ejecutivo_id = fullCurrentUser.id;
+      qb.where('opportunity.ejecutivo_id = :currentUserId', { currentUserId: fullCurrentUser.id });
     }
 
-    // Apply date filtering
-    if (startDate && endDate) {
-      where.createdAt = Between(startDate, endDate);
-    } else if (startDate) {
-      where.createdAt = MoreThanOrEqual(startDate);
-    } else if (endDate) {
-      where.createdAt = LessThanOrEqual(endDate);
-    }
+    qb.leftJoinAndSelect('opportunity.cliente', 'cliente')
+      .leftJoinAndSelect('opportunity.ejecutivo', 'ejecutivo');
+      
+    qb.andWhere(new Brackets(sqb => {
+        sqb.where('opportunity.etapa NOT IN (:...excludedStages)', { excludedStages })
+           .orWhere(
+               `(
+                   SELECT EXTRACT(YEAR FROM MAX(ot."changedAt"))
+                   FROM opportunity_trackings ot
+                   WHERE ot.opportunity_id = opportunity.id
+                   AND ot.stage::text = opportunity.etapa::text
+               ) >= :currentYear`, { currentYear }
+           );
+    }));
 
-    const findOptions: FindManyOptions<Opportunity> = {
-      relations: ['cliente', 'ejecutivo'],
-      where,
-    };
-    return this.opportunityRepository.find(findOptions);
+    return qb.getMany();
   }
 
   async findOne(id: string): Promise<Opportunity> {

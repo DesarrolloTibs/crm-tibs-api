@@ -28,27 +28,21 @@ export class OpportunitiesController {
   findAll(
     @Query() filterDto: GetOpportunitiesFilterDto,
   ) {
-    const { etapa, showArchived, startDate, endDate } = filterDto;
-    const parsedStartDate = startDate ? new Date(startDate) : undefined;
-    const parsedEndDate = endDate ? new Date(endDate) : undefined;
-    return this.opportunitiesService.findAll(etapa, showArchived, parsedStartDate, parsedEndDate);
+    const { etapa, showArchived } = filterDto;
+    return this.opportunitiesService.findAll(etapa, showArchived);
   }
 
   @Get('all')
   findAllUnfiltered(
     @GetUser() user: User,
-    @Query() filterDto: GetOpportunitiesFilterDto,
   ) {
     // Asegurarnos de que el objeto user está presente
     if (!user) {
       throw new InternalServerErrorException('No se pudo obtener la información del usuario.');
     }
     console.log('Current User:', user); // Debug log
-    const { startDate, endDate } = filterDto;
-    const parsedStartDate = startDate ? new Date(startDate) : undefined;
-    const parsedEndDate = endDate ? new Date(endDate) : undefined;
   
-    return this.opportunitiesService.findAllUnfiltered(user, parsedStartDate, parsedEndDate);
+    return this.opportunitiesService.findAllUnfiltered(user);
   }
 
   @Get(':id')
