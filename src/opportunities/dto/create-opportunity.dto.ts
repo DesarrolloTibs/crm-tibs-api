@@ -76,6 +76,11 @@ export class CreateOpportunityDto {
   @IsOptional()
   tipoCambio?: number;
 
+  @ApiPropertyOptional({ description: 'Fecha de creación de la oportunidad' })
+  @IsDateString()
+  @IsOptional()
+  createdAt?: Date;
+
   @ApiPropertyOptional({ description: 'Fecha estimada de cierre' })
   @IsDateString()
   @IsOptional()

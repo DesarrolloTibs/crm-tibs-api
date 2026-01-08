@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMany } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMany, CreateDateColumn } from 'typeorm';
 import { Client } from '../../clients/entities/client.entity';
 import { Interaction } from '../../interactions/entities/interaction.entity';
 import { Reminder } from '../../reminders/entities/reminder.entity';
@@ -120,6 +120,9 @@ export class Opportunity {
 
   @Column({ type: 'date', nullable: true, name: 'estimated_closure_date' })
   estimated_closure_date: Date;
+
+  @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  createdAt: Date;
 
   @OneToMany(() => OpportunityTracking, (tracking) => tracking.opportunity)
   tracking: OpportunityTracking[];

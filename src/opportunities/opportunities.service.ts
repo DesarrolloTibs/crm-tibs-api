@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindManyOptions, Repository, FindOptionsWhere, IsNull } from 'typeorm';
+import { FindManyOptions, Repository, FindOptionsWhere, IsNull, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
 import { Opportunity, OpportunityStage } from './entities/opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
@@ -49,11 +49,24 @@ export class OpportunitiesService {
     return savedOpportunity;
   }
 
-  findAll(etapa?: OpportunityStage, showArchived = false): Promise<Opportunity[]> {
+  findAll(
+    etapa?: OpportunityStage,
+    showArchived = false,
+    startDate?: Date,
+    endDate?: Date,
+  ): Promise<Opportunity[]> {
     const where: FindOptionsWhere<Opportunity> = { archived: showArchived };
 
     if (etapa) {
       where.etapa = etapa;
+    }
+
+    if (startDate && endDate) {
+      where.createdAt = Between(startDate, endDate);
+    } else if (startDate) {
+      where.createdAt = MoreThanOrEqual(startDate);
+    } else if (endDate) {
+      where.createdAt = LessThanOrEqual(endDate);
     }
 
     const findOptions: FindManyOptions<Opportunity> = {
@@ -64,7 +77,11 @@ export class OpportunitiesService {
     return this.opportunityRepository.find(findOptions);
   }
 
-  async findAllUnfiltered(currentUser: User): Promise<Opportunity[]> {
+  async findAllUnfiltered(
+    currentUser: User,
+    startDate?: Date,
+    endDate?: Date,
+  ): Promise<Opportunity[]> {
     // 1. Obtenemos el ID del usuario de forma segura desde el payload del token.
     const currentUserId = currentUser.id || (currentUser as any).userId;
     if (!currentUserId) {
@@ -73,12 +90,21 @@ export class OpportunitiesService {
 
     // 2. Cargamos la entidad completa del usuario para obtener su rol.
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
-console.log('Full Current User:', fullCurrentUser); // Debug log
+    console.log('Full Current User:', fullCurrentUser); // Debug log
     const where: FindOptionsWhere<Opportunity> = {};
 
     // 3. Usamos la información completa y fiable para la lógica de autorización.
     if (fullCurrentUser.role !== Role.Admin) {
       where.ejecutivo_id = fullCurrentUser.id;
+    }
+
+    // Apply date filtering
+    if (startDate && endDate) {
+      where.createdAt = Between(startDate, endDate);
+    } else if (startDate) {
+      where.createdAt = MoreThanOrEqual(startDate);
+    } else if (endDate) {
+      where.createdAt = LessThanOrEqual(endDate);
     }
 
     const findOptions: FindManyOptions<Opportunity> = {

@@ -68,12 +68,42 @@ export class UpdateOpportunityDto {
 
   
 
-    @IsDateString()
+    
 
-    @IsOptional()
+  
 
-    estimated_closure_date?: Date;
+        @IsDateString()
 
-  }
+  
+
+        @IsOptional()
+
+  
+
+        estimated_closure_date?: Date;
+
+  
+
+    
+
+  
+
+        @IsDateString()
+
+  
+
+        @IsOptional()
+
+  
+
+        createdAt?: Date;
+
+  
+
+      }
+
+  
+
+    
 
   

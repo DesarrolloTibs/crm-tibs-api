@@ -9,6 +9,7 @@ import { OpportunitiesService } from './opportunities.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
+import { GetOpportunitiesFilterDto } from './dto/get-opportunities-filter.dto';
 import { OpportunityStage } from './entities/opportunity.entity';
 import { User } from 'src/users/entities/user.entity';
 
@@ -25,20 +26,29 @@ export class OpportunitiesController {
 
   @Get()
   findAll(
-    @Query('etapa') etapa?: OpportunityStage,
-    @Query('showArchived', new ParseBoolPipe({ optional: true })) showArchived?: boolean,
+    @Query() filterDto: GetOpportunitiesFilterDto,
   ) {
-    return this.opportunitiesService.findAll(etapa, showArchived);
+    const { etapa, showArchived, startDate, endDate } = filterDto;
+    const parsedStartDate = startDate ? new Date(startDate) : undefined;
+    const parsedEndDate = endDate ? new Date(endDate) : undefined;
+    return this.opportunitiesService.findAll(etapa, showArchived, parsedStartDate, parsedEndDate);
   }
 
   @Get('all')
-  findAllUnfiltered(@GetUser() user: User) {
+  findAllUnfiltered(
+    @GetUser() user: User,
+    @Query() filterDto: GetOpportunitiesFilterDto,
+  ) {
     // Asegurarnos de que el objeto user está presente
     if (!user) {
       throw new InternalServerErrorException('No se pudo obtener la información del usuario.');
     }
     console.log('Current User:', user); // Debug log
-    return this.opportunitiesService.findAllUnfiltered(user);
+    const { startDate, endDate } = filterDto;
+    const parsedStartDate = startDate ? new Date(startDate) : undefined;
+    const parsedEndDate = endDate ? new Date(endDate) : undefined;
+  
+    return this.opportunitiesService.findAllUnfiltered(user, parsedStartDate, parsedEndDate);
   }
 
   @Get(':id')
