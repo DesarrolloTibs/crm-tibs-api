@@ -32,16 +32,13 @@ export class OpportunitiesController {
     return this.opportunitiesService.findAll(etapa, showArchived);
   }
 
-  @Get('all')
-  findAllUnfiltered(
-    @GetUser() user: User,
-  ) {
+   @Get('all')
+  findAllUnfiltered(@GetUser() user: User) {
     // Asegurarnos de que el objeto user está presente
     if (!user) {
       throw new InternalServerErrorException('No se pudo obtener la información del usuario.');
     }
     console.log('Current User:', user); // Debug log
-  
     return this.opportunitiesService.findAllUnfiltered(user);
   }
 

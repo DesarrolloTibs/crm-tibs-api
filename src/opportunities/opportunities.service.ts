@@ -69,62 +69,45 @@ export class OpportunitiesService {
 
     if (etapa) {
       qb.andWhere('opportunity.etapa = :etapa', { etapa });
+    } else {
+      qb.andWhere(new Brackets(sqb => {
+          sqb.where('opportunity.etapa NOT IN (:...excludedStages)', { excludedStages })
+             .orWhere(
+                 `(
+                     SELECT EXTRACT(YEAR FROM MAX(ot."changedAt"))
+                     FROM opportunity_trackings ot
+                     WHERE ot.opportunity_id = opportunity.id
+                     AND ot.stage::text = opportunity.etapa::text
+                 ) >= :currentYear`, { currentYear }
+             );
+      }));
     }
-    
-    qb.andWhere(new Brackets(sqb => {
-        sqb.where('opportunity.etapa NOT IN (:...excludedStages)', { excludedStages })
-           .orWhere(
-               `(
-                   SELECT EXTRACT(YEAR FROM MAX(ot."changedAt"))
-                   FROM opportunity_trackings ot
-                   WHERE ot.opportunity_id = opportunity.id
-                   AND ot.stage::text = opportunity.etapa::text
-               ) >= :currentYear`, { currentYear }
-           );
-    }));
 
     return qb.getMany();
   }
 
-  async findAllUnfiltered(
-    currentUser: User,
-  ): Promise<Opportunity[]> {
-    const currentYear = new Date().getFullYear();
-    const excludedStages = [
-      OpportunityStage.GANADA,
-      OpportunityStage.PERDIDA,
-      OpportunityStage.CANCELADA,
-      OpportunityStage.STANDBY,
-    ];
-
-    const qb = this.opportunityRepository.createQueryBuilder('opportunity');
-
+  async findAllUnfiltered(currentUser: User): Promise<Opportunity[]> {
+    // 1. Obtenemos el ID del usuario de forma segura desde el payload del token.
     const currentUserId = currentUser.id || (currentUser as any).userId;
     if (!currentUserId) {
       throw new InternalServerErrorException('No se pudo identificar al usuario actual.');
     }
 
+    // 2. Cargamos la entidad completa del usuario para obtener su rol.
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
+console.log('Full Current User:', fullCurrentUser); // Debug log
+    const where: FindOptionsWhere<Opportunity> = {};
+
+    // 3. Usamos la información completa y fiable para la lógica de autorización.
     if (fullCurrentUser.role !== Role.Admin) {
-      qb.where('opportunity.ejecutivo_id = :currentUserId', { currentUserId: fullCurrentUser.id });
+      where.ejecutivo_id = fullCurrentUser.id;
     }
 
-    qb.leftJoinAndSelect('opportunity.cliente', 'cliente')
-      .leftJoinAndSelect('opportunity.ejecutivo', 'ejecutivo');
-      
-    qb.andWhere(new Brackets(sqb => {
-        sqb.where('opportunity.etapa NOT IN (:...excludedStages)', { excludedStages })
-           .orWhere(
-               `(
-                   SELECT EXTRACT(YEAR FROM MAX(ot."changedAt"))
-                   FROM opportunity_trackings ot
-                   WHERE ot.opportunity_id = opportunity.id
-                   AND ot.stage::text = opportunity.etapa::text
-               ) >= :currentYear`, { currentYear }
-           );
-    }));
-
-    return qb.getMany();
+    const findOptions: FindManyOptions<Opportunity> = {
+      relations: ['cliente', 'ejecutivo'],
+      where,
+    };
+    return this.opportunityRepository.find(findOptions);
   }
 
   async findOne(id: string): Promise<Opportunity> {
