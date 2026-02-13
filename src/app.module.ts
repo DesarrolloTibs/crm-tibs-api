@@ -11,6 +11,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { ActivitiesModule } from './Activities/activities.module';
 import { OpportunityTrackingsModule } from './opportunity-trackings/opportunity-trackings.module';
+import { ExpensesModule } from './expenses/expenses.module';
 
 @Module({
   imports: [
@@ -39,8 +40,9 @@ import { OpportunityTrackingsModule } from './opportunity-trackings/opportunity-
     UsersModule,
     ActivitiesModule,
     OpportunityTrackingsModule,
+    ExpensesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule { }

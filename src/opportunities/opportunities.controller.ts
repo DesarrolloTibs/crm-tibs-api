@@ -12,19 +12,24 @@ import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { GetOpportunitiesFilterDto } from './dto/get-opportunities-filter.dto';
 import { OpportunityStage } from './entities/opportunity.entity';
 import { User } from 'src/users/entities/user.entity';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 
+@ApiTags('opportunities')
+@ApiBearerAuth()
 @Controller('opportunities')
 @UseGuards(AuthGuard('jwt'))
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class OpportunitiesController {
-  constructor(private readonly opportunitiesService: OpportunitiesService) {}
+  constructor(private readonly opportunitiesService: OpportunitiesService) { }
 
   @Post()
+  @ApiOperation({ summary: 'Crear una nueva oportunidad' })
   create(@Body() createOpportunityDto: CreateOpportunityDto) {
     return this.opportunitiesService.create(createOpportunityDto);
   }
 
   @Get()
+  @ApiOperation({ summary: 'Obtener oportunidades filtradas (etapa, archivado)' })
   findAll(
     @Query() filterDto: GetOpportunitiesFilterDto,
   ) {
@@ -32,7 +37,8 @@ export class OpportunitiesController {
     return this.opportunitiesService.findAll(etapa, showArchived);
   }
 
-   @Get('all')
+  @Get('all')
+  @ApiOperation({ summary: 'Obtener todas las oportunidades del usuario (sin filtrar)' })
   findAllUnfiltered(@GetUser() user: User) {
     // Asegurarnos de que el objeto user está presente
     if (!user) {
@@ -43,11 +49,13 @@ export class OpportunitiesController {
   }
 
   @Get(':id')
+  @ApiOperation({ summary: 'Obtener una oportunidad por ID' })
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.opportunitiesService.findOne(id);
   }
 
   @Patch(':id')
+  @ApiOperation({ summary: 'Actualizar una oportunidad' })
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateOpportunityDto: UpdateOpportunityDto,
@@ -58,11 +66,23 @@ export class OpportunitiesController {
   }
 
   @Delete(':id')
+  @ApiOperation({ summary: 'Eliminar una oportunidad' })
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.opportunitiesService.remove(id);
   }
 
   @Post(':id/proposal')
+  @ApiOperation({ summary: 'Subir documento de propuesta (PDF/Doc) para una oportunidad' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Archivo de la propuesta',
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+    },
+  })
   @UseInterceptors(FileInterceptor('file'))
   uploadProposal(
     @Param('id', ParseUUIDPipe) id: string,
@@ -74,6 +94,7 @@ export class OpportunitiesController {
   }
 
   @Get(':id/proposal/download')
+  @ApiOperation({ summary: 'Descargar el documento de propuesta' })
   async downloadProposal(
     @Param('id', ParseUUIDPipe) id: string,
     @Res() res: Response,
@@ -84,6 +105,7 @@ export class OpportunitiesController {
   }
 
   @Patch(':id/archive')
+  @ApiOperation({ summary: 'Archivar o desarchivar una oportunidad' })
   archive(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() archiveOpportunityDto: ArchiveOpportunityDto,
