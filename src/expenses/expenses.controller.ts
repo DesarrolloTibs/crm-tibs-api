@@ -77,7 +77,8 @@ export class ExpensesController {
         @Res() res: Response,
     ) {
         const filePath = await this.expensesService.getReceiptPath(id);
-        const absolutePath = join(process.cwd(), filePath);
+        const normalizedPath = filePath.replace(/\\/g, '/');
+        const absolutePath = join(process.cwd(), normalizedPath);
         return res.sendFile(absolutePath);
     }
 }

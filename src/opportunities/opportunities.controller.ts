@@ -90,7 +90,8 @@ export class OpportunitiesController {
   ) {
     // The file object is available thanks to Multer
     // We can now pass its path or other details to the service
-    return this.opportunitiesService.addProposalDocument(id, file.path);
+    const normalizedPath = file.path.replace(/\\/g, '/');
+    return this.opportunitiesService.addProposalDocument(id, normalizedPath);
   }
 
   @Get(':id/proposal/download')
@@ -100,7 +101,8 @@ export class OpportunitiesController {
     @Res() res: Response,
   ) {
     const filePath = await this.opportunitiesService.getProposalDocumentPath(id);
-    const absolutePath = join(process.cwd(), filePath);
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    const absolutePath = join(process.cwd(), normalizedPath);
     return res.sendFile(absolutePath);
   }
 
