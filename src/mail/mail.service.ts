@@ -44,8 +44,9 @@ export class MailService {
       month: 'long',
       day: 'numeric',
     });
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
 
-    const htmlContent = this.generateHtmlTemplate(username, todayStr, reminders, activities);
+    const htmlContent = this.generateHtmlTemplate(username, todayStr, reminders, activities, frontendUrl);
 
     try {
       await this.transporter.sendMail({
@@ -62,6 +63,94 @@ export class MailService {
   }
 
   /**
+   * Envía un correo con el enlace para restablecer la contraseña.
+   */
+  async sendResetPasswordEmail(email: string, token: string): Promise<void> {
+    const from = this.configService.get<string>('SMTP_FROM') || '"Friday" <noreply@tibs.com.mx>';
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
+    const resetUrl = `${frontendUrl}/reset-password?token=${token}`;
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Restablecer Contraseña - Friday</title>
+        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+        <style>
+          body {
+            font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f1f5f9;
+            margin: 0;
+            padding: 0;
+            -webkit-font-smoothing: antialiased;
+          }
+        </style>
+      </head>
+      <body style="background-color: #f8fafc; font-family: 'Outfit', 'Inter', sans-serif; padding: 40px 0; margin: 0; width: 100%;">
+        <table align="center" border="0" cellpadding="0" cellspacing="0" width="550" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin: 0 auto;">
+          <!-- HEADER -->
+          <tr>
+            <td align="center" style="background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); padding: 36px 30px; text-align: center;">
+              <span style="color: #6366f1; font-weight: 700; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; display: block; margin-bottom: 8px;">Friday</span>
+              <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">Restablecer tu Contraseña</h1>
+            </td>
+          </tr>
+          <!-- CONTENT -->
+          <tr>
+            <td style="padding: 40px 30px; text-align: center;">
+              <div style="background-color: #f8fafc; border-radius: 12px; padding: 24px; margin-bottom: 24px; border: 1px solid #f1f5f9; text-align: left;">
+                <p style="color: #334155; font-size: 15px; margin: 0 0 12px 0; line-height: 1.5;">
+                  Hola,
+                </p>
+                <p style="color: #64748b; font-size: 14px; margin: 0 0 16px 0; line-height: 1.5;">
+                  Recibimos una solicitud para restablecer la contraseña de tu cuenta en **Friday**. Para continuar con el proceso, haz clic en el siguiente botón:
+                </p>
+              </div>
+
+              <!-- CTA BUTTON -->
+              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-top: 10px; margin-bottom: 24px;">
+                <tr>
+                  <td align="center" style="background-color: #4f46e5; border-radius: 10px;">
+                    <a href="${resetUrl}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 14px; font-weight: 600; color: #ffffff; text-decoration: none; letter-spacing: 0.5px;">Restablecer mi contraseña</a>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="color: #94a3b8; font-size: 12px; margin: 24px 0 0 0; line-height: 1.5; text-align: center;">
+                Este enlace de recuperación es válido por <strong>1 hora</strong>.<br/>
+                Si tú no solicitaste este cambio, puedes ignorar este correo de forma segura.
+              </p>
+            </td>
+          </tr>
+          <!-- FOOTER -->
+          <tr>
+            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 30px; text-align: center;">
+              <p style="color: #94a3b8; font-size: 12px; margin: 0 0 6px 0;">Este correo ha sido generado automáticamente por el sistema Friday.</p>
+              <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; 2026 TIBS. Todos los derechos reservados.</p>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from,
+        to: email,
+        subject: '🔒 Restablecer Contraseña - Friday',
+        html: htmlContent,
+      });
+      this.logger.log(`Enlace de restablecimiento enviado con éxito a ${email}`);
+    } catch (error) {
+      this.logger.error(`Error al enviar correo de restablecimiento a ${email}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Genera el diseño HTML premium para el correo electrónico.
    */
   private generateHtmlTemplate(
@@ -69,6 +158,7 @@ export class MailService {
     dateStr: string,
     reminders: any[],
     activities: any[],
+    frontendUrl: string,
   ): string {
     // Renderizado de Recordatorios
     let remindersHtml = '';
@@ -194,6 +284,14 @@ export class MailService {
                 ${activitiesHtml}
               </div>
               
+              <!-- CTA BUTTON -->
+              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-top: 32px; margin-bottom: 16px; text-align: center; margin: 32px auto 16px auto;">
+                <tr>
+                  <td align="center" style="background-color: #4f46e5; border-radius: 10px;">
+                    <a href="${frontendUrl}/login" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 14px; font-weight: 600; color: #ffffff; text-decoration: none; letter-spacing: 0.5px;">Acceder a Friday</a>
+                  </td>
+                </tr>
+              </table>
              
             </td>
           </tr>

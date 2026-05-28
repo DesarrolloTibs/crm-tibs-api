@@ -89,4 +89,12 @@ export class UsersService implements OnModuleInit {
     user.profileImageUrl = imageUrl;
     return this.userRepository.save(user);
   }
+
+  async findOneByResetToken(token: string): Promise<User | null> {
+    return this.userRepository.findOne({ where: { resetPasswordToken: token } });
+  }
+
+  async save(user: User): Promise<User> {
+    return this.userRepository.save(user);
+  }
 }
