@@ -12,12 +12,16 @@ import { UsersModule } from './users/users.module';
 import { ActivitiesModule } from './Activities/activities.module';
 import { OpportunityTrackingsModule } from './opportunity-trackings/opportunity-trackings.module';
 import { ExpensesModule } from './expenses/expenses.module';
+import { ScheduleModule } from '@nestjs/schedule';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true, // Makes the ConfigService available throughout the app
     }),
+
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
@@ -41,6 +45,7 @@ import { ExpensesModule } from './expenses/expenses.module';
     ActivitiesModule,
     OpportunityTrackingsModule,
     ExpensesModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
