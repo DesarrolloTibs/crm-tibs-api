@@ -3,7 +3,10 @@ import { AuthGuard } from '@nestjs/passport';
 import { RemindersService } from './reminders.service';
 import { CreateReminderDto } from './dto/create-reminder.dto';
 import { UpdateReminderDto } from './dto/update-reminder.dto';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 
+@ApiTags('reminders')
+@ApiBearerAuth()
 @Controller('reminders')
 @UseGuards(AuthGuard('jwt'))
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))

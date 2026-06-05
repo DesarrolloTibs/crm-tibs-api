@@ -23,9 +23,26 @@ async function bootstrap() {
     .setTitle('CRM API')
     .setDescription('The API for the TIBS CRM application')
     .setVersion('1.0')
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        in: 'header',
+      },
+      'bearer',
+    )
     .build();
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('swagger', app, document);
+  // Aplicar el esquema de seguridad globalmente para que todos los endpoints
+  // muestren el candado y puedan usar la autorización ingresada en Swagger
+  document.security = [{ bearer: [] }];
+
+  SwaggerModule.setup('swagger', app, document, {
+    swaggerOptions: {
+      persistAuthorization: true,
+    },
+  });
 
   await app.listen(process.env.PORT ?? 3000);
 }
