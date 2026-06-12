@@ -37,7 +37,13 @@ import { User } from 'src/users/entities/user.entity';
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
 @Controller('activities')
 export class ActivitiesController {
-  constructor(private readonly activitiesService: ActivitiesService) {}
+  constructor(private readonly activitiesService: ActivitiesService) { }
+
+
+  @Get('types')
+  async getTypes() {
+    return this.activitiesService.findAllTypes();
+  }
 
   @Post()
   @ApiOperation({ summary: 'Crear una nueva actividad' })

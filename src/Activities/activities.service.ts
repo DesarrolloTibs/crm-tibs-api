@@ -12,6 +12,7 @@ import { Role } from 'role.enum';
 import { UsersService } from 'src/users/users.service';
 import { Activity } from './entities/activity.entity';
 import { CreateActivityDto } from './dto/create-activity.dto';
+import { TypeActivity } from './entities/type-activity.entity';
 import { InteractionsService } from 'src/interactions/interactions.service';
 import { UpdateActivityDto } from './dto/update-activity.dto';
 
@@ -22,9 +23,15 @@ export class ActivitiesService {
   constructor(
     @InjectRepository(Activity)
     private readonly activityRepository: Repository<Activity>,
+    @InjectRepository(TypeActivity)
+    private readonly typeActivityRepository: Repository<TypeActivity>,
     private readonly usersService: UsersService,
     private readonly interactionsService: InteractionsService,
-  ) {}
+  ) { }
+
+  async findAllTypes(): Promise<TypeActivity[]> {
+    return this.typeActivityRepository.find(); // Hace un SELECT * FROM tbltypeactivities;
+  }
 
   async create(
     createActivityDto: CreateActivityDto,
@@ -148,7 +155,7 @@ export class ActivitiesService {
       id,
       ...updateActivityDto,
     });
- // Si preload devuelve undefined, es que no encontró el ID.
+    // Si preload devuelve undefined, es que no encontró el ID.
     if (!activityToUpdate) {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada para actualizar.`);
     }
@@ -184,9 +191,9 @@ export class ActivitiesService {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada.`);
     }
 
-   /* if (fullCurrentUser.role !== Role.Admin && activity.userId !== currentUserId) {
-      throw new ForbiddenException('No tienes permiso para eliminar esta actividad.');
-    }*/
+    /* if (fullCurrentUser.role !== Role.Admin && activity.userId !== currentUserId) {
+       throw new ForbiddenException('No tienes permiso para eliminar esta actividad.');
+     }*/
     const result = await this.activityRepository.delete(id);
     if (result.affected === 0) {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada.`);

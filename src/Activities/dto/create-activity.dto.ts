@@ -1,7 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
-  IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -9,8 +8,8 @@ import {
   ValidateIf,
   MaxLength,
   IsBoolean,
+  IsInt,
 } from 'class-validator';
-import { ActivityType } from '../entities/activity.entity';
 
 export class CreateActivityDto {
   @ApiProperty({ description: 'Fecha de la actividad' })
@@ -24,57 +23,34 @@ export class CreateActivityDto {
   @MaxLength(80)
   activity: string;
 
-  @ApiProperty({ description: 'Tipo de actividad', enum: ActivityType })
-  @IsEnum(ActivityType)
+  @ApiProperty({ description: 'ID del tipo de actividad' })
+  @IsInt()
   @IsNotEmpty()
-  activityType: ActivityType;
+  typeActivityId: number;
 
-    @ApiPropertyOptional({
+  @ApiPropertyOptional({
+    description: 'ID de la oportunidad asociada (opcional)',
+    format: 'uuid',
+  })
+  // Solo valida como UUID si el valor no es un string vacío.
+  @ValidateIf((object, value) => value !== null && value !== '')
+  @IsUUID()
+  @IsOptional()
+  opportunityId?: string | null;
 
-      description: 'ID de la oportunidad asociada (opcional)',
+  @ApiPropertyOptional({
+    description: 'ID del cliente asociado (opcional)',
+    format: 'uuid',
+  })
+  @ValidateIf((object, value) => value !== null && value !== '')
+  @IsUUID()
+  @IsOptional()
+  clientId?: string | null;
 
-      format: 'uuid',
-
-    })
-
-    // Solo valida como UUID si el valor no es un string vacío.
-
-    @ValidateIf((object, value) => value !== null && value !== '')
-
-    @IsUUID()
-
-    @IsOptional()
-
-    opportunityId?: string | null;
-
-  
-
-    @ApiPropertyOptional({
-
-      description: 'ID del cliente asociado (opcional)',
-
-      format: 'uuid',
-
-    })
-
-    @ValidateIf((object, value) => value !== null && value !== '')
-
-    @IsUUID()
-
-    @IsOptional()
-
-    clientId?: string | null;
-
-  
-
-    @ApiPropertyOptional({ description: 'Indicador de historial (opcional)' })
-
-    @IsBoolean()
-
-    @IsOptional()
-
-    flaghistory?: boolean;
-
-  }
+  @ApiPropertyOptional({ description: 'Indicador de historial (opcional)' })
+  @IsBoolean()
+  @IsOptional()
+  flaghistory?: boolean;
+}
 
   

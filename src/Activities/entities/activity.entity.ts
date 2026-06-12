@@ -8,31 +8,25 @@ import {
 import { User } from '../../users/entities/user.entity';
 import { Opportunity } from '../../opportunities/entities/opportunity.entity';
 import { Client } from 'src/clients/entities/client.entity';
-
-export enum ActivityType {
-  CORREO = 'Correo',
-  PRESENTACION_SERVICIOS_PRESENCIAL = 'Presentación Servicios Presencial',
-  PRESENTACION_SERVICIOS_EN_LINEA = 'Presentación Servicios En Línea',
-  EVENTO = 'Evento',
-  SEGUIMIENTO_OPORTUNIDAD = 'Seguimiento Oportunidad Línea',
-  LLAMADA = 'Llamada',
-  SEGUIMIENTO_OPORTUNIDAD_PRESENCIAL = 'Seguimiento Oportunidad Presencial',
-  OTROS = 'Otros',
-}
+import { TypeActivity } from './type-activity.entity';
 
 @Entity('activities')
 export class Activity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-   @Column({ type: 'timestamp' })
+  @Column({ type: 'timestamp' })
   date: Date;
 
   @Column({ type: 'varchar', length: 80 })
   activity: string;
 
-  @Column({ type: 'enum', enum: ActivityType, nullable: true })
-  activityType: ActivityType;
+  @Column({ type: 'int', nullable: true })
+  typeActivityId: number | null;
+
+  @ManyToOne(() => TypeActivity, { nullable: true, onDelete: 'SET NULL', eager: true })
+  @JoinColumn({ name: 'typeActivityId' })
+  typeActivity: TypeActivity;
 
   @Column({ type: 'uuid', nullable: true })
   opportunityId: string | null;
