@@ -7,9 +7,11 @@ import { UsersModule } from 'src/users/users.module';
 import { Activity } from './entities/activity.entity';
 import { InteractionsModule } from 'src/interactions/interactions.module';
 import { TypeActivity } from './entities/type-activity.entity';
+import { Client } from '../clients/entities/client.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Activity, TypeActivity]), UsersModule, InteractionsModule],
+  imports: [TypeOrmModule.forFeature([Activity, TypeActivity, Client]), UsersModule, InteractionsModule],
+
   controllers: [ActivitiesController],
   providers: [ActivitiesService],
 })

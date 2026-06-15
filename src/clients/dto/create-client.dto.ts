@@ -18,10 +18,16 @@ export class CreateClientDto {
   @IsNotEmpty()
   correo: string;
 
-  @ApiProperty({ description: 'Empresa del cliente' })
+  @ApiPropertyOptional({ description: 'Empresa del cliente' })
   @IsString()
-  @IsNotEmpty()
-  empresa: string;
+  @IsOptional()
+  empresa?: string;
+
+  @ApiPropertyOptional({ description: 'ID de la empresa asociada' })
+  @IsUUID()
+  @IsOptional()
+  companyId?: string;
+
 
   @ApiPropertyOptional({ description: 'Puesto del cliente' })
   @IsString()

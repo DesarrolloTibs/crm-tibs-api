@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { extname } from 'path';
 
 import { Opportunity } from './entities/opportunity.entity';
+import { Client } from '../clients/entities/client.entity';
 import { OpportunitiesService } from './opportunities.service';
 import { OpportunitiesController } from './opportunities.controller';
 import { UsersModule } from 'src/users/users.module';
@@ -14,10 +15,11 @@ import { ClientsModule } from 'src/clients/clients.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity]),
+    TypeOrmModule.forFeature([Opportunity, Client]),
     UsersModule,
     OpportunityTrackingsModule,
     ClientsModule,
+
     MulterModule.register({
       storage: diskStorage({
         destination: (req, file, cb) => {

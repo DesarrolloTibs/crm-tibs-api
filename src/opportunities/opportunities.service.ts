@@ -10,27 +10,44 @@ import { User } from 'src/users/entities/user.entity';
 import { Role } from 'role.enum';
 import { OpportunityTrackingsService } from 'src/opportunity-trackings/opportunity-trackings.service';
 import { ClientsService } from 'src/clients/clients.service';
-import { ClientCategory } from 'src/clients/entities/client.entity';
+import { Client, ClientCategory } from 'src/clients/entities/client.entity';
+
 
 @Injectable()
 export class OpportunitiesService {
   constructor(
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
+    @InjectRepository(Client)
+    private readonly clientRepository: Repository<Client>,
     private readonly usersService: UsersService,
     private readonly opportunityTrackingsService: OpportunityTrackingsService,
     private readonly clientsService: ClientsService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
-    const total = (createOpportunityDto.monto_licenciamiento || 0) + (createOpportunityDto.monto_servicios || 0);
-    const opportunityData = { ...createOpportunityDto, monto_total: total };
+    const { contactIds, ...dtoWithoutContacts } = createOpportunityDto;
+    const total = (dtoWithoutContacts.monto_licenciamiento || 0) + (dtoWithoutContacts.monto_servicios || 0);
+    const opportunityData = { ...dtoWithoutContacts, monto_total: total };
 
     // Si la moneda no es USD, nos aseguramos de que tipoCambio sea nulo.
     if (opportunityData.moneda !== 'USD') {
       opportunityData.tipoCambio = 0;
     }
     const opportunity = this.opportunityRepository.create(opportunityData);
+
+    // Si hay ids de contacto, los cargamos.
+    if (contactIds && contactIds.length > 0) {
+      opportunity.contacts = await this.clientRepository.find({
+        where: contactIds.map(id => ({ id }))
+      });
+    } else if (opportunityData.cliente_id) {
+      // Fallback para cliente_id (contacto individual)
+      opportunity.contacts = await this.clientRepository.find({
+        where: { id: opportunityData.cliente_id }
+      });
+    }
+
     const savedOpportunity = await this.opportunityRepository.save(opportunity);
 
     // Create the initial tracking record
@@ -41,13 +58,23 @@ export class OpportunitiesService {
     });
 
     if (savedOpportunity.etapa === OpportunityStage.GANADA) {
-      await this.clientsService.update(savedOpportunity.cliente_id, {
-        category: ClientCategory.CLIENTE,
-      });
+      if (savedOpportunity.cliente_id) {
+        await this.clientsService.update(savedOpportunity.cliente_id, {
+          category: ClientCategory.CLIENTE,
+        });
+      }
+      if (savedOpportunity.contacts && savedOpportunity.contacts.length > 0) {
+        for (const contact of savedOpportunity.contacts) {
+          await this.clientsService.update(contact.id, {
+            category: ClientCategory.CLIENTE,
+          });
+        }
+      }
     }
 
     return savedOpportunity;
   }
+
 
   findAll(
     etapa?: OpportunityStage,
@@ -65,6 +92,8 @@ export class OpportunitiesService {
 
     qb.leftJoinAndSelect('opportunity.cliente', 'cliente')
       .leftJoinAndSelect('opportunity.ejecutivo', 'ejecutivo')
+      .leftJoinAndSelect('opportunity.company', 'company')
+      .leftJoinAndSelect('opportunity.contacts', 'contacts')
       .where('opportunity.archived = :showArchived', { showArchived });
 
     if (etapa) {
@@ -95,7 +124,7 @@ export class OpportunitiesService {
 
     // 2. Cargamos la entidad completa del usuario para obtener su rol.
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
-console.log('Full Current User:', fullCurrentUser); // Debug log
+    console.log('Full Current User:', fullCurrentUser); // Debug log
     const where: FindOptionsWhere<Opportunity> = {};
 
     // 3. Usamos la información completa y fiable para la lógica de autorización.
@@ -104,14 +133,17 @@ console.log('Full Current User:', fullCurrentUser); // Debug log
     }
 
     const findOptions: FindManyOptions<Opportunity> = {
-      relations: ['cliente', 'ejecutivo'],
+      relations: ['cliente', 'ejecutivo', 'company', 'contacts'],
       where,
     };
     return this.opportunityRepository.find(findOptions);
   }
 
   async findOne(id: string): Promise<Opportunity> {
-    const opportunity = await this.opportunityRepository.findOne({ where: { id }, relations: ['cliente', 'ejecutivo'] });
+    const opportunity = await this.opportunityRepository.findOne({
+      where: { id },
+      relations: ['cliente', 'ejecutivo', 'company', 'contacts'],
+    });
     if (!opportunity) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
     }
@@ -126,9 +158,11 @@ console.log('Full Current User:', fullCurrentUser); // Debug log
 
     const originalStage = existingOpportunity.etapa;
 
+    const { contactIds, ...dtoWithoutContacts } = updateOpportunityDto;
+
     const opportunity = await this.opportunityRepository.preload({
       id: id,
-      ...updateOpportunityDto,
+      ...dtoWithoutContacts,
     });
 
     if (!opportunity) {
@@ -140,6 +174,16 @@ console.log('Full Current User:', fullCurrentUser); // Debug log
 
     if (opportunity.moneda !== 'USD') {
       opportunity.tipoCambio = 0;
+    }
+
+    if (contactIds !== undefined) {
+      if (contactIds.length > 0) {
+        opportunity.contacts = await this.clientRepository.find({
+          where: contactIds.map(id => ({ id }))
+        });
+      } else {
+        opportunity.contacts = [];
+      }
     }
     
     const savedOpportunity = await this.opportunityRepository.save(opportunity);
@@ -153,10 +197,20 @@ console.log('Full Current User:', fullCurrentUser); // Debug log
     }
 
     if (savedOpportunity.etapa === OpportunityStage.GANADA) {
-      await this.clientsService.update(savedOpportunity.cliente_id, {
-        category: ClientCategory.CLIENTE,
-      });
+      if (savedOpportunity.cliente_id) {
+        await this.clientsService.update(savedOpportunity.cliente_id, {
+          category: ClientCategory.CLIENTE,
+        });
+      }
+      if (savedOpportunity.contacts && savedOpportunity.contacts.length > 0) {
+        for (const contact of savedOpportunity.contacts) {
+          await this.clientsService.update(contact.id, {
+            category: ClientCategory.CLIENTE,
+          });
+        }
+      }
     }
+
 
     return savedOpportunity;
   }

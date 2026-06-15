@@ -9,7 +9,9 @@ import {
   MaxLength,
   IsBoolean,
   IsInt,
+  IsArray,
 } from 'class-validator';
+
 
 export class CreateActivityDto {
   @ApiProperty({ description: 'Fecha de la actividad' })
@@ -47,10 +49,29 @@ export class CreateActivityDto {
   @IsOptional()
   clientId?: string | null;
 
+  @ApiPropertyOptional({
+    description: 'ID de la empresa asociada (opcional)',
+    format: 'uuid',
+  })
+  @ValidateIf((object, value) => value !== null && value !== '')
+  @IsUUID()
+  @IsOptional()
+  companyId?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'IDs de contactos asociados (opcional)',
+    type: [String],
+  })
+  @IsArray()
+  @IsUUID(undefined, { each: true })
+  @IsOptional()
+  contactIds?: string[];
+
   @ApiPropertyOptional({ description: 'Indicador de historial (opcional)' })
   @IsBoolean()
   @IsOptional()
   flaghistory?: boolean;
 }
+
 
   

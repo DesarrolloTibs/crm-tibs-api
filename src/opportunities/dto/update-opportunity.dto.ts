@@ -1,4 +1,4 @@
-import { IsString, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString } from 'class-validator';
+import { IsString, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray } from 'class-validator';
 import { OpportunityStage, Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
 
 export class UpdateOpportunityDto {
@@ -20,7 +20,17 @@ export class UpdateOpportunityDto {
 
   @IsUUID()
   @IsOptional()
+  companyId?: string;
+
+  @IsArray()
+  @IsUUID(undefined, { each: true })
+  @IsOptional()
+  contactIds?: string[];
+
+  @IsUUID()
+  @IsOptional()
   ejecutivo_id?: string;
+
 
   @IsEnum(OpportunityStage)
   @IsOptional()

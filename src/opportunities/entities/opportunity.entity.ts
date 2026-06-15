@@ -1,9 +1,11 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMany, CreateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMany, CreateDateColumn, ManyToMany, JoinTable } from 'typeorm';
 import { Client } from '../../clients/entities/client.entity';
 import { Interaction } from '../../interactions/entities/interaction.entity';
 import { Reminder } from '../../reminders/entities/reminder.entity';
 import { User } from '../../users/entities/user.entity';
 import { OpportunityTracking } from '../../opportunity-trackings/entities/opportunity-tracking.entity';
+import { Company } from '../../companies/entities/company.entity';
+
 
 export enum OpportunityStage {
   NUEVO = 'Nuevo',
@@ -55,15 +57,31 @@ export class Opportunity {
   @Column({ type: 'varchar', length: 1000, nullable: true })
   description: string;
 
-  @Column({ type: 'uuid' })
-  cliente_id: string;
+  @Column({ type: 'uuid', nullable: true })
+  cliente_id: string | null;
 
-  @ManyToOne(() => Client, { eager: true }) // eager load client details
+  @ManyToOne(() => Client, { eager: true, nullable: true }) // eager load client details
   @JoinColumn({ name: 'cliente_id' })
-  cliente: Client;
+  cliente: Client | null;
 
-  @Column({ type: 'varchar', length: 255 })
-  empresa: string;
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  empresa: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  companyId: string | null;
+
+  @ManyToOne(() => Company, { nullable: true, eager: true })
+  @JoinColumn({ name: 'companyId' })
+  company: Company | null;
+
+  @ManyToMany(() => Client, { cascade: true, eager: true })
+  @JoinTable({
+    name: 'opportunity_contacts',
+    joinColumn: { name: 'opportunitiesId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'clientsId', referencedColumnName: 'id' }
+  })
+  contacts: Client[];
+
 
   @Column({ type: 'uuid', nullable: true }) // Assuming ejecutivo_id is a user ID
   ejecutivo_id: string;

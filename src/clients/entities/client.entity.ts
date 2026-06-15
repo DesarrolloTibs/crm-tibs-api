@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
+import { Company } from '../../companies/entities/company.entity';
 
 export enum ClientCategory {
   CONTACTO = 'Contacto',
@@ -21,8 +22,8 @@ export class Client {
   @Column({ type: 'varchar', length: 255, unique: true })
   correo: string;
 
-  @Column({ type: 'varchar', length: 255 })
-  empresa: string;
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  empresa: string | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   puesto: string;
@@ -46,4 +47,12 @@ export class Client {
   @ManyToOne(() => User)
   @JoinColumn({ name: 'ejecutivo_id' })
   ejecutivo: User;
+
+  @Column({ type: 'uuid', nullable: true })
+  companyId: string | null;
+
+  @ManyToOne(() => Company, (company) => company.contacts, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'companyId' })
+  company: Company | null;
 }
+

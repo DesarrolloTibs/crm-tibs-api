@@ -1,4 +1,5 @@
-import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString } from 'class-validator';
+import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray } from 'class-validator';
+
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { OpportunityStage, Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
 
@@ -13,15 +14,27 @@ export class CreateOpportunityDto {
   @IsOptional()
   description?: string;
 
-  @ApiProperty({ description: 'ID del cliente', format: 'uuid' })
+  @ApiPropertyOptional({ description: 'ID del cliente', format: 'uuid' })
   @IsUUID()
-  @IsNotEmpty()
-  cliente_id: string;
+  @IsOptional()
+  cliente_id?: string;
 
-  @ApiProperty({ description: 'Empresa asociada al proyecto' })
+  @ApiPropertyOptional({ description: 'Empresa asociada al proyecto (texto libre)' })
   @IsString()
-  @IsNotEmpty()
-  empresa: string;
+  @IsOptional()
+  empresa?: string;
+
+  @ApiPropertyOptional({ description: 'ID de la empresa asociada', format: 'uuid' })
+  @IsUUID()
+  @IsOptional()
+  companyId?: string;
+
+  @ApiPropertyOptional({ description: 'Arreglo de IDs de contactos asociados', type: [String] })
+  @IsArray()
+  @IsUUID(undefined, { each: true })
+  @IsOptional()
+  contactIds?: string[];
+
 
   @ApiPropertyOptional({ description: 'ID del ejecutivo asignado', format: 'uuid' })
   @IsUUID()

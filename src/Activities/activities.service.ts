@@ -15,6 +15,7 @@ import { CreateActivityDto } from './dto/create-activity.dto';
 import { TypeActivity } from './entities/type-activity.entity';
 import { InteractionsService } from 'src/interactions/interactions.service';
 import { UpdateActivityDto } from './dto/update-activity.dto';
+import { Client } from 'src/clients/entities/client.entity';
 
 @Injectable()
 export class ActivitiesService {
@@ -25,9 +26,12 @@ export class ActivitiesService {
     private readonly activityRepository: Repository<Activity>,
     @InjectRepository(TypeActivity)
     private readonly typeActivityRepository: Repository<TypeActivity>,
+    @InjectRepository(Client)
+    private readonly clientRepository: Repository<Client>,
     private readonly usersService: UsersService,
     private readonly interactionsService: InteractionsService,
   ) { }
+
 
   async findAllTypes(): Promise<TypeActivity[]> {
     return this.typeActivityRepository.find(); // Hace un SELECT * FROM tbltypeactivities;
@@ -39,7 +43,6 @@ export class ActivitiesService {
   ): Promise<Activity> {
     this.logger.log(`Attempting to create activity. User object received: ${JSON.stringify(user)}`);
 
-    // El payload del token puede venir con 'id' o 'userId'. Validamos y usamos el que exista.
     const userId = user.id || (user as any).userId;
 
     if (!user || !userId) {
@@ -49,20 +52,34 @@ export class ActivitiesService {
       );
     }
 
-    // Si opportunityId es un string vacío, lo convertimos a null
-    // para que la base de datos lo acepte en la columna UUID nullable.
-    if (createActivityDto.opportunityId === '') {
-      createActivityDto.opportunityId = null;
+    const { contactIds, ...dtoWithoutContacts } = createActivityDto;
+
+    if (dtoWithoutContacts.opportunityId === '') {
+      dtoWithoutContacts.opportunityId = null;
     }
 
-    if (createActivityDto.clientId === '') {
-      createActivityDto.clientId = null;
+    if (dtoWithoutContacts.clientId === '') {
+      dtoWithoutContacts.clientId = null;
+    }
+
+    if (dtoWithoutContacts.companyId === '') {
+      dtoWithoutContacts.companyId = null;
     }
 
     const activity = this.activityRepository.create({
-      ...createActivityDto,
+      ...dtoWithoutContacts,
       user: { id: userId } as User,
     });
+
+    if (contactIds && contactIds.length > 0) {
+      activity.contacts = await this.clientRepository.find({
+        where: contactIds.map(id => ({ id }))
+      });
+    } else if (dtoWithoutContacts.clientId) {
+      activity.contacts = await this.clientRepository.find({
+        where: { id: dtoWithoutContacts.clientId }
+      });
+    }
 
     const savedActivity = await this.activityRepository.save(activity);
 
@@ -84,22 +101,19 @@ export class ActivitiesService {
     userId?: string,
     opportunityId?: string,
   ): Promise<Activity[]> {
-    // El payload del token puede venir con 'id' o 'userId'. Obtenemos el ID correcto.
     const currentUserId = currentUser.id || (currentUser as any).userId;
     if (!currentUserId) {
       throw new InternalServerErrorException('No se pudo identificar al usuario actual.');
     }
 
-    // Carga la entidad completa del usuario actual para asegurar que los roles son correctos.
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
 
     const options: FindManyOptions<Activity> = {
       where: {},
-      relations: ['user', 'opportunity'],
+      relations: ['user', 'opportunity', 'client', 'company', 'contacts'],
       order: { date: 'DESC' },
     };
 
-    // Construcción de la cláusula 'where' de forma segura y aditiva.
     let whereClause: any = {};
 
     if (fullCurrentUser.role !== Role.Admin) {
@@ -134,14 +148,10 @@ export class ActivitiesService {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada.`);
     }
 
-    // Verificación de autorización con datos fiables
     if (fullCurrentUser.role !== Role.Admin && originalActivity.userId !== currentUserId) {
       throw new ForbiddenException('No tienes permiso para editar esta actividad.');
     }
 
-    // Si opportunityId se envía como un string vacío, lo convertimos a null
-    // para que la base de datos lo acepte.
-    // Es importante verificar que la propiedad exista en el DTO.
     if (updateActivityDto.opportunityId === '') {
       updateActivityDto.opportunityId = null;
     }
@@ -150,16 +160,30 @@ export class ActivitiesService {
       updateActivityDto.clientId = null;
     }
 
-    // Preload fusiona la entidad existente con los nuevos datos del DTO
+    if (updateActivityDto.companyId === '') {
+      updateActivityDto.companyId = null;
+    }
+
+    const { contactIds, ...dtoWithoutContacts } = updateActivityDto;
+
     const activityToUpdate = await this.activityRepository.preload({
       id,
-      ...updateActivityDto,
+      ...dtoWithoutContacts,
     });
-    // Si preload devuelve undefined, es que no encontró el ID.
     if (!activityToUpdate) {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada para actualizar.`);
     }
-    // Guardamos la entidad actualizada y la retornamos
+
+    if (contactIds !== undefined) {
+      if (contactIds.length > 0) {
+        activityToUpdate.contacts = await this.clientRepository.find({
+          where: contactIds.map(id => ({ id }))
+        });
+      } else {
+        activityToUpdate.contacts = [];
+      }
+    }
+
     const savedActivity = await this.activityRepository.save(activityToUpdate);
 
     if (
@@ -172,6 +196,7 @@ export class ActivitiesService {
         comment: savedActivity.activity,
       });
     }
+
 
     return savedActivity;
   }
