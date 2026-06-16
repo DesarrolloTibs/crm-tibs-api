@@ -5,19 +5,8 @@ import { Reminder } from '../../reminders/entities/reminder.entity';
 import { User } from '../../users/entities/user.entity';
 import { OpportunityTracking } from '../../opportunity-trackings/entities/opportunity-tracking.entity';
 import { Company } from '../../companies/entities/company.entity';
-
-
-export enum OpportunityStage {
-  NUEVO = 'Nuevo',
-  DESCUBRIMIENTO = 'Descubrimiento',
-  ESTIMACION = 'Estimación',
-  PROPUESTA = 'Propuesta',
-  NEGOCIACION = 'Negociación',
-  GANADA = 'Ganada',
-  PERDIDA = 'Perdida',
-  CANCELADA = 'Cancelada',
-  STANDBY = 'Standby',
-}
+import { Pipeline } from '../../pipelines/entities/pipeline.entity';
+import { Stage } from '../../stages/entities/stage.entity';
 
 export enum Currency {
   USD = 'USD',
@@ -90,8 +79,19 @@ export class Opportunity {
   @JoinColumn({ name: 'ejecutivo_id' })
   ejecutivo: User;
 
-  @Column({ type: 'enum', enum: OpportunityStage, default: OpportunityStage.NUEVO })
-  etapa: OpportunityStage;
+  @Column({ type: 'uuid', nullable: false })
+  pipeline_id: string;
+
+  @ManyToOne(() => Pipeline)
+  @JoinColumn({ name: 'pipeline_id' })
+  pipeline: Pipeline;
+
+  @Column({ type: 'uuid', nullable: false })
+  stage_id: string;
+
+  @ManyToOne(() => Stage, { eager: true })
+  @JoinColumn({ name: 'stage_id' })
+  stage: Stage;
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   monto_licenciamiento: number;

@@ -1,14 +1,14 @@
 
-import { IsUUID, IsEnum } from 'class-validator';
-import { OpportunityStage } from '../../opportunities/entities/opportunity.entity';
+import { IsUUID } from 'class-validator';
 
 export class CreateOpportunityTrackingDto {
   @IsUUID()
   opportunity_id: string;
 
-  @IsEnum(OpportunityStage)
-  stage: OpportunityStage;
+  @IsUUID()
+  stage_id: string;
 
   @IsUUID()
   changed_by_id: string;
 }
+

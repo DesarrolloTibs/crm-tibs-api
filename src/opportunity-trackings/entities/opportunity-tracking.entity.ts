@@ -1,7 +1,8 @@
 
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn } from 'typeorm';
-import { Opportunity, OpportunityStage } from '../../opportunities/entities/opportunity.entity';
+import { Opportunity } from '../../opportunities/entities/opportunity.entity';
 import { User } from '../../users/entities/user.entity';
+import { Stage } from '../../stages/entities/stage.entity';
 
 @Entity('opportunity_trackings')
 export class OpportunityTracking {
@@ -15,8 +16,12 @@ export class OpportunityTracking {
   @Column({ type: 'uuid' })
   opportunity_id: string;
 
-  @Column({ type: 'enum', enum: OpportunityStage })
-  stage: OpportunityStage;
+  @Column({ type: 'uuid' })
+  stage_id: string;
+
+  @ManyToOne(() => Stage)
+  @JoinColumn({ name: 'stage_id' })
+  stage: Stage;
 
   @CreateDateColumn({ type: 'timestamp' })
   changedAt: Date;
@@ -28,3 +33,4 @@ export class OpportunityTracking {
   @Column({ type: 'uuid' })
   changed_by_id: string;
 }
+

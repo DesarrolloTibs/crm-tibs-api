@@ -1,7 +1,7 @@
 import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray } from 'class-validator';
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { OpportunityStage, Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
+import { Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
 
 export class CreateOpportunityDto {
   @ApiProperty({ description: 'Nombre del proyecto' })
@@ -41,10 +41,15 @@ export class CreateOpportunityDto {
   @IsOptional()
   ejecutivo_id?: string;
 
-  @ApiPropertyOptional({ description: 'Etapa de la oportunidad', enum: OpportunityStage })
-  @IsEnum(OpportunityStage)
+  @ApiPropertyOptional({ description: 'ID de la etapa de la oportunidad', format: 'uuid' })
+  @IsUUID()
   @IsOptional()
-  etapa?: OpportunityStage;
+  stage_id?: string;
+
+  @ApiPropertyOptional({ description: 'ID del pipeline de la oportunidad', format: 'uuid' })
+  @IsUUID()
+  @IsOptional()
+  pipeline_id?: string;
 
   @ApiPropertyOptional({ description: 'Monto de licenciamiento', minimum: 0, type: Number })
   @IsNumber()

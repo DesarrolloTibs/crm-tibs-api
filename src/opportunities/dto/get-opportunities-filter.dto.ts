@@ -1,14 +1,14 @@
-import { IsOptional, IsEnum, IsBoolean } from 'class-validator';
-import { OpportunityStage } from '../entities/opportunity.entity';
+import { IsOptional, IsBoolean, IsUUID } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class GetOpportunitiesFilterDto {
   @IsOptional()
-  @IsEnum(OpportunityStage)
-  etapa?: OpportunityStage;
+  @IsUUID()
+  stage_id?: string;
 
   @IsOptional()
   @Transform(({ value }) => value === 'true')
   @IsBoolean()
   showArchived?: boolean;
 }
+

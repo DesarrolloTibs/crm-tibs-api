@@ -10,7 +10,6 @@ import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { GetOpportunitiesFilterDto } from './dto/get-opportunities-filter.dto';
-import { OpportunityStage } from './entities/opportunity.entity';
 import { User } from 'src/users/entities/user.entity';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 
@@ -33,8 +32,8 @@ export class OpportunitiesController {
   findAll(
     @Query() filterDto: GetOpportunitiesFilterDto,
   ) {
-    const { etapa, showArchived } = filterDto;
-    return this.opportunitiesService.findAll(etapa, showArchived);
+    const { stage_id, showArchived } = filterDto;
+    return this.opportunitiesService.findAll(stage_id, showArchived);
   }
 
   @Get('all')
@@ -44,7 +43,6 @@ export class OpportunitiesController {
     if (!user) {
       throw new InternalServerErrorException('No se pudo obtener la información del usuario.');
     }
-    console.log('Current User:', user); // Debug log
     return this.opportunitiesService.findAllUnfiltered(user);
   }
 
@@ -61,7 +59,6 @@ export class OpportunitiesController {
     @Body() updateOpportunityDto: UpdateOpportunityDto,
   ) {
 
-    console.log('Update DTO:', updateOpportunityDto); // Debug log  
     return this.opportunitiesService.update(id, updateOpportunityDto);
   }
 

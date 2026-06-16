@@ -1,5 +1,5 @@
-import { IsString, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray } from 'class-validator';
-import { OpportunityStage, Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
+import { IsString, IsUUID, IsNumber, Min, IsOptional, IsDateString, IsArray, IsEnum } from 'class-validator';
+import { Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
 
 export class UpdateOpportunityDto {
   @IsString()
@@ -31,10 +31,13 @@ export class UpdateOpportunityDto {
   @IsOptional()
   ejecutivo_id?: string;
 
-
-  @IsEnum(OpportunityStage)
+  @IsUUID()
   @IsOptional()
-  etapa?: OpportunityStage;
+  stage_id?: string;
+
+  @IsUUID()
+  @IsOptional()
+  pipeline_id?: string;
 
   @IsNumber()
   @Min(0)

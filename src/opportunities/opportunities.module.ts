@@ -7,6 +7,8 @@ import { extname } from 'path';
 
 import { Opportunity } from './entities/opportunity.entity';
 import { Client } from '../clients/entities/client.entity';
+import { Pipeline } from '../pipelines/entities/pipeline.entity';
+import { Stage } from '../stages/entities/stage.entity';
 import { OpportunitiesService } from './opportunities.service';
 import { OpportunitiesController } from './opportunities.controller';
 import { UsersModule } from 'src/users/users.module';
@@ -15,7 +17,7 @@ import { ClientsModule } from 'src/clients/clients.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, Client]),
+    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage]),
     UsersModule,
     OpportunityTrackingsModule,
     ClientsModule,

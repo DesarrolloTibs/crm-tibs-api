@@ -1,7 +1,7 @@
-import { Injectable, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, NotFoundException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindManyOptions, Repository, FindOptionsWhere, IsNull, Between, MoreThanOrEqual, LessThanOrEqual, Brackets } from 'typeorm';
-import { Opportunity, OpportunityStage } from './entities/opportunity.entity';
+import { FindManyOptions, Repository, FindOptionsWhere, Brackets } from 'typeorm';
+import { Opportunity } from './entities/opportunity.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
@@ -11,7 +11,8 @@ import { Role } from 'role.enum';
 import { OpportunityTrackingsService } from 'src/opportunity-trackings/opportunity-trackings.service';
 import { ClientsService } from 'src/clients/clients.service';
 import { Client, ClientCategory } from 'src/clients/entities/client.entity';
-
+import { Pipeline } from '../pipelines/entities/pipeline.entity';
+import { Stage } from '../stages/entities/stage.entity';
 
 @Injectable()
 export class OpportunitiesService {
@@ -20,6 +21,10 @@ export class OpportunitiesService {
     private readonly opportunityRepository: Repository<Opportunity>,
     @InjectRepository(Client)
     private readonly clientRepository: Repository<Client>,
+    @InjectRepository(Pipeline)
+    private readonly pipelineRepository: Repository<Pipeline>,
+    @InjectRepository(Stage)
+    private readonly stageRepository: Repository<Stage>,
     private readonly usersService: UsersService,
     private readonly opportunityTrackingsService: OpportunityTrackingsService,
     private readonly clientsService: ClientsService,
@@ -28,13 +33,46 @@ export class OpportunitiesService {
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
     const { contactIds, ...dtoWithoutContacts } = createOpportunityDto;
     const total = (dtoWithoutContacts.monto_licenciamiento || 0) + (dtoWithoutContacts.monto_servicios || 0);
-    const opportunityData = { ...dtoWithoutContacts, monto_total: total };
+    const opportunityData = { ...dtoWithoutContacts, monto_total: total } as any;
 
     // Si la moneda no es USD, nos aseguramos de que tipoCambio sea nulo.
     if (opportunityData.moneda !== 'USD') {
       opportunityData.tipoCambio = 0;
     }
-    const opportunity = this.opportunityRepository.create(opportunityData);
+
+    // Resolver pipeline por defecto si no se proporciona
+    if (!opportunityData.pipeline_id) {
+      const mainPipeline = await this.pipelineRepository.findOne({
+        where: {},
+        order: { dtmcreated: 'ASC' },
+      });
+      if (!mainPipeline) {
+        throw new InternalServerErrorException('El Pipeline Principal no existe en la base de datos.');
+      }
+      opportunityData.pipeline_id = mainPipeline.id;
+    }
+
+    // Resolver etapa por defecto (etapa inicial) si no se proporciona
+    if (!opportunityData.stage_id) {
+      const initialStage = await this.stageRepository.findOne({
+        where: { pipeline_id: opportunityData.pipeline_id, blninitial: true, blnstatus: true }
+      });
+      if (!initialStage) {
+        throw new InternalServerErrorException('No se configuró una etapa inicial activa para este pipeline.');
+      }
+      opportunityData.stage_id = initialStage.id;
+    }
+
+    // Validar que la etapa exista y pertenezca al pipeline
+    const selectedStage = await this.stageRepository.findOne({ where: { id: opportunityData.stage_id } });
+    if (!selectedStage) {
+      throw new NotFoundException(`La etapa con ID "${opportunityData.stage_id}" no existe.`);
+    }
+    if (selectedStage.pipeline_id !== opportunityData.pipeline_id) {
+      throw new BadRequestException('La etapa seleccionada no pertenece al pipeline de la oportunidad.');
+    }
+
+    const opportunity = this.opportunityRepository.create(opportunityData as any) as unknown as Opportunity;
 
     // Si hay ids de contacto, los cargamos.
     if (contactIds && contactIds.length > 0) {
@@ -48,16 +86,16 @@ export class OpportunitiesService {
       });
     }
 
-    const savedOpportunity = await this.opportunityRepository.save(opportunity);
+    const savedOpportunity: Opportunity = await this.opportunityRepository.save(opportunity);
 
     // Create the initial tracking record
     await this.opportunityTrackingsService.create({
       opportunity_id: savedOpportunity.id,
-      stage: savedOpportunity.etapa,
-      changed_by_id: savedOpportunity.ejecutivo_id, // Assuming the creator is the executive
+      stage_id: savedOpportunity.stage_id,
+      changed_by_id: savedOpportunity.ejecutivo_id,
     });
 
-    if (savedOpportunity.etapa === OpportunityStage.GANADA) {
+    if (selectedStage.strname === 'Ganada') {
       if (savedOpportunity.cliente_id) {
         await this.clientsService.update(savedOpportunity.cliente_id, {
           category: ClientCategory.CLIENTE,
@@ -72,21 +110,16 @@ export class OpportunitiesService {
       }
     }
 
-    return savedOpportunity;
+    // Cargar la relación stage completa antes de retornar
+    return this.findOne(savedOpportunity.id);
   }
 
-
   findAll(
-    etapa?: OpportunityStage,
+    stage_id?: string,
     showArchived = false,
   ): Promise<Opportunity[]> {
     const currentYear = new Date().getFullYear();
-    const excludedStages = [
-      OpportunityStage.GANADA,
-      OpportunityStage.PERDIDA,
-      OpportunityStage.CANCELADA,
-      OpportunityStage.STANDBY,
-    ];
+    const excludedStageNames = ['Ganada', 'Perdida', 'Cancelada', 'Standby'];
 
     const qb = this.opportunityRepository.createQueryBuilder('opportunity');
 
@@ -94,19 +127,20 @@ export class OpportunitiesService {
       .leftJoinAndSelect('opportunity.ejecutivo', 'ejecutivo')
       .leftJoinAndSelect('opportunity.company', 'company')
       .leftJoinAndSelect('opportunity.contacts', 'contacts')
+      .leftJoinAndSelect('opportunity.stage', 'stage')
       .where('opportunity.archived = :showArchived', { showArchived });
 
-    if (etapa) {
-      qb.andWhere('opportunity.etapa = :etapa', { etapa });
+    if (stage_id) {
+      qb.andWhere('opportunity.stage_id = :stage_id', { stage_id });
     } else {
       qb.andWhere(new Brackets(sqb => {
-          sqb.where('opportunity.etapa NOT IN (:...excludedStages)', { excludedStages })
+          sqb.where('stage.strname NOT IN (:...excludedStageNames)', { excludedStageNames })
              .orWhere(
                  `(
                      SELECT EXTRACT(YEAR FROM MAX(ot."changedAt"))
                      FROM opportunity_trackings ot
                      WHERE ot.opportunity_id = opportunity.id
-                     AND ot.stage::text = opportunity.etapa::text
+                     AND ot.stage_id = opportunity.stage_id
                  ) >= :currentYear`, { currentYear }
              );
       }));
@@ -116,24 +150,20 @@ export class OpportunitiesService {
   }
 
   async findAllUnfiltered(currentUser: User): Promise<Opportunity[]> {
-    // 1. Obtenemos el ID del usuario de forma segura desde el payload del token.
     const currentUserId = currentUser.id || (currentUser as any).userId;
     if (!currentUserId) {
       throw new InternalServerErrorException('No se pudo identificar al usuario actual.');
     }
 
-    // 2. Cargamos la entidad completa del usuario para obtener su rol.
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
-    console.log('Full Current User:', fullCurrentUser); // Debug log
     const where: FindOptionsWhere<Opportunity> = {};
 
-    // 3. Usamos la información completa y fiable para la lógica de autorización.
     if (fullCurrentUser.role !== Role.Admin) {
       where.ejecutivo_id = fullCurrentUser.id;
     }
 
     const findOptions: FindManyOptions<Opportunity> = {
-      relations: ['cliente', 'ejecutivo', 'company', 'contacts'],
+      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage'],
       where,
     };
     return this.opportunityRepository.find(findOptions);
@@ -142,7 +172,7 @@ export class OpportunitiesService {
   async findOne(id: string): Promise<Opportunity> {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
-      relations: ['cliente', 'ejecutivo', 'company', 'contacts'],
+      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage'],
     });
     if (!opportunity) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
@@ -156,8 +186,7 @@ export class OpportunitiesService {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
     }
 
-    const originalStage = existingOpportunity.etapa;
-
+    const originalStageId = existingOpportunity.stage_id;
     const { contactIds, ...dtoWithoutContacts } = updateOpportunityDto;
 
     const opportunity = await this.opportunityRepository.preload({
@@ -185,18 +214,30 @@ export class OpportunitiesService {
         opportunity.contacts = [];
       }
     }
+
+    // Validar etapa si se está actualizando
+    let selectedStage: Stage | null = existingOpportunity.stage;
+    if (updateOpportunityDto.stage_id && updateOpportunityDto.stage_id !== originalStageId) {
+      selectedStage = await this.stageRepository.findOne({ where: { id: updateOpportunityDto.stage_id } });
+      if (!selectedStage) {
+        throw new NotFoundException(`La etapa con ID "${updateOpportunityDto.stage_id}" no existe.`);
+      }
+      if (selectedStage.pipeline_id !== (opportunity.pipeline_id || existingOpportunity.pipeline_id)) {
+        throw new BadRequestException('La etapa seleccionada no pertenece al pipeline de la oportunidad.');
+      }
+    }
     
     const savedOpportunity = await this.opportunityRepository.save(opportunity);
 
-    if (updateOpportunityDto.etapa && updateOpportunityDto.etapa !== originalStage) {
+    if (updateOpportunityDto.stage_id && updateOpportunityDto.stage_id !== originalStageId) {
       await this.opportunityTrackingsService.create({
         opportunity_id: savedOpportunity.id,
-        stage: savedOpportunity.etapa,
-        changed_by_id: savedOpportunity.ejecutivo_id, // Assuming the updater is the executive
+        stage_id: savedOpportunity.stage_id,
+        changed_by_id: savedOpportunity.ejecutivo_id,
       });
     }
 
-    if (savedOpportunity.etapa === OpportunityStage.GANADA) {
+    if (selectedStage && selectedStage.strname === 'Ganada') {
       if (savedOpportunity.cliente_id) {
         await this.clientsService.update(savedOpportunity.cliente_id, {
           category: ClientCategory.CLIENTE,
@@ -211,8 +252,7 @@ export class OpportunitiesService {
       }
     }
 
-
-    return savedOpportunity;
+    return this.findOne(savedOpportunity.id);
   }
 
   async remove(id: string): Promise<void> {
@@ -242,3 +282,4 @@ export class OpportunitiesService {
     return opportunity.proposalDocumentPath;
   }
 }
+

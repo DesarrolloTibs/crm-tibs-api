@@ -15,6 +15,7 @@ import { ExpensesModule } from './expenses/expenses.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { NotificationsModule } from './notifications/notifications.module';
 import { CompaniesModule } from './companies/companies.module';
+import { PipelinesModule } from './pipelines/pipelines.module';
 import { DataSource } from 'typeorm';
 
 
@@ -50,6 +51,7 @@ import { DataSource } from 'typeorm';
     ExpensesModule,
     NotificationsModule,
     CompaniesModule,
+    PipelinesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
