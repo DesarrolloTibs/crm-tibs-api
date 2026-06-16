@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
   Logger,
   InternalServerErrorException,
 } from '@nestjs/common';
@@ -15,6 +16,8 @@ import { CreateActivityDto } from './dto/create-activity.dto';
 import { TypeActivity } from './entities/type-activity.entity';
 import { InteractionsService } from 'src/interactions/interactions.service';
 import { UpdateActivityDto } from './dto/update-activity.dto';
+import { CreateTypeActivityDto } from './dto/create-type-activity.dto';
+import { UpdateTypeActivityDto } from './dto/update-type-activity.dto';
 import { Client } from 'src/clients/entities/client.entity';
 
 @Injectable()
@@ -33,8 +36,108 @@ export class ActivitiesService {
   ) { }
 
 
+  private fillDeletedType(activity: Activity): Activity {
+    if (activity && !activity.typeActivity) {
+      activity.typeActivity = {
+        id: null as any,
+        strname: 'Tipo de actividad eliminada',
+        blnstatus: false,
+      } as TypeActivity;
+    }
+    return activity;
+  }
+
   async findAllTypes(): Promise<TypeActivity[]> {
-    return this.typeActivityRepository.find(); // Hace un SELECT * FROM tbltypeactivities;
+    return this.typeActivityRepository.find({ order: { strname: 'ASC' } });
+  }
+
+  async createType(
+    createTypeActivityDto: CreateTypeActivityDto,
+    user: User,
+  ): Promise<TypeActivity> {
+    const currentUserId = user.id || (user as any).userId;
+    if (!currentUserId) {
+      throw new InternalServerErrorException('No se pudo identificar al usuario.');
+    }
+    const fullCurrentUser = await this.usersService.findOneById(currentUserId);
+    if (fullCurrentUser.role !== Role.Admin) {
+      throw new ForbiddenException('Solo los administradores pueden crear tipos de actividad.');
+    }
+
+    if (createTypeActivityDto.strname.trim().toLowerCase() === 'tipo de actividad eliminada') {
+      throw new BadRequestException('No se puede crear un tipo de actividad con el nombre reservado.');
+    }
+
+    const typeActivity = this.typeActivityRepository.create({
+      strname: createTypeActivityDto.strname,
+      blnstatus: createTypeActivityDto.blnstatus ?? true,
+    });
+    return this.typeActivityRepository.save(typeActivity);
+  }
+
+  async updateType(
+    id: number,
+    updateTypeActivityDto: UpdateTypeActivityDto,
+    user: User,
+  ): Promise<TypeActivity> {
+    const currentUserId = user.id || (user as any).userId;
+    if (!currentUserId) {
+      throw new InternalServerErrorException('No se pudo identificar al usuario.');
+    }
+    const fullCurrentUser = await this.usersService.findOneById(currentUserId);
+    if (fullCurrentUser.role !== Role.Admin) {
+      throw new ForbiddenException('Solo los administradores pueden actualizar tipos de actividad.');
+    }
+
+    const originalType = await this.typeActivityRepository.findOne({ where: { id } });
+    if (!originalType) {
+      throw new NotFoundException(`Tipo de actividad con ID "${id}" no encontrado.`);
+    }
+
+    if (originalType.strname.toLowerCase() === 'tipo de actividad eliminada') {
+      throw new ForbiddenException('No se puede modificar el tipo de actividad predeterminado.');
+    }
+
+    if (
+      updateTypeActivityDto.strname &&
+      updateTypeActivityDto.strname.trim().toLowerCase() === 'tipo de actividad eliminada'
+    ) {
+      throw new BadRequestException('No se puede usar el nombre reservado.');
+    }
+
+    const typeActivity = await this.typeActivityRepository.preload({
+      id,
+      ...updateTypeActivityDto,
+    });
+    if (!typeActivity) {
+      throw new NotFoundException(`Tipo de actividad con ID "${id}" no encontrado para actualizar.`);
+    }
+    return this.typeActivityRepository.save(typeActivity);
+  }
+
+  async removeType(id: number, user: User): Promise<void> {
+    const currentUserId = user.id || (user as any).userId;
+    if (!currentUserId) {
+      throw new InternalServerErrorException('No se pudo identificar al usuario.');
+    }
+    const fullCurrentUser = await this.usersService.findOneById(currentUserId);
+    if (fullCurrentUser.role !== Role.Admin) {
+      throw new ForbiddenException('Solo los administradores pueden eliminar tipos de actividad.');
+    }
+
+    const typeToDelete = await this.typeActivityRepository.findOne({ where: { id } });
+    if (!typeToDelete) {
+      throw new NotFoundException(`Tipo de actividad con ID "${id}" no encontrado.`);
+    }
+
+    if (typeToDelete.strname.toLowerCase() === 'tipo de actividad eliminada') {
+      throw new ForbiddenException('No se puede eliminar el tipo de actividad predeterminado.');
+    }
+
+    const result = await this.typeActivityRepository.delete(id);
+    if (result.affected === 0) {
+      throw new NotFoundException(`Tipo de actividad con ID "${id}" no encontrado.`);
+    }
   }
 
   async create(
@@ -93,7 +196,11 @@ export class ActivitiesService {
         comment: savedActivity.activity,
       });
     }
-    return savedActivity;
+    const result = await this.activityRepository.findOne({
+      where: { id: savedActivity.id },
+      relations: ['user', 'opportunity', 'client', 'company', 'contacts'],
+    });
+    return this.fillDeletedType(result!);
   }
 
   async findAll(
@@ -126,7 +233,8 @@ export class ActivitiesService {
       whereClause.opportunityId = opportunityId;
     }
     options.where = whereClause;
-    return this.activityRepository.find(options);
+    const activities = await this.activityRepository.find(options);
+    return activities.map(act => this.fillDeletedType(act));
   }
 
   async update(
@@ -196,9 +304,11 @@ export class ActivitiesService {
         comment: savedActivity.activity,
       });
     }
-
-
-    return savedActivity;
+    const result = await this.activityRepository.findOne({
+      where: { id: savedActivity.id },
+      relations: ['user', 'opportunity', 'client', 'company', 'contacts'],
+    });
+    return this.fillDeletedType(result!);
   }
 
   async remove(id: string, user: User): Promise<void> {

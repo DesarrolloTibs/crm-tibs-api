@@ -27,6 +27,8 @@ import { AuthGuard } from '@nestjs/passport';
 import { ActivitiesService } from './activities.service';
 import { CreateActivityDto } from './dto/create-activity.dto';
 import { UpdateActivityDto } from './dto/update-activity.dto';
+import { CreateTypeActivityDto } from './dto/create-type-activity.dto';
+import { UpdateTypeActivityDto } from './dto/update-type-activity.dto';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { Activity } from './entities/activity.entity';
 import { User } from 'src/users/entities/user.entity';
@@ -43,6 +45,33 @@ export class ActivitiesController {
   @Get('types')
   async getTypes() {
     return this.activitiesService.findAllTypes();
+  }
+
+  @Post('types')
+  @ApiOperation({ summary: 'Crear un nuevo tipo de actividad (solo Admin)' })
+  @ApiBody({ type: CreateTypeActivityDto })
+  async createType(@Body() createTypeActivityDto: CreateTypeActivityDto, @GetUser() user: User) {
+    return this.activitiesService.createType(createTypeActivityDto, user);
+  }
+
+  @Patch('types/:id')
+  @ApiOperation({ summary: 'Actualizar un tipo de actividad (solo Admin)' })
+  @ApiParam({ name: 'id', type: Number, description: 'ID del tipo de actividad' })
+  @ApiBody({ type: UpdateTypeActivityDto })
+  async updateType(
+    @Param('id') id: string,
+    @Body() updateTypeActivityDto: UpdateTypeActivityDto,
+    @GetUser() user: User,
+  ) {
+    return this.activitiesService.updateType(Number(id), updateTypeActivityDto, user);
+  }
+
+  @Delete('types/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Eliminar un tipo de actividad (solo Admin)' })
+  @ApiParam({ name: 'id', type: Number, description: 'ID del tipo de actividad' })
+  async removeType(@Param('id') id: string, @GetUser() user: User) {
+    return this.activitiesService.removeType(Number(id), user);
   }
 
   @Post()
