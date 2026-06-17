@@ -10,7 +10,7 @@ import { OpportunityTracking } from '../../opportunity-trackings/entities/opport
 
 
 import { Exclude } from 'class-transformer';
-import { Role } from 'role.enum';
+import { Role } from '../../role.enum';
 
 @Entity('users')
 export class User {

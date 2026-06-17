@@ -10,7 +10,7 @@ import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { UsersService } from 'src/users/users.service';
 import { User } from 'src/users/entities/user.entity';
-import { Role } from 'role.enum';
+import { Role } from '../role.enum';
 import { OpportunityTrackingsService } from 'src/opportunity-trackings/opportunity-trackings.service';
 import { ClientsService } from 'src/clients/clients.service';
 import { Client, ClientCategory } from 'src/clients/entities/client.entity';
@@ -37,6 +37,7 @@ export class OpportunitiesService {
 
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
     const { contactIds, ...dtoWithoutContacts } = createOpportunityDto;
+    delete (dtoWithoutContacts as any).stage_entered_at;
     const total = (dtoWithoutContacts.monto_licenciamiento || 0) + (dtoWithoutContacts.monto_servicios || 0);
     const opportunityData = { ...dtoWithoutContacts, monto_total: total } as any;
 
@@ -77,7 +78,10 @@ export class OpportunitiesService {
       throw new BadRequestException('La etapa seleccionada no pertenece al pipeline de la oportunidad.');
     }
 
-    const opportunity = this.opportunityRepository.create(opportunityData as any) as unknown as Opportunity;
+    const opportunity = this.opportunityRepository.create({
+      ...opportunityData,
+      stage_entered_at: new Date(),
+    } as any) as unknown as Opportunity;
 
     // Si hay ids de contacto, los cargamos.
     if (contactIds && contactIds.length > 0) {
@@ -193,6 +197,7 @@ export class OpportunitiesService {
 
     const originalStageId = existingOpportunity.stage_id;
     const { contactIds, ...dtoWithoutContacts } = updateOpportunityDto;
+    delete (dtoWithoutContacts as any).stage_entered_at;
 
     const opportunity = await this.opportunityRepository.preload({
       id: id,
@@ -230,6 +235,7 @@ export class OpportunitiesService {
       if (selectedStage.pipeline_id !== (opportunity.pipeline_id || existingOpportunity.pipeline_id)) {
         throw new BadRequestException('La etapa seleccionada no pertenece al pipeline de la oportunidad.');
       }
+      opportunity.stage_entered_at = new Date();
     }
     
     const savedOpportunity = await this.opportunityRepository.save(opportunity);

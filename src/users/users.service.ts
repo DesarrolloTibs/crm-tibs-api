@@ -7,7 +7,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 
 
 import { UpdateUserDto, UpdateUserStatusDto } from './dto/update-user.dto';
-import { Role } from 'role.enum';
+import { Role } from '../role.enum';
 
 @Injectable()
 export class UsersService implements OnModuleInit {

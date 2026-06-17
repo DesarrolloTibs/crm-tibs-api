@@ -9,7 +9,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, FindManyOptions } from 'typeorm';
 import { User } from 'src/users/entities/user.entity';
-import { Role } from 'role.enum';
+import { Role } from '../role.enum';
 import { UsersService } from 'src/users/users.service';
 import { Activity } from './entities/activity.entity';
 import { CreateActivityDto } from './dto/create-activity.dto';
