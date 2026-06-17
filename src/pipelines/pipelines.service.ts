@@ -47,6 +47,7 @@ export class PipelinesService {
         display_order: number;
         strcolor?: string | null;
         blninitial: boolean;
+        intmaxdays?: number | null;
       }>;
     }
   ): Promise<Pipeline> {
@@ -112,6 +113,7 @@ export class PipelinesService {
           stage.display_order = stageInput.display_order;
           stage.strcolor = stageInput.strcolor || null;
           stage.blninitial = stageInput.blninitial;
+          stage.intmaxdays = stageInput.intmaxdays ?? null;
           stage.dtmlastmodified = new Date();
 
           await manager.save(Stage, stage);

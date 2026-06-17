@@ -8,7 +8,7 @@ import { Expense } from './entities/expense.entity';
 import { Client } from '../clients/entities/client.entity';
 import { Opportunity } from '../opportunities/entities/opportunity.entity';
 import { User } from '../users/entities/user.entity';
-import { Role } from '../../role.enum';
+import { Role } from '../role.enum';
 import { UsersService } from '../users/users.service';
 
 @Injectable()

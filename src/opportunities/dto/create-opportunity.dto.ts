@@ -9,10 +9,10 @@ export class CreateOpportunityDto {
   @IsNotEmpty()
   nombre_proyecto: string;
 
-  @ApiPropertyOptional({ description: 'Descripción de la oportunidad' })
+  @ApiProperty({ description: 'Descripción de la oportunidad' })
   @IsString()
-  @IsOptional()
-  description?: string;
+  @IsNotEmpty()
+  description: string;
 
   @ApiPropertyOptional({ description: 'ID del cliente', format: 'uuid' })
   @IsUUID()
@@ -103,4 +103,9 @@ export class CreateOpportunityDto {
   @IsDateString()
   @IsOptional()
   estimated_closure_date?: Date;
+
+  @ApiPropertyOptional({ description: 'Fecha en que ingresó a la etapa actual' })
+  @IsDateString()
+  @IsOptional()
+  stage_entered_at?: Date;
 }

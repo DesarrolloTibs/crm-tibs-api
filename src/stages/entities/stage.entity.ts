@@ -29,6 +29,9 @@ export class Stage {
   @Column({ type: 'boolean', default: false, nullable: false })
   blninitial: boolean;
 
+  @Column({ type: 'integer', nullable: true, name: 'intmaxdays' })
+  intmaxdays: number | null;
+
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   dtmcreated: Date;
 
