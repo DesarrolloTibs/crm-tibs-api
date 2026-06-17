@@ -7,6 +7,7 @@ import { OpportunityTracking } from '../../opportunity-trackings/entities/opport
 import { Company } from '../../companies/entities/company.entity';
 import { Pipeline } from '../../pipelines/entities/pipeline.entity';
 import { Stage } from '../../stages/entities/stage.entity';
+import { OpportunityFile } from './opportunity-file.entity';
 
 export enum Currency {
   USD = 'USD',
@@ -120,6 +121,9 @@ export class Opportunity {
 
   @Column({ type: 'varchar', length: 512, nullable: true, name: 'proposal_document_path' })
   proposalDocumentPath: string;
+
+  @OneToMany(() => OpportunityFile, (file) => file.opportunity, { eager: true })
+  files: OpportunityFile[];
 
   @OneToMany(() => Reminder, (reminder) => reminder.opportunity)
   reminders: Reminder[];

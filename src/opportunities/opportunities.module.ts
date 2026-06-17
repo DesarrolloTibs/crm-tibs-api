@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { extname } from 'path';
 
 import { Opportunity } from './entities/opportunity.entity';
+import { OpportunityFile } from './entities/opportunity-file.entity';
 import { Client } from '../clients/entities/client.entity';
 import { Pipeline } from '../pipelines/entities/pipeline.entity';
 import { Stage } from '../stages/entities/stage.entity';
@@ -17,7 +18,7 @@ import { ClientsModule } from 'src/clients/clients.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage]),
+    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage, OpportunityFile]),
     UsersModule,
     OpportunityTrackingsModule,
     ClientsModule,
@@ -36,7 +37,8 @@ import { ClientsModule } from 'src/clients/clients.module';
         filename: (req, file, cb) => {
           // Decodificar el nombre del archivo para manejar correctamente caracteres especiales (acentos, ñ, etc.)
           const decodedName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-          cb(null, decodedName);
+          const uniqueName = `${Date.now()}-${decodedName}`;
+          cb(null, uniqueName);
         },
       }),
     }),

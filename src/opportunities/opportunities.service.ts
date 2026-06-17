@@ -2,6 +2,9 @@ import { Injectable, NotFoundException, InternalServerErrorException, BadRequest
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindManyOptions, Repository, FindOptionsWhere, Brackets } from 'typeorm';
 import { Opportunity } from './entities/opportunity.entity';
+import { OpportunityFile } from './entities/opportunity-file.entity';
+import { existsSync, unlinkSync } from 'fs';
+import { join } from 'path';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
@@ -19,6 +22,8 @@ export class OpportunitiesService {
   constructor(
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
+    @InjectRepository(OpportunityFile)
+    private readonly opportunityFileRepository: Repository<OpportunityFile>,
     @InjectRepository(Client)
     private readonly clientRepository: Repository<Client>,
     @InjectRepository(Pipeline)
@@ -268,24 +273,58 @@ export class OpportunitiesService {
     }
   }
 
-  async addProposalDocument(id: string, filePath: string): Promise<Opportunity> {
-    const opportunity = await this.findOne(id);
-    opportunity.proposalDocumentPath = filePath;
-    return this.opportunityRepository.save(opportunity);
+  async addOpportunityFile(
+    opportunityId: string,
+    fileName: string,
+    filePath: string,
+    title?: string,
+    date?: string,
+  ): Promise<Opportunity> {
+    const opportunity = await this.findOne(opportunityId);
+    
+    const opportunityFile = this.opportunityFileRepository.create({
+      opportunityId,
+      fileName,
+      filePath,
+      title: title || null,
+      date: date ? new Date(date) : null,
+    });
+
+    await this.opportunityFileRepository.save(opportunityFile);
+    return this.findOne(opportunityId);
+  }
+
+  async getOpportunityFile(opportunityId: string, fileId: string): Promise<OpportunityFile> {
+    const file = await this.opportunityFileRepository.findOne({
+      where: { id: fileId, opportunityId },
+    });
+    if (!file) {
+      throw new NotFoundException(`El archivo con ID "${fileId}" no fue encontrado para esta oportunidad.`);
+    }
+    return file;
+  }
+
+  async deleteOpportunityFile(opportunityId: string, fileId: string): Promise<Opportunity> {
+    const file = await this.getOpportunityFile(opportunityId, fileId);
+
+    // Eliminar archivo físico
+    const absolutePath = join(process.cwd(), file.filePath);
+    if (existsSync(absolutePath)) {
+      try {
+        unlinkSync(absolutePath);
+      } catch (err) {
+        console.error(`Error deleting physical file at ${absolutePath}:`, err);
+      }
+    }
+
+    await this.opportunityFileRepository.remove(file);
+    return this.findOne(opportunityId);
   }
 
   async archive(id: string, archiveOpportunityDto: ArchiveOpportunityDto): Promise<Opportunity> {
     const opportunity = await this.findOne(id);
     opportunity.archived = archiveOpportunityDto.archived;
     return this.opportunityRepository.save(opportunity);
-  }
-
-  async getProposalDocumentPath(id: string): Promise<string> {
-    const opportunity = await this.findOne(id);
-    if (!opportunity.proposalDocumentPath) {
-      throw new NotFoundException(`Proposal document not found for opportunity with ID "${id}"`);
-    }
-    return opportunity.proposalDocumentPath;
   }
 }
 
