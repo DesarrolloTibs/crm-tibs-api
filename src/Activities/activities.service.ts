@@ -19,6 +19,7 @@ import { UpdateActivityDto } from './dto/update-activity.dto';
 import { CreateTypeActivityDto } from './dto/create-type-activity.dto';
 import { UpdateTypeActivityDto } from './dto/update-type-activity.dto';
 import { Client } from 'src/clients/entities/client.entity';
+import { RemindersService } from 'src/reminders/reminders.service';
 
 @Injectable()
 export class ActivitiesService {
@@ -33,6 +34,7 @@ export class ActivitiesService {
     private readonly clientRepository: Repository<Client>,
     private readonly usersService: UsersService,
     private readonly interactionsService: InteractionsService,
+    private readonly remindersService: RemindersService,
   ) { }
 
 
@@ -196,10 +198,19 @@ export class ActivitiesService {
         comment: savedActivity.activity,
       });
     }
+
+    // Gestionar recordatorio
+    if (createActivityDto.reminder) {
+      await this.remindersService.upsertForActivity(savedActivity.id, createActivityDto.reminder);
+    }
+
     const result = await this.activityRepository.findOne({
       where: { id: savedActivity.id },
       relations: ['user', 'opportunity', 'client', 'company', 'contacts'],
     });
+    if (result) {
+      (result as any).reminder = await this.remindersService.findByActivity(savedActivity.id);
+    }
     return this.fillDeletedType(result!);
   }
 
@@ -234,7 +245,16 @@ export class ActivitiesService {
     }
     options.where = whereClause;
     const activities = await this.activityRepository.find(options);
-    return activities.map(act => this.fillDeletedType(act));
+
+    // Adjuntar reminder a cada actividad
+    const results = await Promise.all(
+      activities.map(async (act) => {
+        const filled = this.fillDeletedType(act);
+        (filled as any).reminder = await this.remindersService.findByActivity(act.id);
+        return filled;
+      })
+    );
+    return results;
   }
 
   async update(
@@ -304,10 +324,21 @@ export class ActivitiesService {
         comment: savedActivity.activity,
       });
     }
+
+    // Gestionar recordatorio
+    if (updateActivityDto.reminder) {
+      await this.remindersService.upsertForActivity(savedActivity.id, updateActivityDto.reminder);
+    } else if (updateActivityDto.reminder === null) {
+      await this.remindersService.deleteByActivity(savedActivity.id);
+    }
+
     const result = await this.activityRepository.findOne({
       where: { id: savedActivity.id },
       relations: ['user', 'opportunity', 'client', 'company', 'contacts'],
     });
+    if (result) {
+      (result as any).reminder = await this.remindersService.findByActivity(savedActivity.id);
+    }
     return this.fillDeletedType(result!);
   }
 

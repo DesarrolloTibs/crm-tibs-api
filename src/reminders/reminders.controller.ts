@@ -1,4 +1,16 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  ParseUUIDPipe,
+  UsePipes,
+  ValidationPipe,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { RemindersService } from './reminders.service';
 import { CreateReminderDto } from './dto/create-reminder.dto';
@@ -18,9 +30,9 @@ export class RemindersController {
     return this.remindersService.create(createReminderDto);
   }
 
-  @Get('opportunity/:opportunityId')
-  findAllByOpportunity(@Param('opportunityId', ParseUUIDPipe) opportunityId: string) {
-    return this.remindersService.findAllByOpportunity(opportunityId);
+  @Get('activity/:activityId')
+  findByActivity(@Param('activityId', ParseUUIDPipe) activityId: string) {
+    return this.remindersService.findByActivity(activityId);
   }
 
   @Get(':id')

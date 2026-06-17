@@ -8,5 +8,6 @@ import { Reminder } from './entities/reminder.entity';
   imports: [TypeOrmModule.forFeature([Reminder])],
   controllers: [RemindersController],
   providers: [RemindersService],
+  exports: [RemindersService],
 })
 export class RemindersModule {}

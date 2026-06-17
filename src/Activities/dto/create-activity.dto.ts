@@ -10,7 +10,10 @@ import {
   IsBoolean,
   IsInt,
   IsArray,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ActivityReminderDto } from './activity-reminder.dto';
 
 
 export class CreateActivityDto {
@@ -19,10 +22,9 @@ export class CreateActivityDto {
   @IsNotEmpty()
   date: string;
 
-  @ApiProperty({ description: 'Descripción de la actividad', maxLength: 80 })
+  @ApiProperty({ description: 'Descripción de la actividad' })
   @IsString()
   @IsNotEmpty()
-  @MaxLength(80)
   activity: string;
 
   @ApiProperty({ description: 'ID del tipo de actividad' })
@@ -71,6 +73,12 @@ export class CreateActivityDto {
   @IsBoolean()
   @IsOptional()
   flaghistory?: boolean;
+
+  @ApiPropertyOptional({ description: 'Recordatorio opcional para la actividad' })
+  @ValidateNested()
+  @Type(() => ActivityReminderDto)
+  @IsOptional()
+  reminder?: ActivityReminderDto;
 }
 
 

@@ -36,7 +36,7 @@ import { User } from 'src/users/entities/user.entity';
 @ApiTags('activities')
 @ApiBearerAuth()
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 @Controller('activities')
 export class ActivitiesController {
   constructor(private readonly activitiesService: ActivitiesService) { }
