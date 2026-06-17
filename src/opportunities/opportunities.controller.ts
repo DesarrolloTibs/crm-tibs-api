@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Query, UseGuards, ParseBoolPipe, Res, InternalServerErrorException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseUUIDPipe, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Query, UseGuards, ParseBoolPipe, Res, InternalServerErrorException, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 import type { Response } from 'express';
@@ -68,39 +68,56 @@ export class OpportunitiesController {
     return this.opportunitiesService.remove(id);
   }
 
-  @Post(':id/proposal')
-  @ApiOperation({ summary: 'Subir documento de propuesta (PDF/Doc) para una oportunidad' })
+  @Post(':id/files')
+  @ApiOperation({ summary: 'Subir archivo para una oportunidad' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
-    description: 'Archivo de la propuesta',
+    description: 'Archivo y metadatos',
     schema: {
       type: 'object',
       properties: {
         file: { type: 'string', format: 'binary' },
+        title: { type: 'string' },
+        date: { type: 'string', format: 'date' },
       },
     },
   })
   @UseInterceptors(FileInterceptor('file'))
-  uploadProposal(
+  async uploadFile(
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File,
+    @Body('title') title?: string,
+    @Body('date') date?: string,
   ) {
-    // The file object is available thanks to Multer
-    // We can now pass its path or other details to the service
+    if (!file) {
+      throw new BadRequestException('Se requiere un archivo.');
+    }
     const normalizedPath = file.path.replace(/\\/g, '/');
-    return this.opportunitiesService.addProposalDocument(id, normalizedPath);
+    const decodedFileName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    return this.opportunitiesService.addOpportunityFile(id, decodedFileName, normalizedPath, title, date);
   }
 
-  @Get(':id/proposal/download')
-  @ApiOperation({ summary: 'Descargar el documento de propuesta' })
-  async downloadProposal(
+  @Get(':id/files/:fileId/download')
+  @ApiOperation({ summary: 'Descargar un archivo de la oportunidad' })
+  async downloadFile(
     @Param('id', ParseUUIDPipe) id: string,
+    @Param('fileId', ParseUUIDPipe) fileId: string,
     @Res() res: Response,
   ) {
-    const filePath = await this.opportunitiesService.getProposalDocumentPath(id);
-    const normalizedPath = filePath.replace(/\\/g, '/');
+    const file = await this.opportunitiesService.getOpportunityFile(id, fileId);
+    const normalizedPath = file.filePath.replace(/\\/g, '/');
     const absolutePath = join(process.cwd(), normalizedPath);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.fileName)}"`);
     return res.sendFile(absolutePath);
+  }
+
+  @Delete(':id/files/:fileId')
+  @ApiOperation({ summary: 'Eliminar un archivo de la oportunidad' })
+  async deleteFile(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('fileId', ParseUUIDPipe) fileId: string,
+  ) {
+    return this.opportunitiesService.deleteOpportunityFile(id, fileId);
   }
 
   @Patch(':id/archive')
