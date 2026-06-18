@@ -7,6 +7,7 @@ import { Company } from '../../companies/entities/company.entity';
 import { Pipeline } from '../../pipelines/entities/pipeline.entity';
 import { Stage } from '../../stages/entities/stage.entity';
 import { OpportunityFile } from './opportunity-file.entity';
+import { Product } from '../../products/entities/product.entity';
 
 export enum Currency {
   USD = 'USD',
@@ -123,6 +124,14 @@ export class Opportunity {
 
   @OneToMany(() => OpportunityFile, (file) => file.opportunity, { eager: true })
   files: OpportunityFile[];
+
+  @ManyToMany(() => Product, { eager: true })
+  @JoinTable({
+    name: 'opportunity_products',
+    joinColumn: { name: 'opportunitiesId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'productsId', referencedColumnName: 'id' }
+  })
+  products: Product[];
 
   @Column({ type: 'boolean', default: false, name: 'archived' })
   archived: boolean;

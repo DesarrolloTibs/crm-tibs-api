@@ -102,5 +102,10 @@ export class UpdateOpportunityDto {
         @IsDateString()
         @IsOptional()
         stage_entered_at?: Date;
+
+        @IsArray()
+        @IsUUID(undefined, { each: true })
+        @IsOptional()
+        productIds?: string[];
 }
   

@@ -37,3 +37,40 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_reminders_activity_id
 
 -- Alterar columna activity de la tabla activities para no tener límite de caracteres (cambiar a text)
 ALTER TABLE activities ALTER COLUMN activity TYPE text;
+
+-- Catálogo de productos y vinculación con oportunidades
+CREATE TABLE IF NOT EXISTS products (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  nombre text NOT NULL,
+  descripcion text NULL,
+  "precioBase" numeric(10,2) NOT NULL DEFAULT 0.00,
+  status boolean NOT NULL DEFAULT true,
+  "imagenPortada" varchar(512) NULL,
+  "createdById" uuid NULL,
+  "createdAt" timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT pk_products PRIMARY KEY (id),
+  CONSTRAINT fk_products_created_by FOREIGN KEY ("createdById") REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS product_files (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  "fileName" varchar(255) NOT NULL,
+  "filePath" varchar(512) NOT NULL,
+  title varchar(255) NULL,
+  "productId" uuid NOT NULL,
+  "uploadedAt" timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT pk_product_files PRIMARY KEY (id),
+  CONSTRAINT fk_product_files_product FOREIGN KEY ("productId") REFERENCES products(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS opportunity_products (
+  "opportunitiesId" uuid NOT NULL,
+  "productsId" uuid NOT NULL,
+  CONSTRAINT pk_opportunity_products PRIMARY KEY ("opportunitiesId", "productsId"),
+  CONSTRAINT fk_opportunity_products_opportunity FOREIGN KEY ("opportunitiesId") REFERENCES opportunities(id) ON DELETE CASCADE,
+  CONSTRAINT fk_opportunity_products_product FOREIGN KEY ("productsId") REFERENCES products(id) ON DELETE CASCADE
+);
+
+-- Eliminar columna stock de la tabla products
+ALTER TABLE products DROP COLUMN IF EXISTS stock;
+
