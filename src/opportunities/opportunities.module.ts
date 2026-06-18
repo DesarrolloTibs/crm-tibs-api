@@ -13,13 +13,16 @@ import { Stage } from '../stages/entities/stage.entity';
 import { OpportunitiesService } from './opportunities.service';
 import { OpportunitiesController } from './opportunities.controller';
 import { Product } from '../products/entities/product.entity';
+import { OpportunityLabel } from './entities/opportunity-label.entity';
+import { OpportunityLabelsService } from './opportunity-labels.service';
+import { OpportunityLabelsController } from './opportunity-labels.controller';
 import { UsersModule } from 'src/users/users.module';
 import { OpportunityTrackingsModule } from 'src/opportunity-trackings/opportunity-trackings.module';
 import { ClientsModule } from 'src/clients/clients.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage, OpportunityFile, Product]),
+    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage, OpportunityFile, Product, OpportunityLabel]),
     UsersModule,
     OpportunityTrackingsModule,
     ClientsModule,
@@ -44,7 +47,7 @@ import { ClientsModule } from 'src/clients/clients.module';
       }),
     }),
   ],
-  controllers: [OpportunitiesController],
-  providers: [OpportunitiesService],
+  controllers: [OpportunitiesController, OpportunityLabelsController],
+  providers: [OpportunitiesService, OpportunityLabelsService],
 })
 export class OpportunitiesModule {}
