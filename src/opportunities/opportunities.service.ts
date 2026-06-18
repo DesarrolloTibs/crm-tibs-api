@@ -16,6 +16,7 @@ import { ClientsService } from 'src/clients/clients.service';
 import { Client, ClientCategory } from 'src/clients/entities/client.entity';
 import { Pipeline } from '../pipelines/entities/pipeline.entity';
 import { Stage } from '../stages/entities/stage.entity';
+import { Product } from '../products/entities/product.entity';
 
 @Injectable()
 export class OpportunitiesService {
@@ -30,15 +31,32 @@ export class OpportunitiesService {
     private readonly pipelineRepository: Repository<Pipeline>,
     @InjectRepository(Stage)
     private readonly stageRepository: Repository<Stage>,
+    @InjectRepository(Product)
+    private readonly productRepository: Repository<Product>,
     private readonly usersService: UsersService,
     private readonly opportunityTrackingsService: OpportunityTrackingsService,
     private readonly clientsService: ClientsService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
-    const { contactIds, ...dtoWithoutContacts } = createOpportunityDto;
+    const { contactIds, productIds, ...dtoWithoutContacts } = createOpportunityDto;
     delete (dtoWithoutContacts as any).stage_entered_at;
-    const total = (dtoWithoutContacts.monto_licenciamiento || 0) + (dtoWithoutContacts.monto_servicios || 0);
+
+    let productsPriceSum = 0;
+    let selectedProducts: Product[] = [];
+    if (productIds && productIds.length > 0) {
+      selectedProducts = await this.productRepository.find({
+        where: productIds.map(id => ({ id }))
+      });
+      productsPriceSum = selectedProducts.reduce((sum, p) => sum + (Number(p.precioBase) || 0), 0);
+    }
+
+    let convertedProductsPrice = productsPriceSum;
+    if (dtoWithoutContacts.moneda === 'USD' && dtoWithoutContacts.tipoCambio && Number(dtoWithoutContacts.tipoCambio) > 0) {
+      convertedProductsPrice = productsPriceSum / Number(dtoWithoutContacts.tipoCambio);
+    }
+
+    const total = (dtoWithoutContacts.monto_licenciamiento || 0) + (dtoWithoutContacts.monto_servicios || 0) + convertedProductsPrice;
     const opportunityData = { ...dtoWithoutContacts, monto_total: total } as any;
 
     // Si la moneda no es USD, nos aseguramos de que tipoCambio sea nulo.
@@ -81,6 +99,7 @@ export class OpportunitiesService {
     const opportunity = this.opportunityRepository.create({
       ...opportunityData,
       stage_entered_at: new Date(),
+      products: selectedProducts,
     } as any) as unknown as Opportunity;
 
     // Si hay ids de contacto, los cargamos.
@@ -137,6 +156,7 @@ export class OpportunitiesService {
       .leftJoinAndSelect('opportunity.company', 'company')
       .leftJoinAndSelect('opportunity.contacts', 'contacts')
       .leftJoinAndSelect('opportunity.stage', 'stage')
+      .leftJoinAndSelect('opportunity.products', 'products')
       .where('opportunity.archived = :showArchived', { showArchived });
 
     if (stage_id) {
@@ -172,7 +192,7 @@ export class OpportunitiesService {
     }
 
     const findOptions: FindManyOptions<Opportunity> = {
-      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage'],
+      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage', 'products'],
       where,
     };
     return this.opportunityRepository.find(findOptions);
@@ -181,7 +201,7 @@ export class OpportunitiesService {
   async findOne(id: string): Promise<Opportunity> {
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
-      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage'],
+      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage', 'products'],
     });
     if (!opportunity) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
@@ -196,7 +216,7 @@ export class OpportunitiesService {
     }
 
     const originalStageId = existingOpportunity.stage_id;
-    const { contactIds, ...dtoWithoutContacts } = updateOpportunityDto;
+    const { contactIds, productIds, ...dtoWithoutContacts } = updateOpportunityDto;
     delete (dtoWithoutContacts as any).stage_entered_at;
 
     const opportunity = await this.opportunityRepository.preload({
@@ -208,8 +228,31 @@ export class OpportunitiesService {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
     }
 
+    let productsPriceSum = 0;
+    if (productIds !== undefined) {
+      if (productIds.length > 0) {
+        const selectedProducts = await this.productRepository.find({
+          where: productIds.map(uid => ({ id: uid }))
+        });
+        opportunity.products = selectedProducts;
+        productsPriceSum = selectedProducts.reduce((sum, p) => sum + (Number(p.precioBase) || 0), 0);
+      } else {
+        opportunity.products = [];
+      }
+    } else {
+      productsPriceSum = (existingOpportunity.products || []).reduce((sum, p) => sum + (Number(p.precioBase) || 0), 0);
+    }
+
+    let convertedProductsPrice = productsPriceSum;
+    const currentMoneda = opportunity.moneda !== undefined ? opportunity.moneda : existingOpportunity.moneda;
+    const currentTipoCambio = opportunity.tipoCambio !== undefined ? opportunity.tipoCambio : existingOpportunity.tipoCambio;
+
+    if (currentMoneda === 'USD' && currentTipoCambio && Number(currentTipoCambio) > 0) {
+      convertedProductsPrice = productsPriceSum / Number(currentTipoCambio);
+    }
+
     // Recalculamos el monto total y aplicamos la lógica del tipo de cambio.
-    opportunity.monto_total = (opportunity.monto_licenciamiento ?? 0) + (opportunity.monto_servicios ?? 0);
+    opportunity.monto_total = (opportunity.monto_licenciamiento ?? existingOpportunity.monto_licenciamiento ?? 0) + (opportunity.monto_servicios ?? existingOpportunity.monto_servicios ?? 0) + convertedProductsPrice;
 
     if (opportunity.moneda !== 'USD') {
       opportunity.tipoCambio = 0;

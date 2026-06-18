@@ -22,7 +22,7 @@ export class Activity {
   @Column({ type: 'timestamp' })
   date: Date;
 
-  @Column({ type: 'varchar', length: 80 })
+  @Column({ type: 'text' })
   activity: string;
 
   @Column({ type: 'int', nullable: true })

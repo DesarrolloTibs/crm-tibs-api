@@ -108,4 +108,10 @@ export class CreateOpportunityDto {
   @IsDateString()
   @IsOptional()
   stage_entered_at?: Date;
+
+  @ApiPropertyOptional({ description: 'Arreglo de IDs de productos asociados', type: [String] })
+  @IsArray()
+  @IsUUID(undefined, { each: true })
+  @IsOptional()
+  productIds?: string[];
 }

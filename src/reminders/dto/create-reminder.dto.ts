@@ -1,10 +1,11 @@
-import { IsString, IsNotEmpty, IsUUID, IsDateString } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsString, IsNotEmpty, IsUUID, IsDateString, IsOptional, MaxLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateReminderDto {
-  @ApiProperty({ description: 'Título del recordatorio' })
+  @ApiProperty({ description: 'Título del recordatorio', maxLength: 100 })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   title: string;
 
   @ApiProperty({ description: 'Fecha del recordatorio', type: String, format: 'date-time' })
@@ -12,8 +13,8 @@ export class CreateReminderDto {
   @IsNotEmpty()
   date: string;
 
-  @ApiProperty({ description: 'ID de la oportunidad relacionada', format: 'uuid' })
+  @ApiPropertyOptional({ description: 'ID de la actividad relacionada', format: 'uuid' })
   @IsUUID()
-  @IsNotEmpty()
-  opportunity_id: string;
+  @IsOptional()
+  activityId?: string | null;
 }

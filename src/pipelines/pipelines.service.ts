@@ -111,9 +111,13 @@ export class PipelinesService {
           stage.strname = stageInput.strname.trim();
           stage.blnstatus = stageInput.blnstatus;
           stage.display_order = stageInput.display_order;
-          stage.strcolor = stageInput.strcolor || null;
+          if (stageInput.strcolor !== undefined) {
+            stage.strcolor = stageInput.strcolor || null;
+          }
           stage.blninitial = stageInput.blninitial;
-          stage.intmaxdays = stageInput.intmaxdays ?? null;
+          if (stageInput.intmaxdays !== undefined) {
+            stage.intmaxdays = stageInput.intmaxdays;
+          }
           stage.dtmlastmodified = new Date();
 
           await manager.save(Stage, stage);

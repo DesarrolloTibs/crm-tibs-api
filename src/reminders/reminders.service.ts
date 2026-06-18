@@ -17,11 +17,34 @@ export class RemindersService {
     return this.reminderRepository.save(reminder);
   }
 
-  findAllByOpportunity(opportunityId: string): Promise<Reminder[]> {
-    return this.reminderRepository.find({
-      where: { opportunity_id: opportunityId },
-      order: { date: 'ASC' },
+  async findByActivity(activityId: string): Promise<Reminder | null> {
+    return this.reminderRepository.findOne({ where: { activityId } });
+  }
+
+  async upsertForActivity(
+    activityId: string,
+    data: { title: string; date: string },
+  ): Promise<Reminder> {
+    const existing = await this.reminderRepository.findOne({
+      where: { activityId },
     });
+
+    if (existing) {
+      existing.title = data.title;
+      existing.date = new Date(data.date);
+      return this.reminderRepository.save(existing);
+    }
+
+    const reminder = this.reminderRepository.create({
+      title: data.title,
+      date: new Date(data.date),
+      activityId,
+    });
+    return this.reminderRepository.save(reminder);
+  }
+
+  async deleteByActivity(activityId: string): Promise<void> {
+    await this.reminderRepository.delete({ activityId });
   }
 
   async findOne(id: string): Promise<Reminder> {

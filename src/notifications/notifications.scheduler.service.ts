@@ -72,7 +72,7 @@ export class NotificationsSchedulerService {
       where: {
         date: Between(startOfDay, endOfDay),
       },
-      relations: ['opportunity', 'opportunity.ejecutivo', 'opportunity.cliente'],
+      relations: ['activity', 'activity.user'],
     });
     this.logger.log(`Encontrados ${reminders.length} recordatorios para hoy`);
 
@@ -89,22 +89,22 @@ export class NotificationsSchedulerService {
     // Key: userId, Value: { user: User, reminders: Reminder[], activities: Activity[] }
     const userMap = new Map<string, { user: User; reminders: Reminder[]; activities: Activity[] }>();
 
-    // Agrupar recordatorios
+    // Agrupar recordatorios por el usuario dueño de la actividad
     for (const reminder of reminders) {
-      const ejecutivo = reminder.opportunity?.ejecutivo;
-      if (!ejecutivo) {
-        this.logger.warn(`El recordatorio "${reminder.title}" (${reminder.id}) no tiene ejecutivo asignado en su oportunidad`);
+      const usuario = reminder.activity?.user;
+      if (!usuario) {
+        this.logger.warn(`El recordatorio "${reminder.title}" (${reminder.id}) no tiene actividad o usuario asignado`);
         continue;
       }
-      if (!ejecutivo.isActive) {
-        this.logger.debug(`Omitiendo recordatorio para el ejecutivo inactivo: ${ejecutivo.username}`);
+      if (!usuario.isActive) {
+        this.logger.debug(`Omitiendo recordatorio para el usuario inactivo: ${usuario.username}`);
         continue;
       }
 
-      if (!userMap.has(ejecutivo.id)) {
-        userMap.set(ejecutivo.id, { user: ejecutivo, reminders: [], activities: [] });
+      if (!userMap.has(usuario.id)) {
+        userMap.set(usuario.id, { user: usuario, reminders: [], activities: [] });
       }
-      const entry = userMap.get(ejecutivo.id);
+      const entry = userMap.get(usuario.id);
       if (entry) {
         entry.reminders.push(reminder);
       }

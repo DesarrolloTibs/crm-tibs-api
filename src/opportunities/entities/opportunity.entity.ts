@@ -1,13 +1,13 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, OneToMany, CreateDateColumn, ManyToMany, JoinTable } from 'typeorm';
 import { Client } from '../../clients/entities/client.entity';
 import { Interaction } from '../../interactions/entities/interaction.entity';
-import { Reminder } from '../../reminders/entities/reminder.entity';
 import { User } from '../../users/entities/user.entity';
 import { OpportunityTracking } from '../../opportunity-trackings/entities/opportunity-tracking.entity';
 import { Company } from '../../companies/entities/company.entity';
 import { Pipeline } from '../../pipelines/entities/pipeline.entity';
 import { Stage } from '../../stages/entities/stage.entity';
 import { OpportunityFile } from './opportunity-file.entity';
+import { Product } from '../../products/entities/product.entity';
 
 export enum Currency {
   USD = 'USD',
@@ -125,8 +125,13 @@ export class Opportunity {
   @OneToMany(() => OpportunityFile, (file) => file.opportunity, { eager: true })
   files: OpportunityFile[];
 
-  @OneToMany(() => Reminder, (reminder) => reminder.opportunity)
-  reminders: Reminder[];
+  @ManyToMany(() => Product, { eager: true })
+  @JoinTable({
+    name: 'opportunity_products',
+    joinColumn: { name: 'opportunitiesId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'productsId', referencedColumnName: 'id' }
+  })
+  products: Product[];
 
   @Column({ type: 'boolean', default: false, name: 'archived' })
   archived: boolean;
@@ -135,10 +140,10 @@ export class Opportunity {
     type: 'decimal',
     precision: 10,
     scale: 2,
-    nullable: true, // Permite que el valor sea NULL en la base de datos
+    nullable: true,
     comment: 'Tipo de cambio aplicado si la moneda es USD',
   })
-  tipoCambio: number | null; // Le dice a TypeScript que la propiedad puede ser un número o nulo
+  tipoCambio: number | null;
 
   @Column({ type: 'date', nullable: true, name: 'estimated_closure_date' })
   estimated_closure_date: Date;

@@ -5,7 +5,7 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
-import { Opportunity } from '../../opportunities/entities/opportunity.entity';
+import { Activity } from '../../Activities/entities/activity.entity';
 
 @Entity('reminders')
 export class Reminder {
@@ -18,10 +18,10 @@ export class Reminder {
   @Column({ type: 'timestamp' })
   date: Date;
 
-  @Column({ type: 'uuid' })
-  opportunity_id: string;
+  @Column({ name: 'activity_id', type: 'uuid', nullable: true })
+  activityId: string | null;
 
-  @ManyToOne(() => Opportunity, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'opportunity_id' })
-  opportunity: Opportunity;
+  @ManyToOne(() => Activity, { nullable: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'activity_id' })
+  activity: Activity;
 }
