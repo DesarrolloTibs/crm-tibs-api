@@ -16,13 +16,18 @@ import { Product } from '../products/entities/product.entity';
 import { OpportunityLabel } from './entities/opportunity-label.entity';
 import { OpportunityLabelsService } from './opportunity-labels.service';
 import { OpportunityLabelsController } from './opportunity-labels.controller';
+import { BusinessLineOption } from './entities/business-line-option.entity';
+import { DeliveryTypeOption } from './entities/delivery-type-option.entity';
+import { LicensingOption } from './entities/licensing-option.entity';
+import { OpportunityCatalogsService } from './opportunity-catalogs.service';
+import { OpportunityCatalogsController } from './opportunity-catalogs.controller';
 import { UsersModule } from 'src/users/users.module';
 import { OpportunityTrackingsModule } from 'src/opportunity-trackings/opportunity-trackings.module';
 import { ClientsModule } from 'src/clients/clients.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage, OpportunityFile, Product, OpportunityLabel]),
+    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage, OpportunityFile, Product, OpportunityLabel, BusinessLineOption, DeliveryTypeOption, LicensingOption]),
     UsersModule,
     OpportunityTrackingsModule,
     ClientsModule,
@@ -47,7 +52,7 @@ import { ClientsModule } from 'src/clients/clients.module';
       }),
     }),
   ],
-  controllers: [OpportunitiesController, OpportunityLabelsController],
-  providers: [OpportunitiesService, OpportunityLabelsService],
+  controllers: [OpportunitiesController, OpportunityLabelsController, OpportunityCatalogsController],
+  providers: [OpportunitiesService, OpportunityLabelsService, OpportunityCatalogsService],
 })
 export class OpportunitiesModule {}

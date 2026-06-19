@@ -8,32 +8,13 @@ import { Pipeline } from '../../pipelines/entities/pipeline.entity';
 import { Stage } from '../../stages/entities/stage.entity';
 import { OpportunityFile } from './opportunity-file.entity';
 import { Product } from '../../products/entities/product.entity';
+import { BusinessLineOption } from './business-line-option.entity';
+import { DeliveryTypeOption } from './delivery-type-option.entity';
+import { LicensingOption } from './licensing-option.entity';
 
 export enum Currency {
   USD = 'USD',
   MXN = 'MXN',
-}
-
-export enum BusinessLine {
-  DATOS = 'Datos',
-  DESARROLLO = 'Desarrollo',
-  RH = 'RH',
-}
-
-export enum DeliveryType {
-  PROYECTO = 'Proyecto',
-  LICENCIA = 'Licencia',
-  ASIGNACION = 'Asignacion',
-  BOLSA_DE_HORAS = 'Bolsa de Horas',
-}
-
-export enum Licensing {
-  NO_APLICA = 'No Aplica',
-  MICROSOFT = 'Microsoft',
-  IBM = 'IBM',
-  QLIK = 'Qlik',
-  ALTERYX = 'Alteryx',
-  KNIME = 'KNIME',
 }
 
 @Entity('opportunities')
@@ -106,15 +87,26 @@ export class Opportunity {
   @Column({ type: 'enum', enum: Currency, default: Currency.USD })
   moneda: Currency;
 
-  @Column({ type: 'enum', enum: BusinessLine })
-  linea_negocio: BusinessLine;
+  @Column({ type: 'uuid', nullable: true })
+  linea_negocio_id: string | null;
 
-  @Column({ type: 'enum', enum: DeliveryType })
-  tipo_entrega: DeliveryType;
+  @ManyToOne(() => BusinessLineOption, { eager: true, nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'linea_negocio_id' })
+  linea_negocio: BusinessLineOption | null;
 
+  @Column({ type: 'uuid', nullable: true })
+  tipo_entrega_id: string | null;
 
-  @Column({ type: 'enum', enum: Licensing, nullable: true })
-  licenciamiento: Licensing;
+  @ManyToOne(() => DeliveryTypeOption, { eager: true, nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'tipo_entrega_id' })
+  tipo_entrega: DeliveryTypeOption | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  licenciamiento_id: string | null;
+
+  @ManyToOne(() => LicensingOption, { eager: true, nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'licenciamiento_id' })
+  licenciamiento: LicensingOption | null;
 
   @OneToMany(() => Interaction, (interaction) => interaction.opportunity)
   interactions: Interaction[];
