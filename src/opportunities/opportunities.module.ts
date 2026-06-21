@@ -25,6 +25,7 @@ import { UsersModule } from 'src/users/users.module';
 import { OpportunityTrackingsModule } from 'src/opportunity-trackings/opportunity-trackings.module';
 import { ClientsModule } from 'src/clients/clients.module';
 import { StorageModule } from '../storage/storage.module';
+import { InteractionsModule } from '../interactions/interactions.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { StorageModule } from '../storage/storage.module';
     OpportunityTrackingsModule,
     ClientsModule,
     StorageModule,
+    InteractionsModule,
 
     MulterModule.register({
       storage: diskStorage({

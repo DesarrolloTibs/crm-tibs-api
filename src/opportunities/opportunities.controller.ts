@@ -23,8 +23,8 @@ export class OpportunitiesController {
 
   @Post()
   @ApiOperation({ summary: 'Crear una nueva oportunidad' })
-  create(@Body() createOpportunityDto: CreateOpportunityDto) {
-    return this.opportunitiesService.create(createOpportunityDto);
+  create(@Body() createOpportunityDto: CreateOpportunityDto, @GetUser() user: User) {
+    return this.opportunitiesService.create(createOpportunityDto, user);
   }
 
   @Get()
@@ -57,9 +57,9 @@ export class OpportunitiesController {
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateOpportunityDto: UpdateOpportunityDto,
+    @GetUser() user: User,
   ) {
-
-    return this.opportunitiesService.update(id, updateOpportunityDto);
+    return this.opportunitiesService.update(id, updateOpportunityDto, user);
   }
 
   @Delete(':id')
@@ -121,7 +121,8 @@ export class OpportunitiesController {
   archive(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() archiveOpportunityDto: ArchiveOpportunityDto,
+    @GetUser() user: User,
   ) {
-    return this.opportunitiesService.archive(id, archiveOpportunityDto);
+    return this.opportunitiesService.archive(id, archiveOpportunityDto, user);
   }
 }

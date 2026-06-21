@@ -188,14 +188,18 @@ export class ActivitiesService {
 
     const savedActivity = await this.activityRepository.save(activity);
 
-    if (
-      savedActivity.flaghistory &&
-      savedActivity.opportunityId &&
-      savedActivity.activity
-    ) {
+    // Registrar la creación de la actividad en el historial de la oportunidad
+    if (savedActivity.opportunityId) {
+      const fullUser = await this.usersService.findOneById(userId);
+      const username = fullUser?.username || 'Sistema';
+      const typeAct = savedActivity.typeActivityId
+        ? await this.typeActivityRepository.findOne({ where: { id: savedActivity.typeActivityId } })
+        : null;
+      const typeName = typeAct ? typeAct.strname : 'Actividad';
+      const comment = `El usuario ${username} creó una actividad de tipo "${typeName}": "${savedActivity.activity}"`;
       await this.interactionsService.create({
         opportunity_id: savedActivity.opportunityId,
-        comment: savedActivity.activity,
+        comment,
       });
     }
 
@@ -314,15 +318,40 @@ export class ActivitiesService {
 
     const savedActivity = await this.activityRepository.save(activityToUpdate);
 
-    if (
-      savedActivity.flaghistory &&
-      savedActivity.opportunityId &&
-      savedActivity.activity
-    ) {
-      await this.interactionsService.create({
-        opportunity_id: savedActivity.opportunityId,
-        comment: savedActivity.activity,
-      });
+    // Registrar los cambios en el historial de la oportunidad
+    const targetOpportunityId = savedActivity.opportunityId || originalActivity.opportunityId;
+    if (targetOpportunityId) {
+      const changes: string[] = [];
+      if (updateActivityDto.activity !== undefined && updateActivityDto.activity !== originalActivity.activity) {
+        changes.push(`- Descripción: "${originalActivity.activity}" -> "${updateActivityDto.activity}"`);
+      }
+      if (updateActivityDto.date !== undefined) {
+        const origDateStr = originalActivity.date ? new Date(originalActivity.date).toLocaleString('es-MX') : 'N/A';
+        const newDateStr = new Date(updateActivityDto.date).toLocaleString('es-MX');
+        if (origDateStr !== newDateStr) {
+          changes.push(`- Fecha: ${origDateStr} -> ${newDateStr}`);
+        }
+      }
+      if (updateActivityDto.typeActivityId !== undefined && updateActivityDto.typeActivityId !== originalActivity.typeActivityId) {
+        const oldType = originalActivity.typeActivityId ? await this.typeActivityRepository.findOne({ where: { id: originalActivity.typeActivityId } }) : null;
+        const newType = updateActivityDto.typeActivityId ? await this.typeActivityRepository.findOne({ where: { id: updateActivityDto.typeActivityId } }) : null;
+        changes.push(`- Tipo de actividad: "${oldType?.strname || 'N/A'}" -> "${newType?.strname || 'N/A'}"`);
+      }
+
+      if (changes.length > 0) {
+        const fullUser = await this.usersService.findOneById(currentUserId);
+        const username = fullUser?.username || 'Sistema';
+        const typeAct = savedActivity.typeActivityId
+          ? await this.typeActivityRepository.findOne({ where: { id: savedActivity.typeActivityId } })
+          : null;
+        const typeName = typeAct ? typeAct.strname : 'Actividad';
+        
+        const comment = `El usuario ${username} modificó la actividad de tipo "${typeName}":\n${changes.join('\n')}`;
+        await this.interactionsService.create({
+          opportunity_id: targetOpportunityId,
+          comment,
+        });
+      }
     }
 
     // Gestionar recordatorio

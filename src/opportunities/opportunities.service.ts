@@ -7,7 +7,12 @@ import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { StorageService } from '../storage/storage.service';
 import type { Response } from 'express';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
+import { InteractionsService } from '../interactions/interactions.service';
+import { Company } from '../companies/entities/company.entity';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
+import { BusinessLineOption } from './entities/business-line-option.entity';
+import { DeliveryTypeOption } from './entities/delivery-type-option.entity';
+import { LicensingOption } from './entities/licensing-option.entity';
 import { UsersService } from 'src/users/users.service';
 import { User } from 'src/users/entities/user.entity';
 import { Role } from '../role.enum';
@@ -37,9 +42,10 @@ export class OpportunitiesService {
     private readonly opportunityTrackingsService: OpportunityTrackingsService,
     private readonly clientsService: ClientsService,
     private readonly storageService: StorageService,
+    private readonly interactionsService: InteractionsService,
   ) {}
 
-  async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
+  async create(createOpportunityDto: CreateOpportunityDto, user?: User): Promise<Opportunity> {
     const { contactIds, productIds, ...dtoWithoutContacts } = createOpportunityDto;
     delete (dtoWithoutContacts as any).stage_entered_at;
 
@@ -122,6 +128,15 @@ export class OpportunitiesService {
       opportunity_id: savedOpportunity.id,
       stage_id: savedOpportunity.stage_id,
       changed_by_id: savedOpportunity.ejecutivo_id,
+    });
+
+    // Registrar la creación en el historial
+    const username = user?.username || 'Sistema';
+    const initialStage = await this.stageRepository.findOne({ where: { id: savedOpportunity.stage_id } });
+    const initialComment = `El usuario ${username} creó la oportunidad con la etapa inicial "${initialStage?.strname || 'N/A'}".`;
+    await this.interactionsService.create({
+      opportunity_id: savedOpportunity.id,
+      comment: initialComment,
     });
 
     if (selectedStage.strname === 'Ganada') {
@@ -210,7 +225,7 @@ export class OpportunitiesService {
     return opportunity;
   }
 
-  async update(id: string, updateOpportunityDto: UpdateOpportunityDto): Promise<Opportunity> {
+  async update(id: string, updateOpportunityDto: UpdateOpportunityDto, user?: User): Promise<Opportunity> {
     const existingOpportunity = await this.findOne(id);
     if (!existingOpportunity) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
@@ -219,6 +234,87 @@ export class OpportunitiesService {
     const originalStageId = existingOpportunity.stage_id;
     const { contactIds, productIds, ...dtoWithoutContacts } = updateOpportunityDto;
     delete (dtoWithoutContacts as any).stage_entered_at;
+
+    // Detectar cambios antes de aplicar el preload
+    const changes: string[] = [];
+    const username = user?.username || 'Sistema';
+
+    if (updateOpportunityDto.nombre_proyecto !== undefined && updateOpportunityDto.nombre_proyecto !== existingOpportunity.nombre_proyecto) {
+      changes.push(`- Nombre del proyecto: "${existingOpportunity.nombre_proyecto}" -> "${updateOpportunityDto.nombre_proyecto}"`);
+    }
+    if (updateOpportunityDto.description !== undefined && updateOpportunityDto.description !== existingOpportunity.description) {
+      changes.push(`- Descripción: "${existingOpportunity.description || 'Sin descripción'}" -> "${updateOpportunityDto.description || 'Sin descripción'}"`);
+    }
+    if (updateOpportunityDto.moneda !== undefined && updateOpportunityDto.moneda !== existingOpportunity.moneda) {
+      changes.push(`- Moneda: "${existingOpportunity.moneda}" -> "${updateOpportunityDto.moneda}"`);
+    }
+    if (updateOpportunityDto.monto_licenciamiento !== undefined && Number(updateOpportunityDto.monto_licenciamiento) !== Number(existingOpportunity.monto_licenciamiento)) {
+      changes.push(`- Monto de licenciamiento: $${existingOpportunity.monto_licenciamiento} -> $${updateOpportunityDto.monto_licenciamiento}`);
+    }
+    if (updateOpportunityDto.monto_servicios !== undefined && Number(updateOpportunityDto.monto_servicios) !== Number(existingOpportunity.monto_servicios)) {
+      changes.push(`- Monto de servicios: $${existingOpportunity.monto_servicios} -> $${updateOpportunityDto.monto_servicios}`);
+    }
+    if (updateOpportunityDto.tipoCambio !== undefined && Number(updateOpportunityDto.tipoCambio) !== Number(existingOpportunity.tipoCambio)) {
+      changes.push(`- Tipo de cambio: ${existingOpportunity.tipoCambio || 'N/A'} -> ${updateOpportunityDto.tipoCambio || 'N/A'}`);
+    }
+    if (updateOpportunityDto.estimated_closure_date !== undefined) {
+      const existingDate = existingOpportunity.estimated_closure_date ? new Date(existingOpportunity.estimated_closure_date).toISOString().split('T')[0] : 'N/A';
+      const newDate = updateOpportunityDto.estimated_closure_date ? new Date(updateOpportunityDto.estimated_closure_date).toISOString().split('T')[0] : 'N/A';
+      if (existingDate !== newDate) {
+        changes.push(`- Fecha estimada de cierre: ${existingDate} -> ${newDate}`);
+      }
+    }
+
+    if (updateOpportunityDto.stage_id !== undefined && updateOpportunityDto.stage_id !== existingOpportunity.stage_id) {
+      const oldStage = await this.stageRepository.findOne({ where: { id: existingOpportunity.stage_id } });
+      const newStage = await this.stageRepository.findOne({ where: { id: updateOpportunityDto.stage_id } });
+      changes.push(`- Etapa: "${oldStage?.strname || 'N/A'}" -> "${newStage?.strname || 'N/A'}"`);
+    }
+    if (updateOpportunityDto.pipeline_id !== undefined && updateOpportunityDto.pipeline_id !== existingOpportunity.pipeline_id) {
+      const oldPipeline = await this.pipelineRepository.findOne({ where: { id: existingOpportunity.pipeline_id } });
+      const newPipeline = await this.pipelineRepository.findOne({ where: { id: updateOpportunityDto.pipeline_id } });
+      changes.push(`- Pipeline: "${oldPipeline?.strname || 'N/A'}" -> "${newPipeline?.strname || 'N/A'}"`);
+    }
+    if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
+      const oldEjecutivo = await this.usersService.findOneById(existingOpportunity.ejecutivo_id).catch(() => null);
+      const newEjecutivo = await this.usersService.findOneById(updateOpportunityDto.ejecutivo_id).catch(() => null);
+      changes.push(`- Ejecutivo: "${oldEjecutivo?.username || 'N/A'}" -> "${newEjecutivo?.username || 'N/A'}"`);
+    }
+    if (updateOpportunityDto.cliente_id !== undefined && updateOpportunityDto.cliente_id !== existingOpportunity.cliente_id) {
+      const oldCliente = existingOpportunity.cliente;
+      const newCliente = updateOpportunityDto.cliente_id ? await this.clientRepository.findOne({ where: { id: updateOpportunityDto.cliente_id } }) : null;
+      const oldClienteName = oldCliente ? `${oldCliente.nombre} ${oldCliente.apellido}` : 'N/A';
+      const newClienteName = newCliente ? `${newCliente.nombre} ${newCliente.apellido}` : 'N/A';
+      changes.push(`- Cliente: "${oldClienteName}" -> "${newClienteName}"`);
+    }
+    if (updateOpportunityDto.companyId !== undefined && updateOpportunityDto.companyId !== existingOpportunity.companyId) {
+      const oldCompany = existingOpportunity.company;
+      const newCompany = updateOpportunityDto.companyId ? await this.clientRepository.manager.getRepository(Company).findOne({ where: { id: updateOpportunityDto.companyId } }) : null;
+      changes.push(`- Empresa: "${oldCompany?.nombre || 'N/A'}" -> "${newCompany?.nombre || 'N/A'}"`);
+    }
+    if (updateOpportunityDto.linea_negocio_id !== undefined && updateOpportunityDto.linea_negocio_id !== existingOpportunity.linea_negocio_id) {
+      const oldOption = existingOpportunity.linea_negocio;
+      const newOption = updateOpportunityDto.linea_negocio_id ? await this.opportunityRepository.manager.getRepository(BusinessLineOption).findOne({ where: { id: updateOpportunityDto.linea_negocio_id } }) : null;
+      changes.push(`- Línea de negocio: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+    }
+    if (updateOpportunityDto.tipo_entrega_id !== undefined && updateOpportunityDto.tipo_entrega_id !== existingOpportunity.tipo_entrega_id) {
+      const oldOption = existingOpportunity.tipo_entrega;
+      const newOption = updateOpportunityDto.tipo_entrega_id ? await this.opportunityRepository.manager.getRepository(DeliveryTypeOption).findOne({ where: { id: updateOpportunityDto.tipo_entrega_id } }) : null;
+      changes.push(`- Tipo de entrega: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+    }
+    if (updateOpportunityDto.licenciamiento_id !== undefined && updateOpportunityDto.licenciamiento_id !== existingOpportunity.licenciamiento_id) {
+      const oldOption = existingOpportunity.licenciamiento;
+      const newOption = updateOpportunityDto.licenciamiento_id ? await this.opportunityRepository.manager.getRepository(LicensingOption).findOne({ where: { id: updateOpportunityDto.licenciamiento_id } }) : null;
+      changes.push(`- Licenciamiento: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+    }
+    if (productIds !== undefined) {
+      const existingProductNames = (existingOpportunity.products || []).map(p => p.nombre).sort().join(', ');
+      const selectedProducts = productIds.length > 0 ? await this.productRepository.find({ where: productIds.map(uid => ({ id: uid })) }) : [];
+      const newProductNames = selectedProducts.map(p => p.nombre).sort().join(', ');
+      if (existingProductNames !== newProductNames) {
+        changes.push(`- Productos: [${existingProductNames || 'Ninguno'}] -> [${newProductNames || 'Ninguno'}]`);
+      }
+    }
 
     const opportunity = await this.opportunityRepository.preload({
       id: id,
@@ -252,7 +348,6 @@ export class OpportunitiesService {
       convertedProductsPrice = productsPriceSum / Number(currentTipoCambio);
     }
 
-    // Recalculamos el monto total y aplicamos la lógica del tipo de cambio.
     opportunity.monto_total = (opportunity.monto_licenciamiento ?? existingOpportunity.monto_licenciamiento ?? 0) + (opportunity.monto_servicios ?? existingOpportunity.monto_servicios ?? 0) + convertedProductsPrice;
 
     if (opportunity.moneda !== 'USD') {
@@ -269,7 +364,6 @@ export class OpportunitiesService {
       }
     }
 
-    // Validar etapa si se está actualizando
     let selectedStage: Stage | null = existingOpportunity.stage;
     if (updateOpportunityDto.stage_id && updateOpportunityDto.stage_id !== originalStageId) {
       selectedStage = await this.stageRepository.findOne({ where: { id: updateOpportunityDto.stage_id } });
@@ -305,6 +399,15 @@ export class OpportunitiesService {
           });
         }
       }
+    }
+
+    // Registrar cambios en el historial (interacciones)
+    if (changes.length > 0) {
+      const comment = `El usuario ${username} modificó la oportunidad:\n${changes.join('\n')}`;
+      await this.interactionsService.create({
+        opportunity_id: id,
+        comment,
+      });
     }
 
     return this.findOne(savedOpportunity.id);
@@ -364,10 +467,21 @@ export class OpportunitiesService {
     return this.storageService.downloadFile(filePath, res, fileName);
   }
 
-  async archive(id: string, archiveOpportunityDto: ArchiveOpportunityDto): Promise<Opportunity> {
+  async archive(id: string, archiveOpportunityDto: ArchiveOpportunityDto, user?: User): Promise<Opportunity> {
     const opportunity = await this.findOne(id);
+    const oldStatus = opportunity.archived;
     opportunity.archived = archiveOpportunityDto.archived;
-    return this.opportunityRepository.save(opportunity);
+    const saved = await this.opportunityRepository.save(opportunity);
+
+    if (oldStatus !== archiveOpportunityDto.archived) {
+      const username = user?.username || 'Sistema';
+      const comment = `El usuario ${username} ${archiveOpportunityDto.archived ? 'archivó' : 'desarchivó'} la oportunidad.`;
+      await this.interactionsService.create({
+        opportunity_id: id,
+        comment,
+      });
+    }
+    return saved;
   }
 }
 
