@@ -1,5 +1,5 @@
 import { IsString, IsUUID, IsNumber, Min, IsOptional, IsDateString, IsArray, IsEnum } from 'class-validator';
-import { Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
+import { Currency } from '../entities/opportunity.entity';
 
 export class UpdateOpportunityDto {
   @IsString()
@@ -53,13 +53,13 @@ export class UpdateOpportunityDto {
   @IsOptional()
   moneda?: Currency;
 
-  @IsEnum(BusinessLine)
+  @IsUUID()
   @IsOptional()
-  linea_negocio?: BusinessLine;
+  linea_negocio_id?: string;
 
-  @IsEnum(DeliveryType)
+  @IsUUID()
   @IsOptional()
-  tipo_entrega?: DeliveryType;
+  tipo_entrega_id?: string;
 
    
     @IsNumber()
@@ -67,9 +67,9 @@ export class UpdateOpportunityDto {
     @IsOptional()
     monto_total?: number;
 
-  @IsEnum(Licensing)
+  @IsUUID()
   @IsOptional()
-  licenciamiento?: Licensing;
+  licenciamiento_id?: string;
 
     @IsNumber()
 

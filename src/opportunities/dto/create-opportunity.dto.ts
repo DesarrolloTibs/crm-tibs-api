@@ -1,7 +1,7 @@
 import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray } from 'class-validator';
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Currency, BusinessLine, DeliveryType, Licensing } from '../entities/opportunity.entity';
+import { Currency } from '../entities/opportunity.entity';
 
 export class CreateOpportunityDto {
   @ApiProperty({ description: 'Nombre del proyecto' })
@@ -68,25 +68,26 @@ export class CreateOpportunityDto {
   @IsNotEmpty()
   moneda: Currency;
 
-  @ApiProperty({ description: 'Línea de negocio', enum: BusinessLine })
-  @IsEnum(BusinessLine)
+  @ApiProperty({ description: 'ID de la línea de negocio', format: 'uuid' })
+  @IsUUID()
   @IsNotEmpty()
-  linea_negocio: BusinessLine;
+  linea_negocio_id: string;
 
-  @ApiProperty({ description: 'Tipo de entrega', enum: DeliveryType })
-  @IsEnum(DeliveryType)
+  @ApiProperty({ description: 'ID del tipo de entrega', format: 'uuid' })
+  @IsUUID()
   @IsNotEmpty()
-  tipo_entrega: DeliveryType;
- @ApiPropertyOptional({ description: 'Monto total', minimum: 0, type: Number })
+  tipo_entrega_id: string;
+
+  @ApiPropertyOptional({ description: 'Monto total', minimum: 0, type: Number })
   @IsNumber()
   @Min(0)
   @IsOptional()
   monto_total?: number;
   
-  @ApiPropertyOptional({ description: 'Tipo de licenciamiento', enum: Licensing })
-  @IsEnum(Licensing)
+  @ApiPropertyOptional({ description: 'ID del licenciamiento', format: 'uuid' })
+  @IsUUID()
   @IsOptional()
-  licenciamiento?: Licensing;
+  licenciamiento_id?: string;
 
   @ApiPropertyOptional({ description: 'Tipo de cambio, solo aplica si la moneda es USD', type: Number })
   @IsNumber()
