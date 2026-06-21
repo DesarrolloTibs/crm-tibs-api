@@ -8,10 +8,12 @@ import { Product } from './entities/product.entity';
 import { ProductFile } from './entities/product-file.entity';
 import { ProductsService } from './products.service';
 import { ProductsController } from './products.controller';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Product, ProductFile]),
+    StorageModule,
     MulterModule.register({
       storage: diskStorage({
         destination: (req, file, cb) => {

@@ -3,9 +3,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { FindManyOptions, Repository, FindOptionsWhere, Brackets } from 'typeorm';
 import { Opportunity } from './entities/opportunity.entity';
 import { OpportunityFile } from './entities/opportunity-file.entity';
-import { existsSync, unlinkSync } from 'fs';
-import { join } from 'path';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
+import { StorageService } from '../storage/storage.service';
+import type { Response } from 'express';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { UsersService } from 'src/users/users.service';
@@ -36,6 +36,7 @@ export class OpportunitiesService {
     private readonly usersService: UsersService,
     private readonly opportunityTrackingsService: OpportunityTrackingsService,
     private readonly clientsService: ClientsService,
+    private readonly storageService: StorageService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto): Promise<Opportunity> {
@@ -319,12 +320,15 @@ export class OpportunitiesService {
   async addOpportunityFile(
     opportunityId: string,
     fileName: string,
-    filePath: string,
+    file: Express.Multer.File,
     title?: string,
     date?: string,
   ): Promise<Opportunity> {
-    const opportunity = await this.findOne(opportunityId);
+    await this.findOne(opportunityId);
     
+    const relativePath = file.path.replace(/\\/g, '/');
+    const filePath = await this.storageService.uploadFile(file.path, relativePath);
+
     const opportunityFile = this.opportunityFileRepository.create({
       opportunityId,
       fileName,
@@ -350,18 +354,14 @@ export class OpportunitiesService {
   async deleteOpportunityFile(opportunityId: string, fileId: string): Promise<Opportunity> {
     const file = await this.getOpportunityFile(opportunityId, fileId);
 
-    // Eliminar archivo físico
-    const absolutePath = join(process.cwd(), file.filePath);
-    if (existsSync(absolutePath)) {
-      try {
-        unlinkSync(absolutePath);
-      } catch (err) {
-        console.error(`Error deleting physical file at ${absolutePath}:`, err);
-      }
-    }
+    await this.storageService.deleteFile(file.filePath);
 
     await this.opportunityFileRepository.remove(file);
     return this.findOne(opportunityId);
+  }
+
+  async downloadFile(filePath: string, fileName: string, res: Response): Promise<void> {
+    return this.storageService.downloadFile(filePath, res, fileName);
   }
 
   async archive(id: string, archiveOpportunityDto: ArchiveOpportunityDto): Promise<Opportunity> {

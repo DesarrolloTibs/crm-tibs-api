@@ -92,9 +92,8 @@ export class OpportunitiesController {
     if (!file) {
       throw new BadRequestException('Se requiere un archivo.');
     }
-    const normalizedPath = file.path.replace(/\\/g, '/');
     const decodedFileName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-    return this.opportunitiesService.addOpportunityFile(id, decodedFileName, normalizedPath, title, date);
+    return this.opportunitiesService.addOpportunityFile(id, decodedFileName, file, title, date);
   }
 
   @Get(':id/files/:fileId/download')
@@ -105,10 +104,7 @@ export class OpportunitiesController {
     @Res() res: Response,
   ) {
     const file = await this.opportunitiesService.getOpportunityFile(id, fileId);
-    const normalizedPath = file.filePath.replace(/\\/g, '/');
-    const absolutePath = join(process.cwd(), normalizedPath);
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.fileName)}"`);
-    return res.sendFile(absolutePath);
+    return this.opportunitiesService.downloadFile(file.filePath, file.fileName, res);
   }
 
   @Delete(':id/files/:fileId')

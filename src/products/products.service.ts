@@ -1,14 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { existsSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import type { Response } from 'express';
 
 import { Product } from './entities/product.entity';
 import { ProductFile } from './entities/product-file.entity';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { User } from 'src/users/entities/user.entity';
+import { StorageService } from '../storage/storage.service';
 
 @Injectable()
 export class ProductsService {
@@ -17,6 +17,7 @@ export class ProductsService {
     private readonly productRepository: Repository<Product>,
     @InjectRepository(ProductFile)
     private readonly productFileRepository: Repository<ProductFile>,
+    private readonly storageService: StorageService,
   ) {}
 
   async create(createProductDto: CreateProductDto, currentUser: User): Promise<Product> {
@@ -55,17 +56,7 @@ export class ProductsService {
       updateProductDto.imagenPortada === null &&
       currentProduct.imagenPortada
     ) {
-      const oldPath = currentProduct.imagenPortada.startsWith('/')
-        ? currentProduct.imagenPortada.substring(1)
-        : currentProduct.imagenPortada;
-      const absolutePath = join(process.cwd(), oldPath);
-      if (existsSync(absolutePath)) {
-        try {
-          unlinkSync(absolutePath);
-        } catch (err) {
-          console.error(`Error deleting old cover image on update:`, err);
-        }
-      }
+      await this.storageService.deleteFile(currentProduct.imagenPortada);
     }
 
     const product = await this.productRepository.preload({
@@ -84,22 +75,13 @@ export class ProductsService {
     return this.productRepository.save(product);
   }
 
-  async updateCoverImage(id: string, imageUrl: string): Promise<Product> {
+  async updateCoverImage(id: string, file: Express.Multer.File): Promise<Product> {
     const product = await this.findOne(id);
     if (product.imagenPortada) {
-      // Normalizar ruta para eliminar físicamente la portada anterior
-      const oldPath = product.imagenPortada.startsWith('/')
-        ? product.imagenPortada.substring(1)
-        : product.imagenPortada;
-      const absolutePath = join(process.cwd(), oldPath);
-      if (existsSync(absolutePath)) {
-        try {
-          unlinkSync(absolutePath);
-        } catch (err) {
-          console.error(`Error deleting old product cover image at ${absolutePath}:`, err);
-        }
-      }
+      await this.storageService.deleteFile(product.imagenPortada);
     }
+    const relativePath = file.path.replace(/\\/g, '/');
+    const imageUrl = await this.storageService.uploadFile(file.path, `/${relativePath}`);
     product.imagenPortada = imageUrl;
     return this.productRepository.save(product);
   }
@@ -115,30 +97,13 @@ export class ProductsService {
 
     // 1. Borrar la imagen de portada del servidor
     if (product.imagenPortada) {
-      const oldPath = product.imagenPortada.startsWith('/')
-        ? product.imagenPortada.substring(1)
-        : product.imagenPortada;
-      const absolutePath = join(process.cwd(), oldPath);
-      if (existsSync(absolutePath)) {
-        try {
-          unlinkSync(absolutePath);
-        } catch (err) {
-          console.error(`Error deleting cover image during product removal:`, err);
-        }
-      }
+      await this.storageService.deleteFile(product.imagenPortada);
     }
 
     // 2. Borrar todos los archivos adjuntos del servidor
     if (product.files && product.files.length > 0) {
       for (const file of product.files) {
-        const absolutePath = join(process.cwd(), file.filePath);
-        if (existsSync(absolutePath)) {
-          try {
-            unlinkSync(absolutePath);
-          } catch (err) {
-            console.error(`Error deleting product attachment file during removal:`, err);
-          }
-        }
+        await this.storageService.deleteFile(file.filePath);
       }
     }
 
@@ -149,10 +114,13 @@ export class ProductsService {
   async addProductFile(
     productId: string,
     fileName: string,
-    filePath: string,
+    file: Express.Multer.File,
     title?: string,
   ): Promise<Product> {
     await this.findOne(productId); // Verifica que el producto exista
+
+    const relativePath = file.path.replace(/\\/g, '/');
+    const filePath = await this.storageService.uploadFile(file.path, relativePath);
 
     const productFile = this.productFileRepository.create({
       productId,
@@ -178,17 +146,13 @@ export class ProductsService {
   async deleteProductFile(productId: string, fileId: string): Promise<Product> {
     const file = await this.getProductFile(productId, fileId);
 
-    // Eliminar archivo físico
-    const absolutePath = join(process.cwd(), file.filePath);
-    if (existsSync(absolutePath)) {
-      try {
-        unlinkSync(absolutePath);
-      } catch (err) {
-        console.error(`Error deleting product physical file at ${absolutePath}:`, err);
-      }
-    }
+    await this.storageService.deleteFile(file.filePath);
 
     await this.productFileRepository.remove(file);
     return this.findOne(productId);
+  }
+
+  async downloadFile(filePath: string, fileName: string, res: Response): Promise<void> {
+    return this.storageService.downloadFile(filePath, res, fileName);
   }
 }

@@ -98,9 +98,7 @@ export class ProductsController {
     if (!file) {
       throw new BadRequestException('Se requiere un archivo.');
     }
-    // Normalizar ruta para que comience con '/' y use barras correctas
-    const imageUrl = `/${file.path.replace(/\\/g, '/')}`;
-    return this.productsService.updateCoverImage(id, imageUrl);
+    return this.productsService.updateCoverImage(id, file);
   }
 
   @Post(':id/files')
@@ -125,9 +123,8 @@ export class ProductsController {
     if (!file) {
       throw new BadRequestException('Se requiere un archivo.');
     }
-    const normalizedPath = file.path.replace(/\\/g, '/');
     const decodedFileName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-    return this.productsService.addProductFile(id, decodedFileName, normalizedPath, title);
+    return this.productsService.addProductFile(id, decodedFileName, file, title);
   }
 
   @Get(':id/files/:fileId/download')
@@ -138,10 +135,7 @@ export class ProductsController {
     @Res() res: Response,
   ) {
     const file = await this.productsService.getProductFile(id, fileId);
-    const normalizedPath = file.filePath.replace(/\\/g, '/');
-    const absolutePath = join(process.cwd(), normalizedPath);
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.fileName)}"`);
-    return res.sendFile(absolutePath);
+    return this.productsService.downloadFile(file.filePath, file.fileName, res);
   }
 
   @Delete(':id/files/:fileId')
