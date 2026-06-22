@@ -13,6 +13,7 @@ import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { BusinessLineOption } from './entities/business-line-option.entity';
 import { DeliveryTypeOption } from './entities/delivery-type-option.entity';
 import { LicensingOption } from './entities/licensing-option.entity';
+import { OpportunityLabel } from './entities/opportunity-label.entity';
 import { UsersService } from 'src/users/users.service';
 import { User } from 'src/users/entities/user.entity';
 import { Role } from '../role.enum';
@@ -239,6 +240,20 @@ export class OpportunitiesService {
     const changes: string[] = [];
     const username = user?.username || 'Sistema';
 
+    // Obtener etiquetas de oportunidad desde base de datos de manera dinámica para que coincidan con la configuración del catálogo
+    const labelRepo = this.opportunityRepository.manager.getRepository(OpportunityLabel);
+    const labels = await labelRepo.find();
+    
+    const getLabelName = (uuid: string, defaultName: string) => {
+      const label = labels.find(l => l.id === uuid);
+      return label && label.strname ? label.strname : defaultName;
+    };
+
+    const labelLicenciamiento = getLabelName('c6d3df39-53e7-40b9-8e2b-f1de16b5394f', 'Licenciamiento');
+    const labelServicios = getLabelName('7d90d810-74d3-4613-882d-8e814a029db5', 'Servicios');
+    const labelLineaNegocio = getLabelName('f509fa84-0b73-45f8-b3ab-b8471e98822e', 'Línea de negocio');
+    const labelTipoEntrega = getLabelName('7d90d810-74d3-4613-882d-8e814a029db5', 'Tipo de entrega');
+
     if (updateOpportunityDto.nombre_proyecto !== undefined && updateOpportunityDto.nombre_proyecto !== existingOpportunity.nombre_proyecto) {
       changes.push(`- Nombre del proyecto: "${existingOpportunity.nombre_proyecto}" -> "${updateOpportunityDto.nombre_proyecto}"`);
     }
@@ -249,10 +264,10 @@ export class OpportunitiesService {
       changes.push(`- Moneda: "${existingOpportunity.moneda}" -> "${updateOpportunityDto.moneda}"`);
     }
     if (updateOpportunityDto.monto_licenciamiento !== undefined && Number(updateOpportunityDto.monto_licenciamiento) !== Number(existingOpportunity.monto_licenciamiento)) {
-      changes.push(`- Monto de licenciamiento: $${existingOpportunity.monto_licenciamiento} -> $${updateOpportunityDto.monto_licenciamiento}`);
+      changes.push(`- Monto ${labelLicenciamiento}: $${existingOpportunity.monto_licenciamiento} -> $${updateOpportunityDto.monto_licenciamiento}`);
     }
     if (updateOpportunityDto.monto_servicios !== undefined && Number(updateOpportunityDto.monto_servicios) !== Number(existingOpportunity.monto_servicios)) {
-      changes.push(`- Monto de servicios: $${existingOpportunity.monto_servicios} -> $${updateOpportunityDto.monto_servicios}`);
+      changes.push(`- Monto ${labelServicios}: $${existingOpportunity.monto_servicios} -> $${updateOpportunityDto.monto_servicios}`);
     }
     if (updateOpportunityDto.tipoCambio !== undefined && Number(updateOpportunityDto.tipoCambio) !== Number(existingOpportunity.tipoCambio)) {
       changes.push(`- Tipo de cambio: ${existingOpportunity.tipoCambio || 'N/A'} -> ${updateOpportunityDto.tipoCambio || 'N/A'}`);
@@ -295,17 +310,17 @@ export class OpportunitiesService {
     if (updateOpportunityDto.linea_negocio_id !== undefined && updateOpportunityDto.linea_negocio_id !== existingOpportunity.linea_negocio_id) {
       const oldOption = existingOpportunity.linea_negocio;
       const newOption = updateOpportunityDto.linea_negocio_id ? await this.opportunityRepository.manager.getRepository(BusinessLineOption).findOne({ where: { id: updateOpportunityDto.linea_negocio_id } }) : null;
-      changes.push(`- Línea de negocio: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+      changes.push(`- ${labelLineaNegocio}: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
     }
     if (updateOpportunityDto.tipo_entrega_id !== undefined && updateOpportunityDto.tipo_entrega_id !== existingOpportunity.tipo_entrega_id) {
       const oldOption = existingOpportunity.tipo_entrega;
       const newOption = updateOpportunityDto.tipo_entrega_id ? await this.opportunityRepository.manager.getRepository(DeliveryTypeOption).findOne({ where: { id: updateOpportunityDto.tipo_entrega_id } }) : null;
-      changes.push(`- Tipo de entrega: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+      changes.push(`- ${labelTipoEntrega}: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
     }
     if (updateOpportunityDto.licenciamiento_id !== undefined && updateOpportunityDto.licenciamiento_id !== existingOpportunity.licenciamiento_id) {
       const oldOption = existingOpportunity.licenciamiento;
       const newOption = updateOpportunityDto.licenciamiento_id ? await this.opportunityRepository.manager.getRepository(LicensingOption).findOne({ where: { id: updateOpportunityDto.licenciamiento_id } }) : null;
-      changes.push(`- Licenciamiento: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+      changes.push(`- ${labelLicenciamiento}: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
     }
     if (productIds !== undefined) {
       const existingProductNames = (existingOpportunity.products || []).map(p => p.nombre).sort().join(', ');
