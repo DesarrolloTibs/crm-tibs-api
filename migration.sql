@@ -152,3 +152,46 @@ ALTER TABLE opportunities ADD CONSTRAINT fk_opportunities_tipo_entrega FOREIGN K
 ALTER TABLE opportunities ADD CONSTRAINT fk_opportunities_licenciamiento FOREIGN KEY ("licenciamiento_id") REFERENCES tblicensings(id) ON DELETE SET NULL;
 
 
+-- Tabla tbloportunitylabels: agregar columna field_key para mapear campos personalizables
+ALTER TABLE tbloportunitylabels ADD COLUMN IF NOT EXISTS field_key character varying(50) NULL;
+
+-- Agregar constraint UNIQUE a field_key si no existe
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'uq_tbloportunitylabels_field_key'
+      OR (conname = 'tbloportunitylabels_field_key_key' AND conrelid = 'tbloportunitylabels'::regclass)
+  ) THEN
+    ALTER TABLE tbloportunitylabels
+      ADD CONSTRAINT uq_tbloportunitylabels_field_key UNIQUE (field_key);
+  END IF;
+END $$;
+
+-- Poblar tbloportunitylabels si está vacía
+INSERT INTO tbloportunitylabels (id, strname, field_key, blnstatus, dtmlastmodified) VALUES
+  ('f509fa84-0b73-45f8-b3ab-b8471e98822e', 'Línea de Negocio', 'linea_negocio', true, now()),
+  ('7d90d810-74d3-4613-882d-8e814a029db5', 'Tipo de Entrega', 'tipo_entrega', true, now()),
+  ('c6d3df39-53e7-40b9-8e2b-f1de16b5394f', 'Licenciamiento', 'licenciamiento', true, now())
+ON CONFLICT (id) DO NOTHING;
+
+-- Sincronizar field_key en registros existentes (si la tabla ya tenía datos pero con field_key nulo)
+UPDATE tbloportunitylabels 
+SET field_key = 'linea_negocio' 
+WHERE field_key IS NULL 
+  AND (id = 'f509fa84-0b73-45f8-b3ab-b8471e98822e' 
+       OR lower(strname) LIKE '%negocio%' 
+       OR lower(strname) LIKE '%linea%');
+
+UPDATE tbloportunitylabels 
+SET field_key = 'tipo_entrega' 
+WHERE field_key IS NULL 
+  AND (id = '7d90d810-74d3-4613-882d-8e814a029db5' 
+       OR lower(strname) LIKE '%entrega%' 
+       OR lower(strname) LIKE '%servicio%');
+
+UPDATE tbloportunitylabels 
+SET field_key = 'licenciamiento' 
+WHERE field_key IS NULL 
+  AND (id = 'c6d3df39-53e7-40b9-8e2b-f1de16b5394f' 
+       OR lower(strname) LIKE '%licencia%');

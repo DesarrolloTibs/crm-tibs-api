@@ -244,15 +244,15 @@ export class OpportunitiesService {
     const labelRepo = this.opportunityRepository.manager.getRepository(OpportunityLabel);
     const labels = await labelRepo.find();
     
-    const getLabelName = (uuid: string, defaultName: string) => {
-      const label = labels.find(l => l.id === uuid);
+    const getLabelNameByKey = (key: 'linea_negocio' | 'tipo_entrega' | 'licenciamiento', defaultName: string) => {
+      const label = labels.find(l => l.field_key === key);
       return label && label.strname ? label.strname : defaultName;
     };
 
-    const labelLicenciamiento = getLabelName('c6d3df39-53e7-40b9-8e2b-f1de16b5394f', 'Licenciamiento');
-    const labelServicios = getLabelName('7d90d810-74d3-4613-882d-8e814a029db5', 'Servicios');
-    const labelLineaNegocio = getLabelName('f509fa84-0b73-45f8-b3ab-b8471e98822e', 'Línea de negocio');
-    const labelTipoEntrega = getLabelName('7d90d810-74d3-4613-882d-8e814a029db5', 'Tipo de entrega');
+    const labelLicenciamiento = getLabelNameByKey('licenciamiento', 'Licenciamiento');
+    const labelServicios = getLabelNameByKey('tipo_entrega', 'Servicios');
+    const labelLineaNegocio = getLabelNameByKey('linea_negocio', 'Línea de negocio');
+    const labelTipoEntrega = getLabelNameByKey('tipo_entrega', 'Tipo de entrega');
 
     if (updateOpportunityDto.nombre_proyecto !== undefined && updateOpportunityDto.nombre_proyecto !== existingOpportunity.nombre_proyecto) {
       changes.push(`- Nombre del proyecto: "${existingOpportunity.nombre_proyecto}" -> "${updateOpportunityDto.nombre_proyecto}"`);

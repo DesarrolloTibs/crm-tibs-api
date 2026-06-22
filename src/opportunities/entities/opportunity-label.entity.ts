@@ -1,12 +1,15 @@
-import { Entity, PrimaryColumn, Column } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
 
 @Entity('tbloportunitylabels')
 export class OpportunityLabel {
-  @PrimaryColumn('uuid')
+  @PrimaryGeneratedColumn('uuid')
   id: string;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   strname: string;
+
+  @Column({ type: 'varchar', length: 50, nullable: true, unique: true })
+  field_key: string;
 
   @Column({ type: 'boolean', default: true })
   blnstatus: boolean;
