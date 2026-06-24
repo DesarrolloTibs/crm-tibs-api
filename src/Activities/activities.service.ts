@@ -236,18 +236,36 @@ export class ActivitiesService {
       order: { date: 'DESC' },
     };
 
-    let whereClause: any = {};
-
     if (fullCurrentUser.role !== Role.Admin) {
-      whereClause.userId = fullCurrentUser.id;
-    } else if (userId) {
-      whereClause.userId = userId;
+      // Un ejecutivo puede ver:
+      // 1. Actividades que él creó (userId === fullCurrentUser.id)
+      // 2. Actividades de oportunidades que tiene asignadas (opportunity.ejecutivo_id === fullCurrentUser.id)
+      // 3. Actividades de clientes que tiene asignados (client.ejecutivo_id === fullCurrentUser.id)
+      // 4. Actividades de empresas que tiene asignadas (company.ejecutivo_id === fullCurrentUser.id)
+      const clauses = [
+        { userId: fullCurrentUser.id },
+        { opportunity: { ejecutivo_id: fullCurrentUser.id } },
+        { client: { ejecutivo_id: fullCurrentUser.id } },
+        { company: { ejecutivo_id: fullCurrentUser.id } },
+      ];
+      if (opportunityId) {
+        options.where = clauses.map(clause => ({
+          ...clause,
+          opportunityId,
+        }));
+      } else {
+        options.where = clauses;
+      }
+    } else {
+      const whereClause: any = {};
+      if (userId) {
+        whereClause.userId = userId;
+      }
+      if (opportunityId) {
+        whereClause.opportunityId = opportunityId;
+      }
+      options.where = whereClause;
     }
-
-    if (opportunityId) {
-      whereClause.opportunityId = opportunityId;
-    }
-    options.where = whereClause;
     const activities = await this.activityRepository.find(options);
 
     // Adjuntar reminder a cada actividad
