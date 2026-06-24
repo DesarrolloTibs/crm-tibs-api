@@ -8,6 +8,7 @@ import { Client, ClientCategory } from '../clients/entities/client.entity';
 import { User } from '../users/entities/user.entity';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
+import { ArchiveTicketDto } from './dto/archive-ticket.dto';
 import { TicketsGateway } from './tickets.gateway';
 
 @Injectable()
@@ -125,15 +126,17 @@ export class TicketsService {
     return fullTicket;
   }
 
-  async findAll(stage_id?: string): Promise<Ticket[]> {
+  async findAll(stage_id?: string, showArchived = false): Promise<Ticket[]> {
     const qb = this.ticketRepository.createQueryBuilder('ticket');
     qb.leftJoinAndSelect('ticket.cliente', 'cliente')
       .leftJoinAndSelect('ticket.responsable', 'responsable')
       .leftJoinAndSelect('ticket.stage', 'stage')
       .leftJoinAndSelect('ticket.helpdesk', 'helpdesk');
 
+    qb.where('ticket.archived = :showArchived', { showArchived });
+
     if (stage_id) {
-      qb.where('ticket.stage_id = :stage_id', { stage_id });
+      qb.andWhere('ticket.stage_id = :stage_id', { stage_id });
     }
 
     qb.orderBy('ticket.fecha_apertura', 'DESC');
@@ -224,5 +227,14 @@ export class TicketsService {
       throw new NotFoundException(`El ticket con ID "${id}" no existe.`);
     }
     this.ticketsGateway.emitTicketDeleted(id);
+  }
+
+  async archive(id: string, archiveTicketDto: ArchiveTicketDto): Promise<Ticket> {
+    const ticket = await this.findOne(id);
+    ticket.archived = archiveTicketDto.archived;
+    const saved = await this.ticketRepository.save(ticket);
+    const fullTicket = await this.findOne(saved.id);
+    this.ticketsGateway.emitTicketUpdated(fullTicket);
+    return fullTicket;
   }
 }

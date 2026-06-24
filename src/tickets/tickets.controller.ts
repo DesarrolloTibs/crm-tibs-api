@@ -4,6 +4,7 @@ import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { TicketsService } from './tickets.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
+import { ArchiveTicketDto } from './dto/archive-ticket.dto';
 
 @ApiTags('tickets')
 @Controller('tickets')
@@ -21,8 +22,12 @@ export class TicketsController {
   @ApiBearerAuth()
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener la lista de tickets' })
-  findAll(@Query('stage_id') stage_id?: string) {
-    return this.ticketsService.findAll(stage_id);
+  findAll(
+    @Query('stage_id') stage_id?: string,
+    @Query('showArchived') showArchived?: string,
+  ) {
+    const showArchivedBool = showArchived === 'true';
+    return this.ticketsService.findAll(stage_id, showArchivedBool);
   }
 
   @Get(':id')
@@ -47,5 +52,16 @@ export class TicketsController {
   @ApiOperation({ summary: 'Eliminar un ticket' })
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.ticketsService.remove(id);
+  }
+
+  @Patch(':id/archive')
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Archivar o desarchivar un ticket' })
+  archive(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() archiveTicketDto: ArchiveTicketDto,
+  ) {
+    return this.ticketsService.archive(id, archiveTicketDto);
   }
 }

@@ -460,3 +460,6 @@ CREATE TABLE IF NOT EXISTS tickets (
 
 -- 4. Agregar campo de prioridad en oportunidades
 ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS priority integer NOT NULL DEFAULT 1;
+
+-- 5. Agregar campo archived en tickets
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;

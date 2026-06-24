@@ -37,6 +37,9 @@ export class Ticket {
   @Column({ type: 'boolean', default: false })
   alert_sent: boolean;
 
+  @Column({ type: 'boolean', default: false, name: 'archived' })
+  archived: boolean;
+
   @Column({ type: 'uuid', nullable: true })
   cliente_id: string | null;
 
