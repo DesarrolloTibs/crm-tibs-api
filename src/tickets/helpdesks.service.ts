@@ -1,9 +1,12 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Helpdesk } from './entities/helpdesk.entity';
 import { TicketStage } from './entities/ticket-stage.entity';
 import { Ticket } from './entities/ticket.entity';
+import { HelpdeskCronConfig } from './entities/helpdesk-cron-config.entity';
+import { UpdateHelpdeskCronConfigDto } from './dto/update-helpdesk-cron-config.dto';
+import { NotificationsSchedulerService } from '../notifications/notifications.scheduler.service';
 
 @Injectable()
 export class HelpdesksService {
@@ -14,7 +17,11 @@ export class HelpdesksService {
     private readonly stageRepository: Repository<TicketStage>,
     @InjectRepository(Ticket)
     private readonly ticketRepository: Repository<Ticket>,
+    @InjectRepository(HelpdeskCronConfig)
+    private readonly cronConfigRepository: Repository<HelpdeskCronConfig>,
     private readonly dataSource: DataSource,
+    @Inject(forwardRef(() => NotificationsSchedulerService))
+    private readonly schedulerService: NotificationsSchedulerService,
   ) {}
 
   async getMainHelpdesk(): Promise<Helpdesk & { stages: TicketStage[] }> {
@@ -163,5 +170,81 @@ export class HelpdesksService {
     }
 
     return this.getMainHelpdesk();
+  }
+
+  /**
+   * Obtiene la configuración del cron de la mesa de ayuda principal.
+   * Si no existe, la crea con valores por defecto.
+   */
+  async getCronConfig(): Promise<HelpdeskCronConfig> {
+    const helpdesk = await this.helpdeskRepository.findOne({
+      where: {},
+      order: { dtmcreated: 'ASC' },
+    });
+    if (!helpdesk) {
+      throw new NotFoundException('La Mesa de Ayuda Principal no existe.');
+    }
+
+    let config = await this.cronConfigRepository.findOne({
+      where: { helpdesk_id: helpdesk.id },
+    });
+
+    if (!config) {
+      // Crear registro por defecto si aún no existe
+      config = this.cronConfigRepository.create({
+        helpdesk_id: helpdesk.id,
+        cron_mode: 'fixed',
+        cron_time: '08:00',
+        cron_interval_hours: null,
+        cron_interval_minutes: null,
+        blnstatus: true,
+      });
+      config = await this.cronConfigRepository.save(config);
+    }
+
+    return config;
+  }
+
+  /**
+   * Guarda (crea o actualiza) la configuración del cron de la mesa de ayuda principal.
+   */
+  async saveCronConfig(dto: UpdateHelpdeskCronConfigDto): Promise<HelpdeskCronConfig> {
+    const helpdesk = await this.helpdeskRepository.findOne({
+      where: {},
+      order: { dtmcreated: 'ASC' },
+    });
+    if (!helpdesk) {
+      throw new NotFoundException('La Mesa de Ayuda Principal no existe.');
+    }
+
+    // Validación de intervalo mínimo
+    if (dto.cron_mode === 'interval') {
+      const hours = dto.cron_interval_hours ?? 0;
+      const minutes = dto.cron_interval_minutes ?? 0;
+      if (hours === 0 && minutes === 0) {
+        throw new BadRequestException('El intervalo debe ser de al menos 1 minuto.');
+      }
+    }
+
+    let config = await this.cronConfigRepository.findOne({
+      where: { helpdesk_id: helpdesk.id },
+    });
+
+    if (!config) {
+      config = this.cronConfigRepository.create({ helpdesk_id: helpdesk.id, blnstatus: true });
+    }
+
+    config.cron_mode = dto.cron_mode;
+    config.cron_time = dto.cron_mode === 'fixed' ? (dto.cron_time ?? '08:00') : null;
+    config.cron_interval_hours = dto.cron_mode === 'interval' ? (dto.cron_interval_hours ?? 0) : null;
+    config.cron_interval_minutes = dto.cron_mode === 'interval' ? (dto.cron_interval_minutes ?? 0) : null;
+    config.dtmlastmodified = new Date();
+
+    const saved = await this.cronConfigRepository.save(config);
+
+    // Reprogramar el cron job en caliente con la nueva configuración
+    await this.schedulerService.rescheduleUnattendedTicketsCron();
+
+    return saved;
   }
 }

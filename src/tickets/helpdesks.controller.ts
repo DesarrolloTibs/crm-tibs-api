@@ -2,6 +2,7 @@ import { Controller, Get, Patch, Body, UseGuards, UsePipes, ValidationPipe } fro
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { HelpdesksService } from './helpdesks.service';
+import { UpdateHelpdeskCronConfigDto } from './dto/update-helpdesk-cron-config.dto';
 
 @ApiTags('helpdesks')
 @ApiBearerAuth()
@@ -26,7 +27,18 @@ export class HelpdesksController {
   @Patch('main')
   @ApiOperation({ summary: 'Actualizar los datos y etapas de la mesa de ayuda principal' })
   updateMainHelpdesk(@Body() updateDto: any) {
-    // Para simplificar, aceptamos un objeto plano en el body
     return this.helpdesksService.updateMainHelpdesk(updateDto);
+  }
+
+  @Get('cron-config')
+  @ApiOperation({ summary: 'Obtener la configuración del cron de notificaciones de la Mesa de Ayuda' })
+  getCronConfig() {
+    return this.helpdesksService.getCronConfig();
+  }
+
+  @Patch('cron-config')
+  @ApiOperation({ summary: 'Guardar la configuración del cron de notificaciones de la Mesa de Ayuda' })
+  saveCronConfig(@Body() dto: UpdateHelpdeskCronConfigDto) {
+    return this.helpdesksService.saveCronConfig(dto);
   }
 }

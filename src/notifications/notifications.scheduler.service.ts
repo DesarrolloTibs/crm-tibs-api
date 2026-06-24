@@ -1,18 +1,21 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
-import { Cron } from '@nestjs/schedule';
+import { Cron, SchedulerRegistry } from '@nestjs/schedule';
+import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
 import { Reminder } from '../reminders/entities/reminder.entity';
 import { Activity } from '../Activities/entities/activity.entity';
 import { User } from '../users/entities/user.entity';
 import { Ticket } from '../tickets/entities/ticket.entity';
+import { HelpdeskCronConfig } from '../tickets/entities/helpdesk-cron-config.entity';
 import { Role } from '../role.enum';
 import { MailService } from '../mail/mail.service';
 
 @Injectable()
-export class NotificationsSchedulerService {
+export class NotificationsSchedulerService implements OnModuleInit {
   private readonly logger = new Logger('NotificationsSchedulerService');
+  private readonly CRON_JOB_NAME = 'unattended_tickets_alert';
 
   constructor(
     @InjectRepository(Reminder)
@@ -23,9 +26,20 @@ export class NotificationsSchedulerService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(Ticket)
     private readonly ticketRepository: Repository<Ticket>,
+    @InjectRepository(HelpdeskCronConfig)
+    private readonly cronConfigRepository: Repository<HelpdeskCronConfig>,
     private readonly mailService: MailService,
     private readonly configService: ConfigService,
+    private readonly schedulerRegistry: SchedulerRegistry,
   ) {}
+
+  /**
+   * Al iniciar el módulo, programa el cron dinámico según la configuración
+   * almacenada en la base de datos.
+   */
+  async onModuleInit() {
+    await this.rescheduleUnattendedTicketsCron();
+  }
 
   /**
    * Tarea programada que se ejecuta todos los días a las 9:00 AM.
@@ -33,7 +47,7 @@ export class NotificationsSchedulerService {
    */
   @Cron('0 9 * * 1-5', {
     name: 'daily_notifications',
-    timeZone: 'America/Mexico_City', // Zona horaria por defecto
+    timeZone: 'America/Mexico_City',
   })
   async handleDailyNotificationsCron() {
     this.logger.log('Iniciando ejecución programada (cron) de notificaciones diarias a las 9:00 AM');
@@ -190,20 +204,79 @@ export class NotificationsSchedulerService {
     return '-06:00'; // Fallback por defecto para la hora de México
   }
 
+  // -----------------------------------------------------------------------
+  // CRON DINÁMICO: Tickets desatendidos
+  // -----------------------------------------------------------------------
+
   /**
-   * Cron job que se ejecuta todos los días a las 9:00 AM para alertar sobre tickets desatendidos.
+   * Lee la configuración guardada en BD y (re)programa el cron job dinámico.
+   * Llamado al iniciar el módulo y cada vez que el administrador guarda
+   * una nueva configuración desde el panel.
    */
-  @Cron('0 9 * * *', {
-    name: 'unattended_tickets_alert',
-    timeZone: 'America/Mexico_City',
-  })
-  async handleUnattendedTicketsCron() {
-    this.logger.log('Iniciando verificación de tickets desatendidos...');
+  async rescheduleUnattendedTicketsCron(): Promise<void> {
+    const timeZone = 'America/Mexico_City';
+
+    // Leer config de la BD
+    let config: HelpdeskCronConfig | null = null;
     try {
-      await this.checkUnattendedTickets();
-    } catch (error) {
-      this.logger.error('Error durante la verificación de tickets desatendidos:', error);
+      config = await this.cronConfigRepository.findOne({ where: {} });
+    } catch (e) {
+      this.logger.warn('No se pudo leer helpdesk_cron_config. Usando valor por defecto (09:00 diario).');
     }
+
+    // Calcular la expresión cron
+    let cronExpression: string;
+    if (!config || config.cron_mode === 'fixed') {
+      const time = config?.cron_time ?? '09:00';
+      const [hour, minute] = time.split(':').map(Number);
+      cronExpression = `${minute ?? 0} ${hour ?? 9} * * *`;
+      this.logger.log(`Cron de tickets desatendidos: FIJO a las ${time} (${cronExpression})`);
+    } else {
+      // Modo intervalo: convertir a expresión cron
+      const hours = config.cron_interval_hours ?? 0;
+      const minutes = config.cron_interval_minutes ?? 0;
+
+      if (hours === 0 && minutes > 0) {
+        cronExpression = `*/${minutes} * * * *`;
+      } else if (hours > 0 && minutes === 0) {
+        cronExpression = `0 */${hours} * * *`;
+      } else if (hours > 0 && minutes > 0) {
+        // Intervalo mixto: ejecutar cada (hours*60 + minutes) minutos
+        const totalMinutes = hours * 60 + minutes;
+        cronExpression = `*/${totalMinutes} * * * *`;
+      } else {
+        // Fallback
+        cronExpression = `0 9 * * *`;
+      }
+      this.logger.log(`Cron de tickets desatendidos: INTERVALO cada ${hours}h ${minutes}min (${cronExpression})`);
+    }
+
+    // Eliminar el job anterior si existe
+    try {
+      this.schedulerRegistry.deleteCronJob(this.CRON_JOB_NAME);
+      this.logger.log(`Cron job '${this.CRON_JOB_NAME}' anterior eliminado.`);
+    } catch {
+      // No existía, es la primera vez
+    }
+
+    // Crear y registrar el nuevo job
+    const job = new CronJob(
+      cronExpression,
+      async () => {
+        this.logger.log('Iniciando verificación de tickets desatendidos (cron dinámico)...');
+        try {
+          await this.checkUnattendedTickets();
+        } catch (error) {
+          this.logger.error('Error durante la verificación de tickets desatendidos:', error);
+        }
+      },
+      null,
+      true,
+      timeZone,
+    );
+
+    this.schedulerRegistry.addCronJob(this.CRON_JOB_NAME, job);
+    this.logger.log(`Cron job '${this.CRON_JOB_NAME}' registrado correctamente.`);
   }
 
   /**

@@ -463,3 +463,30 @@ ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS priority integer NOT NULL DEF
 
 -- 5. Agregar campo archived en tickets
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+
+-- =========================================================================
+-- CONFIGURACIÓN DE CRON DE MESA DE AYUDA (2024-06-24)
+-- =========================================================================
+
+-- Tabla para almacenar la configuración del cron de notificaciones de tickets
+-- sin asignar en etapa inicial. Relación 1:1 con helpdesks.
+CREATE TABLE IF NOT EXISTS helpdesk_cron_config (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  helpdesk_id uuid NOT NULL,
+  cron_mode character varying(20) NOT NULL DEFAULT 'fixed', -- 'fixed' | 'interval'
+  cron_time character varying(5) NULL,          -- formato 'HH:MM' (solo para modo 'fixed')
+  cron_interval_hours integer NULL,             -- horas del intervalo (modo 'interval')
+  cron_interval_minutes integer NULL,           -- minutos del intervalo (modo 'interval')
+  blnstatus boolean NOT NULL DEFAULT true,
+  dtmcreated timestamp NOT NULL DEFAULT now(),
+  dtmlastmodified timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT pk_helpdesk_cron_config PRIMARY KEY (id),
+  CONSTRAINT fk_helpdesk_cron_config_helpdesk FOREIGN KEY (helpdesk_id)
+    REFERENCES helpdesks(id) ON DELETE CASCADE,
+  CONSTRAINT uq_helpdesk_cron_config_helpdesk UNIQUE (helpdesk_id)
+);
+
+-- Insertar configuración por defecto (hora fija 08:00) para la mesa de ayuda principal
+INSERT INTO helpdesk_cron_config (helpdesk_id, cron_mode, cron_time, cron_interval_hours, cron_interval_minutes, blnstatus)
+VALUES ('a00df1e2-b00d-4a1e-8e81-cfc8152e93db', 'fixed', '08:00', NULL, NULL, true)
+ON CONFLICT (helpdesk_id) DO NOTHING;
