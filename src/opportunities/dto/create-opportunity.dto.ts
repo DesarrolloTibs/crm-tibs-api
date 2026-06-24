@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray } from 'class-validator';
+import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray, IsInt, Max } from 'class-validator';
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Currency } from '../entities/opportunity.entity';
@@ -115,4 +115,11 @@ export class CreateOpportunityDto {
   @IsUUID(undefined, { each: true })
   @IsOptional()
   productIds?: string[];
+
+  @ApiPropertyOptional({ description: 'Prioridad del proyecto (0 a 3 estrellas)', minimum: 0, maximum: 3, type: Number })
+  @IsInt()
+  @Min(0)
+  @Max(3)
+  @IsOptional()
+  priority?: number;
 }

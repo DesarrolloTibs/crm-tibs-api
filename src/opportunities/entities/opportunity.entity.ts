@@ -146,6 +146,9 @@ export class Opportunity {
   @Column({ type: 'timestamp', nullable: true, name: 'stage_entered_at' })
   stage_entered_at: Date | null;
 
+  @Column({ type: 'integer', default: 1 })
+  priority: number;
+
   @OneToMany(() => OpportunityTracking, (tracking) => tracking.opportunity)
   tracking: OpportunityTracking[];
 }

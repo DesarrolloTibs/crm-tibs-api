@@ -280,6 +280,9 @@ export class OpportunitiesService {
       }
     }
 
+    if (updateOpportunityDto.priority !== undefined && updateOpportunityDto.priority !== existingOpportunity.priority) {
+      changes.push(`- Prioridad: ${existingOpportunity.priority} -> ${updateOpportunityDto.priority}`);
+    }
     if (updateOpportunityDto.stage_id !== undefined && updateOpportunityDto.stage_id !== existingOpportunity.stage_id) {
       const oldStage = await this.stageRepository.findOne({ where: { id: existingOpportunity.stage_id } });
       const newStage = await this.stageRepository.findOne({ where: { id: updateOpportunityDto.stage_id } });

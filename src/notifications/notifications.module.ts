@@ -7,10 +7,11 @@ import { User } from '../users/entities/user.entity';
 import { MailModule } from '../mail/mail.module';
 import { NotificationsSchedulerService } from './notifications.scheduler.service';
 import { NotificationsController } from './notifications.controller';
+import { Ticket } from '../tickets/entities/ticket.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Reminder, Activity, User]),
+    TypeOrmModule.forFeature([Reminder, Activity, User, Ticket]),
     MailModule,
     ConfigModule,
   ],

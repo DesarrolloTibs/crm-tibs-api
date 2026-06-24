@@ -1,4 +1,4 @@
-import { IsString, IsUUID, IsNumber, Min, IsOptional, IsDateString, IsArray, IsEnum } from 'class-validator';
+import { IsString, IsUUID, IsNumber, Min, IsOptional, IsDateString, IsArray, IsEnum, IsInt, Max } from 'class-validator';
 import { Currency } from '../entities/opportunity.entity';
 
 export class UpdateOpportunityDto {
@@ -107,5 +107,11 @@ export class UpdateOpportunityDto {
         @IsUUID(undefined, { each: true })
         @IsOptional()
         productIds?: string[];
+
+        @IsInt()
+        @Min(0)
+        @Max(3)
+        @IsOptional()
+        priority?: number;
 }
   

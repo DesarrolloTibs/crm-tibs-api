@@ -1,0 +1,167 @@
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, DataSource } from 'typeorm';
+import { Helpdesk } from './entities/helpdesk.entity';
+import { TicketStage } from './entities/ticket-stage.entity';
+import { Ticket } from './entities/ticket.entity';
+
+@Injectable()
+export class HelpdesksService {
+  constructor(
+    @InjectRepository(Helpdesk)
+    private readonly helpdeskRepository: Repository<Helpdesk>,
+    @InjectRepository(TicketStage)
+    private readonly stageRepository: Repository<TicketStage>,
+    @InjectRepository(Ticket)
+    private readonly ticketRepository: Repository<Ticket>,
+    private readonly dataSource: DataSource,
+  ) {}
+
+  async getMainHelpdesk(): Promise<Helpdesk & { stages: TicketStage[] }> {
+    const helpdesk = await this.helpdeskRepository.findOne({
+      where: {},
+      order: { dtmcreated: 'ASC' },
+    });
+
+    if (!helpdesk) {
+      throw new NotFoundException('La Mesa de Ayuda Principal no existe en la base de datos.');
+    }
+
+    const stages = await this.stageRepository.find({
+      where: { helpdesk_id: helpdesk.id },
+      order: { display_order: 'ASC' },
+    });
+
+    return {
+      ...helpdesk,
+      stages,
+    };
+  }
+
+  async getActiveStages(): Promise<TicketStage[]> {
+    const helpdesk = await this.getMainHelpdesk();
+    return helpdesk.stages.filter(s => s.blnstatus);
+  }
+
+  async updateMainHelpdesk(
+    updateDto: {
+      strname?: string;
+      strdescription?: string;
+      stages?: Array<{
+        id?: string;
+        strname: string;
+        blnstatus: boolean;
+        display_order: number;
+        strcolor?: string | null;
+        blninitial: boolean;
+        intmaxdays?: number | null;
+      }>;
+    }
+  ): Promise<Helpdesk & { stages: TicketStage[] }> {
+    const helpdesk = await this.helpdeskRepository.findOne({
+      where: {},
+      order: { dtmcreated: 'ASC' },
+    });
+
+    if (!helpdesk) {
+      throw new NotFoundException('La Mesa de Ayuda Principal no existe.');
+    }
+
+    if (updateDto.strname) helpdesk.strname = updateDto.strname;
+    if (updateDto.strdescription !== undefined) helpdesk.strdescription = updateDto.strdescription;
+
+    const stagesInput = updateDto.stages;
+
+    if (stagesInput) {
+      const activeStages = stagesInput.filter(s => s.blnstatus);
+
+      // A. Al menos una etapa activa
+      if (activeStages.length === 0) {
+        throw new BadRequestException('Debe existir al menos una etapa activa.');
+      }
+
+      // B. Exactamente una etapa inicial activa
+      const initialActiveStages = activeStages.filter(s => s.blninitial);
+      if (initialActiveStages.length !== 1) {
+        throw new BadRequestException('Debe existir exactamente una etapa inicial activa.');
+      }
+
+      // C. Nombres únicos
+      const names = stagesInput.map(s => s.strname.trim().toLowerCase());
+      const uniqueNames = new Set(names);
+      if (names.length !== uniqueNames.size) {
+        throw new BadRequestException('No se permiten nombres de etapas duplicados.');
+      }
+
+      // D. Nombres no vacíos
+      if (stagesInput.some(s => !s.strname.trim())) {
+        throw new BadRequestException('El nombre de todas las etapas debe estar completo.');
+      }
+
+      // Transacción
+      await this.dataSource.transaction(async (manager) => {
+        // Guardar mesa de ayuda
+        await manager.save(Helpdesk, helpdesk);
+
+        // Buscar etapas actuales
+        const currentDbStages = await manager.find(TicketStage, {
+          where: { helpdesk_id: helpdesk.id }
+        });
+
+        // Identificar etapas eliminadas (existen en la base de datos pero no en el input)
+        const inputIds = stagesInput.map(s => s.id).filter(Boolean);
+        const deletedDbStages = currentDbStages.filter(s => !inputIds.includes(s.id));
+
+        // Validar que no tengan tickets asignados
+        for (const stageToDelete of deletedDbStages) {
+          const ticketsInStage = await manager.count(Ticket, {
+            where: { stage_id: stageToDelete.id }
+          });
+          if (ticketsInStage > 0) {
+            throw new BadRequestException(
+              `No se puede eliminar la etapa "${stageToDelete.strname}" porque tiene ${ticketsInStage} ticket(s) asociado(s).`
+            );
+          }
+        }
+
+        // Eliminar las etapas seleccionadas
+        if (deletedDbStages.length > 0) {
+          await manager.remove(TicketStage, deletedDbStages);
+        }
+
+        // Guardar/Actualizar etapas ingresadas
+        for (const stageInput of stagesInput) {
+          let stage: TicketStage;
+          if (stageInput.id) {
+            const found = await manager.findOne(TicketStage, { where: { id: stageInput.id } });
+            if (!found) {
+              throw new NotFoundException(`La etapa con ID ${stageInput.id} no existe.`);
+            }
+            stage = found;
+          } else {
+            stage = new TicketStage();
+            stage.helpdesk_id = helpdesk.id;
+          }
+
+          stage.strname = stageInput.strname.trim();
+          stage.blnstatus = stageInput.blnstatus;
+          stage.display_order = stageInput.display_order;
+          if (stageInput.strcolor !== undefined) {
+            stage.strcolor = stageInput.strcolor || null;
+          }
+          stage.blninitial = stageInput.blninitial;
+          if (stageInput.intmaxdays !== undefined) {
+            stage.intmaxdays = stageInput.intmaxdays;
+          }
+          stage.dtmlastmodified = new Date();
+
+          await manager.save(TicketStage, stage);
+        }
+      });
+    } else {
+      await this.helpdeskRepository.save(helpdesk);
+    }
+
+    return this.getMainHelpdesk();
+  }
+}

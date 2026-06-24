@@ -6,6 +6,8 @@ import { ConfigService } from '@nestjs/config';
 import { Reminder } from '../reminders/entities/reminder.entity';
 import { Activity } from '../Activities/entities/activity.entity';
 import { User } from '../users/entities/user.entity';
+import { Ticket } from '../tickets/entities/ticket.entity';
+import { Role } from '../role.enum';
 import { MailService } from '../mail/mail.service';
 
 @Injectable()
@@ -19,6 +21,8 @@ export class NotificationsSchedulerService {
     private readonly activityRepository: Repository<Activity>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(Ticket)
+    private readonly ticketRepository: Repository<Ticket>,
     private readonly mailService: MailService,
     private readonly configService: ConfigService,
   ) {}
@@ -184,5 +188,89 @@ export class NotificationsSchedulerService {
       this.logger.warn(`Fallo al calcular offset exacto para ${timeZone}, usando fallback -06:00:`, e);
     }
     return '-06:00'; // Fallback por defecto para la hora de México
+  }
+
+  /**
+   * Cron job que se ejecuta todos los días a las 9:00 AM para alertar sobre tickets desatendidos.
+   */
+  @Cron('0 9 * * *', {
+    name: 'unattended_tickets_alert',
+    timeZone: 'America/Mexico_City',
+  })
+  async handleUnattendedTicketsCron() {
+    this.logger.log('Iniciando verificación de tickets desatendidos...');
+    try {
+      await this.checkUnattendedTickets();
+    } catch (error) {
+      this.logger.error('Error durante la verificación de tickets desatendidos:', error);
+    }
+  }
+
+  /**
+   * Revisa tickets en etapa inicial sin responsable asignado que lleven más de X horas sin atender.
+   */
+  async checkUnattendedTickets(): Promise<void> {
+    const hoursLimit = this.configService.get<number>('TICKET_UNATTENDED_HOURS') || 24;
+    const limitDate = new Date(Date.now() - hoursLimit * 60 * 60 * 1000);
+
+    const unattendedTickets = await this.ticketRepository.createQueryBuilder('ticket')
+      .leftJoinAndSelect('ticket.stage', 'stage')
+      .where('ticket.responsable_id IS NULL')
+      .andWhere('ticket.fecha_apertura <= :limitDate', { limitDate })
+      .andWhere('stage.blninitial = :blnInitial', { blnInitial: true })
+      .getMany();
+
+    if (unattendedTickets.length === 0) {
+      return;
+    }
+
+    this.logger.log(`Encontrados ${unattendedTickets.length} tickets desatendidos.`);
+
+    // Obtener los administradores activos a notificar
+    const admins = await this.userRepository.find({
+      where: { role: Role.Admin, isActive: true }
+    });
+
+    if (admins.length === 0) {
+      this.logger.warn('No hay administradores activos para notificar sobre los tickets desatendidos.');
+      return;
+    }
+
+    for (const ticket of unattendedTickets) {
+      const ticketNumStr = ticket.ticket_number.toString().padStart(5, '0');
+      
+      const diffMs = Date.now() - new Date(ticket.fecha_apertura).getTime();
+      const elapsedHours = Math.floor(diffMs / (1000 * 60 * 60));
+      let elapsedTime = '';
+      if (elapsedHours < 1) {
+        const elapsedMinutes = Math.max(1, Math.floor(diffMs / (1000 * 60)));
+        elapsedTime = `${elapsedMinutes} minutos`;
+      } else if (elapsedHours < 24) {
+        elapsedTime = `${elapsedHours} ${elapsedHours === 1 ? 'hora' : 'horas'}`;
+      } else {
+        const days = Math.floor(elapsedHours / 24);
+        const remainingHours = elapsedHours % 24;
+        elapsedTime = remainingHours > 0 
+          ? `${days} ${days === 1 ? 'día' : 'días'} y ${remainingHours} ${remainingHours === 1 ? 'hora' : 'horas'}` 
+          : `${days} ${days === 1 ? 'día' : 'días'}`;
+      }
+
+      for (const admin of admins) {
+        try {
+          await this.mailService.sendTicketUnattendedAlert(
+            admin.email,
+            ticketNumStr,
+            ticket.strtitle,
+            elapsedTime
+          );
+        } catch (mailError) {
+          this.logger.error(`Error al enviar correo de alerta al admin ${admin.email} para ticket #${ticketNumStr}:`, mailError);
+        }
+      }
+
+      // Marcar alerta enviada
+      ticket.alert_sent = true;
+      await this.ticketRepository.save(ticket);
+    }
   }
 }
