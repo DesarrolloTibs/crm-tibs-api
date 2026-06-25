@@ -40,7 +40,7 @@ import { InteractionsModule } from '../interactions/interactions.module';
       storage: diskStorage({
         destination: (req, file, cb) => {
           const opportunityId = req.params.id;
-          const uploadPath = `./uploads/${opportunityId}`;
+          const uploadPath = `./uploads/opportunities/${opportunityId}`;
           // Asegurarse de que el directorio de destino exista
           if (!existsSync(uploadPath)) {
             mkdirSync(uploadPath, { recursive: true });
