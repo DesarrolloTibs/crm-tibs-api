@@ -237,4 +237,34 @@ export class TicketsService {
     this.ticketsGateway.emitTicketUpdated(fullTicket);
     return fullTicket;
   }
+
+  async queryPublic(email?: string, ticketNumber?: string): Promise<Ticket[]> {
+    if (!email && !ticketNumber) {
+      throw new BadRequestException('Debe proporcionar al menos un correo electrónico o un número de ticket.');
+    }
+
+    const qb = this.ticketRepository.createQueryBuilder('ticket')
+      .leftJoinAndSelect('ticket.cliente', 'cliente')
+      .leftJoinAndSelect('ticket.stage', 'stage')
+      .leftJoinAndSelect('ticket.responsable', 'responsable');
+
+    if (ticketNumber) {
+      const cleanNumber = parseInt(ticketNumber.replace('#', '').trim(), 10);
+      if (isNaN(cleanNumber)) {
+        throw new BadRequestException('El número de ticket no es válido.');
+      }
+      qb.andWhere('ticket.ticket_number = :cleanNumber', { cleanNumber });
+    }
+
+    if (email) {
+      const cleanEmail = email.trim().toLowerCase();
+      qb.andWhere(
+        '(LOWER(ticket.contactEmail) = :cleanEmail OR LOWER(cliente.correo) = :cleanEmail)',
+        { cleanEmail }
+      );
+    }
+
+    qb.orderBy('ticket.fecha_apertura', 'DESC');
+    return qb.getMany();
+  }
 }

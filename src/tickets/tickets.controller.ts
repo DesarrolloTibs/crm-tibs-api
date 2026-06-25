@@ -30,6 +30,15 @@ export class TicketsController {
     return this.ticketsService.findAll(stage_id, showArchivedBool);
   }
 
+  @Get('public/query')
+  @ApiOperation({ summary: 'Consultar el estatus de un ticket o lista de tickets por correo o número de ticket' })
+  queryPublic(
+    @Query('email') email?: string,
+    @Query('ticketNumber') ticketNumber?: string,
+  ) {
+    return this.ticketsService.queryPublic(email, ticketNumber);
+  }
+
   @Get(':id')
   @ApiBearerAuth()
   @UseGuards(AuthGuard('jwt'))
