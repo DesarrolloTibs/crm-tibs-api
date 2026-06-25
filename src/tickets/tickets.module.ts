@@ -11,11 +11,13 @@ import { HelpdesksService } from './helpdesks.service';
 import { HelpdesksController } from './helpdesks.controller';
 import { TicketsGateway } from './tickets.gateway';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { TicketInteractionsModule } from '../ticket-interactions/ticket-interactions.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Ticket, Helpdesk, TicketStage, HelpdeskCronConfig, Client]),
     forwardRef(() => NotificationsModule),
+    TicketInteractionsModule,
   ],
   controllers: [TicketsController, HelpdesksController],
   providers: [TicketsService, HelpdesksService, TicketsGateway],

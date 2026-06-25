@@ -10,6 +10,7 @@ import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { ArchiveTicketDto } from './dto/archive-ticket.dto';
 import { TicketsGateway } from './tickets.gateway';
+import { TicketInteractionsService } from '../ticket-interactions/ticket-interactions.service';
 
 @Injectable()
 export class TicketsService {
@@ -23,9 +24,10 @@ export class TicketsService {
     @InjectRepository(Client)
     private readonly clientRepository: Repository<Client>,
     private readonly ticketsGateway: TicketsGateway,
+    private readonly ticketInteractionsService: TicketInteractionsService,
   ) {}
 
-  async create(createTicketDto: CreateTicketDto): Promise<Ticket> {
+  async create(createTicketDto: CreateTicketDto, user?: User): Promise<Ticket> {
     const ticket = new Ticket();
     ticket.strtitle = createTicketDto.strtitle;
     ticket.tipo_incidencia = createTicketDto.tipo_incidencia;
@@ -122,6 +124,18 @@ export class TicketsService {
 
     const savedTicket = await this.ticketRepository.save(ticket);
     const fullTicket = await this.findOne(savedTicket.id);
+
+    // Registrar en el historial
+    const username = user?.username || 'Cliente';
+    const logComment = user 
+      ? `El usuario ${username} creó el ticket #${fullTicket.ticket_number}.`
+      : `El cliente ${fullTicket.contactName || 'Externo'} creó el ticket #${fullTicket.ticket_number} desde el portal público.`;
+
+    await this.ticketInteractionsService.create({
+      ticket_id: fullTicket.id,
+      comment: logComment,
+    });
+
     this.ticketsGateway.emitTicketCreated(fullTicket);
     return fullTicket;
   }
@@ -154,36 +168,78 @@ export class TicketsService {
     return ticket;
   }
 
-  async update(id: string, updateTicketDto: UpdateTicketDto): Promise<Ticket> {
+  async update(id: string, updateTicketDto: UpdateTicketDto, user?: User): Promise<Ticket> {
     const ticket = await this.findOne(id);
+    const changes: string[] = [];
 
-    if (updateTicketDto.strtitle !== undefined) ticket.strtitle = updateTicketDto.strtitle;
-    if (updateTicketDto.tipo_incidencia !== undefined) ticket.tipo_incidencia = updateTicketDto.tipo_incidencia;
-    if (updateTicketDto.description !== undefined) ticket.description = updateTicketDto.description;
-    if (updateTicketDto.priority !== undefined) ticket.priority = updateTicketDto.priority;
-    if (updateTicketDto.notas_resolucion !== undefined) ticket.notas_resolucion = updateTicketDto.notas_resolucion || null;
+    // Title
+    if (updateTicketDto.strtitle !== undefined && updateTicketDto.strtitle !== ticket.strtitle) {
+      changes.push(`- Asunto: "${ticket.strtitle}" -> "${updateTicketDto.strtitle}"`);
+      ticket.strtitle = updateTicketDto.strtitle;
+    }
+    // Tipo de incidencia
+    if (updateTicketDto.tipo_incidencia !== undefined && updateTicketDto.tipo_incidencia !== ticket.tipo_incidencia) {
+      changes.push(`- Tipo de incidencia: "${ticket.tipo_incidencia}" -> "${updateTicketDto.tipo_incidencia}"`);
+      ticket.tipo_incidencia = updateTicketDto.tipo_incidencia;
+    }
+    // Description
+    if (updateTicketDto.description !== undefined && updateTicketDto.description !== ticket.description) {
+      changes.push(`- Descripción: "${ticket.description || 'Sin descripción'}" -> "${updateTicketDto.description || 'Sin descripción'}"`);
+      ticket.description = updateTicketDto.description;
+    }
+    // Priority
+    if (updateTicketDto.priority !== undefined && updateTicketDto.priority !== ticket.priority) {
+      const getPriorityStr = (p: number) => p === 0 ? 'Sin prioridad' : p === 1 ? 'Baja' : p === 2 ? 'Media' : 'Alta';
+      changes.push(`- Prioridad: "${getPriorityStr(ticket.priority)}" -> "${getPriorityStr(updateTicketDto.priority)}"`);
+      ticket.priority = updateTicketDto.priority;
+    }
+    // Notas de resolución
+    if (updateTicketDto.notas_resolucion !== undefined && (updateTicketDto.notas_resolucion || null) !== ticket.notas_resolucion) {
+      changes.push(`- Notas de resolución: "${ticket.notas_resolucion || 'Sin notas'}" -> "${updateTicketDto.notas_resolucion || 'Sin notas'}"`);
+      ticket.notas_resolucion = updateTicketDto.notas_resolucion || null;
+    }
+    // Contact Info
+    if (updateTicketDto.contactName !== undefined && updateTicketDto.contactName !== ticket.contactName) {
+      changes.push(`- Nombre de contacto: "${ticket.contactName || 'N/A'}" -> "${updateTicketDto.contactName || 'N/A'}"`);
+      ticket.contactName = updateTicketDto.contactName || null;
+    }
+    if (updateTicketDto.contactEmail !== undefined && updateTicketDto.contactEmail !== ticket.contactEmail) {
+      changes.push(`- Correo de contacto: "${ticket.contactEmail || 'N/A'}" -> "${updateTicketDto.contactEmail || 'N/A'}"`);
+      ticket.contactEmail = updateTicketDto.contactEmail || null;
+    }
+    if (updateTicketDto.contactPhone !== undefined && updateTicketDto.contactPhone !== ticket.contactPhone) {
+      changes.push(`- Teléfono de contacto: "${ticket.contactPhone || 'N/A'}" -> "${updateTicketDto.contactPhone || 'N/A'}"`);
+      ticket.contactPhone = updateTicketDto.contactPhone || null;
+    }
 
-    if (updateTicketDto.contactName !== undefined) ticket.contactName = updateTicketDto.contactName || null;
-    if (updateTicketDto.contactEmail !== undefined) ticket.contactEmail = updateTicketDto.contactEmail || null;
-    if (updateTicketDto.contactPhone !== undefined) ticket.contactPhone = updateTicketDto.contactPhone || null;
-
-    if (updateTicketDto.responsable_id !== undefined) {
-      ticket.responsable_id = updateTicketDto.responsable_id || null;
-      if (ticket.responsable_id) {
+    // Agente Responsable
+    if (updateTicketDto.responsable_id !== undefined && updateTicketDto.responsable_id !== ticket.responsable_id) {
+      const oldAgentName = ticket.responsable ? ticket.responsable.username : 'Sin asignar';
+      let newAgentName = 'Sin asignar';
+      if (updateTicketDto.responsable_id) {
         const userRepo = this.ticketRepository.manager.getRepository(User);
-        ticket.responsable = await userRepo.findOne({ where: { id: ticket.responsable_id } });
+        const newAgent = await userRepo.findOne({ where: { id: updateTicketDto.responsable_id } });
+        newAgentName = newAgent ? newAgent.username : 'Sin asignar';
+        ticket.responsable = newAgent;
       } else {
         ticket.responsable = null;
       }
+      changes.push(`- Agente responsable: "${oldAgentName}" -> "${newAgentName}"`);
+      ticket.responsable_id = updateTicketDto.responsable_id || null;
     }
 
-    if (updateTicketDto.cliente_id !== undefined) {
-      ticket.cliente_id = updateTicketDto.cliente_id || null;
-      if (ticket.cliente_id) {
-        ticket.cliente = await this.clientRepository.findOne({ where: { id: ticket.cliente_id } });
+    // Cliente
+    if (updateTicketDto.cliente_id !== undefined && updateTicketDto.cliente_id !== ticket.cliente_id) {
+      const oldClientName = ticket.cliente ? `${ticket.cliente.nombre} ${ticket.cliente.apellido}` : 'Sin asignar';
+      let newClientName = 'Sin asignar';
+      if (updateTicketDto.cliente_id) {
+        ticket.cliente = await this.clientRepository.findOne({ where: { id: updateTicketDto.cliente_id } });
+        newClientName = ticket.cliente ? `${ticket.cliente.nombre} ${ticket.cliente.apellido}` : 'Sin asignar';
       } else {
         ticket.cliente = null;
       }
+      changes.push(`- Cliente: "${oldClientName}" -> "${newClientName}"`);
+      ticket.cliente_id = updateTicketDto.cliente_id || null;
     }
 
     // Lógica especial de cambio de etapa
@@ -204,6 +260,7 @@ export class TicketsService {
         ticket.fecha_cierre = null;
       }
 
+      changes.push(`- Etapa: "${ticket.stage ? ticket.stage.strname : 'N/A'}" -> "${newStage.strname}"`);
       ticket.stage_id = newStage.id;
       ticket.stage = newStage;
       ticket.stage_entered_at = new Date();
@@ -217,6 +274,17 @@ export class TicketsService {
 
     const saved = await this.ticketRepository.save(ticket);
     const fullTicket = await this.findOne(saved.id);
+
+    // Registrar cambios en el historial (interacciones de ticket)
+    if (changes.length > 0) {
+      const username = user?.username || 'Sistema';
+      const logComment = `El usuario ${username} modificó el ticket:\n${changes.join('\n')}`;
+      await this.ticketInteractionsService.create({
+        ticket_id: id,
+        comment: logComment,
+      });
+    }
+
     this.ticketsGateway.emitTicketUpdated(fullTicket);
     return fullTicket;
   }

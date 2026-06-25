@@ -490,3 +490,16 @@ CREATE TABLE IF NOT EXISTS helpdesk_cron_config (
 INSERT INTO helpdesk_cron_config (helpdesk_id, cron_mode, cron_time, cron_interval_hours, cron_interval_minutes, blnstatus)
 VALUES ('a00df1e2-b00d-4a1e-8e81-cfc8152e93db', 'fixed', '08:00', NULL, NULL, true)
 ON CONFLICT (helpdesk_id) DO NOTHING;
+
+-- =========================================================================
+-- HISTORIAL DE TICKETS DE MESA DE AYUDA (2026-06-25)
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS ticket_interactions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  comment text NOT NULL,
+  created_at timestamp NOT NULL DEFAULT now(),
+  ticket_id uuid NOT NULL,
+  CONSTRAINT pk_ticket_interactions PRIMARY KEY (id),
+  CONSTRAINT fk_ticket_interactions_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
+);
+

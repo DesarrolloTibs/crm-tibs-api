@@ -1,10 +1,19 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UsePipes, ValidationPipe, Query, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UsePipes, ValidationPipe, Query, ParseUUIDPipe, Injectable } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { TicketsService } from './tickets.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { ArchiveTicketDto } from './dto/archive-ticket.dto';
+import { GetUser } from 'src/auth/decorators/get-user.decorator';
+import { User } from 'src/users/entities/user.entity';
+
+@Injectable()
+export class OptionalJwtAuthGuard extends AuthGuard('jwt') {
+  handleRequest(err: any, user: any, info: any) {
+    return user || null;
+  }
+}
 
 @ApiTags('tickets')
 @Controller('tickets')
@@ -13,9 +22,10 @@ export class TicketsController {
   constructor(private readonly ticketsService: TicketsService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Crear un nuevo ticket (Público, para clientes externos)' })
-  createPublic(@Body() createTicketDto: CreateTicketDto) {
-    return this.ticketsService.create(createTicketDto);
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiOperation({ summary: 'Crear un nuevo ticket (Público o Interno)' })
+  createPublic(@Body() createTicketDto: CreateTicketDto, @GetUser() user?: User) {
+    return this.ticketsService.create(createTicketDto, user);
   }
 
   @Get()
@@ -51,8 +61,8 @@ export class TicketsController {
   @ApiBearerAuth()
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Actualizar datos de un ticket' })
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() updateTicketDto: UpdateTicketDto) {
-    return this.ticketsService.update(id, updateTicketDto);
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() updateTicketDto: UpdateTicketDto, @GetUser() user: User) {
+    return this.ticketsService.update(id, updateTicketDto, user);
   }
 
   @Delete(':id')

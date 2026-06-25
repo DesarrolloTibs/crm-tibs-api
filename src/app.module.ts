@@ -18,6 +18,7 @@ import { CompaniesModule } from './companies/companies.module';
 import { PipelinesModule } from './pipelines/pipelines.module';
 import { ProductsModule } from './products/products.module';
 import { TicketsModule } from './tickets/tickets.module';
+import { TicketInteractionsModule } from './ticket-interactions/ticket-interactions.module';
 import { DataSource } from 'typeorm';
 
 
@@ -56,6 +57,7 @@ import { DataSource } from 'typeorm';
     PipelinesModule,
     ProductsModule,
     TicketsModule,
+    TicketInteractionsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
