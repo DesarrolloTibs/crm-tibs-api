@@ -442,11 +442,15 @@ export class OpportunitiesService {
 
       // Solo notifica al ejecutivo asignado. Si la oportunidad no tiene ejecutivo, no notifica a nadie.
       if (savedOpportunity.ejecutivo_id) {
+        const notificationChanges = changes.map(c => c.replace(/\s*->\s*/, ' a ').replace(/^- /, '• '));
+        const changesText = notificationChanges.join('\n');
+        const detailMessage = `El usuario ${username} modificó la oportunidad "${savedOpportunity.nombre_proyecto}":\n${changesText}`;
+
         if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
           await this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Asignación de Oportunidad',
-            `Te han asignado la oportunidad "${savedOpportunity.nombre_proyecto}".`,
+            `Te han asignado la oportunidad "${savedOpportunity.nombre_proyecto}".\n\n${detailMessage}`,
             'opportunity_assigned',
             savedOpportunity.id,
           );
@@ -454,7 +458,7 @@ export class OpportunitiesService {
           await this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Movimiento de Oportunidad',
-            `La oportunidad "${savedOpportunity.nombre_proyecto}" fue movida a la etapa "${selectedStage?.strname || 'N/A'}".`,
+            detailMessage,
             'opportunity_moved',
             savedOpportunity.id,
           );
@@ -462,7 +466,7 @@ export class OpportunitiesService {
           await this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Oportunidad Actualizada',
-            `Se han actualizado datos en la oportunidad "${savedOpportunity.nombre_proyecto}".`,
+            detailMessage,
             'opportunity_updated',
             savedOpportunity.id,
           );

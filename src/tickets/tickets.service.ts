@@ -11,6 +11,7 @@ import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { ArchiveTicketDto } from './dto/archive-ticket.dto';
 import { TicketsGateway } from './tickets.gateway';
 import { TicketInteractionsService } from '../ticket-interactions/ticket-interactions.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class TicketsService {
@@ -25,6 +26,7 @@ export class TicketsService {
     private readonly clientRepository: Repository<Client>,
     private readonly ticketsGateway: TicketsGateway,
     private readonly ticketInteractionsService: TicketInteractionsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async create(createTicketDto: CreateTicketDto, user?: User): Promise<Ticket> {
@@ -137,6 +139,17 @@ export class TicketsService {
     });
 
     this.ticketsGateway.emitTicketCreated(fullTicket);
+
+    if (fullTicket.responsable_id) {
+      await this.notificationsService.createAndSendNotification(
+        fullTicket.responsable_id,
+        'Asignación de Ticket',
+        `Te han asignado el ticket #${fullTicket.ticket_number.toString().padStart(5, '0')}: "${fullTicket.strtitle}".`,
+        'ticket_assigned',
+        fullTicket.id,
+      );
+    }
+
     return fullTicket;
   }
 
@@ -171,6 +184,8 @@ export class TicketsService {
   async update(id: string, updateTicketDto: UpdateTicketDto, user?: User): Promise<Ticket> {
     const ticket = await this.findOne(id);
     const changes: string[] = [];
+    const originalStageId = ticket.stage_id;
+    const originalResponsableId = ticket.responsable_id;
 
     // Title
     if (updateTicketDto.strtitle !== undefined && updateTicketDto.strtitle !== ticket.strtitle) {
@@ -283,6 +298,44 @@ export class TicketsService {
         ticket_id: id,
         comment: logComment,
       });
+
+      // Solo notifica al responsable asignado. Si no tiene, no notifica a nadie.
+      if (fullTicket.responsable_id) {
+        const ticketNumStr = fullTicket.ticket_number.toString().padStart(5, '0');
+        const username = user?.username || 'Sistema';
+        const notificationChanges = changes.map(c => c.replace(/\s*->\s*/, ' a ').replace(/^- /, '• '));
+        const changesText = notificationChanges.join('\n');
+        const detailMessage = `El usuario ${username} modificó el ticket #${ticketNumStr}:\n${changesText}`;
+
+        if (updateTicketDto.responsable_id !== undefined && updateTicketDto.responsable_id !== originalResponsableId) {
+          // Asignado a un nuevo responsable
+          await this.notificationsService.createAndSendNotification(
+            fullTicket.responsable_id,
+            'Asignación de Ticket',
+            `Te han asignado el ticket #${ticketNumStr}: "${fullTicket.strtitle}".\n\n${detailMessage}`,
+            'ticket_assigned',
+            fullTicket.id,
+          );
+        } else if (updateTicketDto.stage_id && updateTicketDto.stage_id !== originalStageId) {
+          // Cambiado de etapa
+          await this.notificationsService.createAndSendNotification(
+            fullTicket.responsable_id,
+            'Movimiento de Ticket',
+            detailMessage,
+            'ticket_moved',
+            fullTicket.id,
+          );
+        } else {
+          // Datos actualizados
+          await this.notificationsService.createAndSendNotification(
+            fullTicket.responsable_id,
+            'Ticket Actualizado',
+            detailMessage,
+            'ticket_updated',
+            fullTicket.id,
+          );
+        }
+      }
     }
 
     this.ticketsGateway.emitTicketUpdated(fullTicket);

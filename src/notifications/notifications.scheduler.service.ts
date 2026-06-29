@@ -209,7 +209,7 @@ export class NotificationsSchedulerService implements OnModuleInit {
           '🔔 Recordatorio del Día',
           `Tienes un recordatorio hoy: "${rem.title}".`,
           'activity_reminder',
-          rem.id,
+          rem.activity?.opportunityId || rem.id,
           false, // El correo se envía agrupado en el resumen diario
         );
       }
@@ -221,7 +221,7 @@ export class NotificationsSchedulerService implements OnModuleInit {
           '📋 Actividad Programada para Hoy',
           `Tienes la actividad: "${act.activity}".`,
           'activity_reminder',
-          act.id,
+          act.opportunityId || act.id,
           false, // El correo se envía agrupado en el resumen diario
         );
       }

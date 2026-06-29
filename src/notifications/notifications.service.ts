@@ -65,8 +65,12 @@ export class NotificationsService {
           const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
           let actionUrl: string | undefined = undefined;
 
-          if (saved.relatedId && saved.type && saved.type.includes('opportunity')) {
-            actionUrl = `${frontendUrl}/pipeline?opportunityId=${saved.relatedId}`;
+          if (saved.relatedId && saved.type) {
+            if (saved.type.includes('opportunity')) {
+              actionUrl = `${frontendUrl}/pipeline?opportunityId=${saved.relatedId}`;
+            } else if (saved.type.includes('ticket')) {
+              actionUrl = `${frontendUrl}/helpdesk?ticketId=${saved.relatedId}`;
+            }
           }
 
           await this.mailService.sendGeneralNotificationEmail(user.email, title, message, actionUrl);
