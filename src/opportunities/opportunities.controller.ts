@@ -86,6 +86,7 @@ export class OpportunitiesController {
   async uploadFile(
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File,
+    @GetUser() user: User,
     @Body('title') title?: string,
     @Body('date') date?: string,
   ) {
@@ -93,7 +94,7 @@ export class OpportunitiesController {
       throw new BadRequestException('Se requiere un archivo.');
     }
     const decodedFileName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-    return this.opportunitiesService.addOpportunityFile(id, decodedFileName, file, title, date);
+    return this.opportunitiesService.addOpportunityFile(id, decodedFileName, file, user, title, date);
   }
 
   @Get(':id/files/:fileId/download')
@@ -112,8 +113,9 @@ export class OpportunitiesController {
   async deleteFile(
     @Param('id', ParseUUIDPipe) id: string,
     @Param('fileId', ParseUUIDPipe) fileId: string,
+    @GetUser() user: User,
   ) {
-    return this.opportunitiesService.deleteOpportunityFile(id, fileId);
+    return this.opportunitiesService.deleteOpportunityFile(id, fileId, user);
   }
 
   @Patch(':id/archive')

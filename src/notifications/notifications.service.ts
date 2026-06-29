@@ -66,7 +66,7 @@ export class NotificationsService {
           let actionUrl: string | undefined = undefined;
 
           if (saved.relatedId && saved.type) {
-            if (saved.type.includes('opportunity')) {
+            if (saved.type.includes('opportunity') || saved.type.includes('activity')) {
               actionUrl = `${frontendUrl}/pipeline?opportunityId=${saved.relatedId}`;
             } else if (saved.type.includes('ticket')) {
               actionUrl = `${frontendUrl}/helpdesk?ticketId=${saved.relatedId}`;

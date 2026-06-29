@@ -30,6 +30,10 @@ export class RemindersService {
     });
 
     if (existing) {
+      if (existing.notified) {
+        // Si ya fue notificado, omitimos la actualización para no interferir con cambios en el resto de la actividad
+        return existing;
+      }
       existing.title = data.title;
       existing.date = new Date(data.date);
       return this.reminderRepository.save(existing);
@@ -44,6 +48,11 @@ export class RemindersService {
   }
 
   async deleteByActivity(activityId: string): Promise<void> {
+    const existing = await this.reminderRepository.findOne({ where: { activityId } });
+    if (existing && existing.notified) {
+      // Omitir eliminación si ya fue notificado
+      return;
+    }
     await this.reminderRepository.delete({ activityId });
   }
 

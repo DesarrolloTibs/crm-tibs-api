@@ -9,6 +9,7 @@ import { InteractionsModule } from 'src/interactions/interactions.module';
 import { TypeActivity } from './entities/type-activity.entity';
 import { Client } from '../clients/entities/client.entity';
 import { RemindersModule } from 'src/reminders/reminders.module';
+import { NotificationsModule } from 'src/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { RemindersModule } from 'src/reminders/reminders.module';
     UsersModule,
     InteractionsModule,
     RemindersModule,
+    NotificationsModule,
   ],
   controllers: [ActivitiesController],
   providers: [ActivitiesService],

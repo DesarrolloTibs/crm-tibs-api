@@ -18,6 +18,9 @@ export class Reminder {
   @Column({ type: 'timestamp' })
   date: Date;
 
+  @Column({ type: 'boolean', default: false })
+  notified: boolean;
+
   @Column({ name: 'activity_id', type: 'uuid', nullable: true })
   activityId: string | null;
 

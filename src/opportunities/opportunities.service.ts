@@ -488,10 +488,11 @@ export class OpportunitiesService {
     opportunityId: string,
     fileName: string,
     file: Express.Multer.File,
+    user: User,
     title?: string,
     date?: string,
   ): Promise<Opportunity> {
-    await this.findOne(opportunityId);
+    const opportunity = await this.findOne(opportunityId);
     
     const relativePath = file.path.replace(/\\/g, '/');
     const filePath = await this.storageService.uploadFile(file.path, relativePath);
@@ -505,6 +506,25 @@ export class OpportunitiesService {
     });
 
     await this.opportunityFileRepository.save(opportunityFile);
+
+    // Registrar en el historial
+    const username = user?.username || 'Sistema';
+    await this.interactionsService.create({
+      opportunity_id: opportunityId,
+      comment: `El usuario ${username} subió el archivo "${fileName}".`,
+    });
+
+    // Notificar al ejecutivo asignado
+    if (opportunity.ejecutivo_id) {
+      await this.notificationsService.createAndSendNotification(
+        opportunity.ejecutivo_id,
+        'Archivo Agregado a Oportunidad',
+        `El usuario ${username} agregó el archivo "${fileName}" a la oportunidad "${opportunity.nombre_proyecto}".`,
+        'opportunity_file_added',
+        opportunity.id,
+      );
+    }
+
     return this.findOne(opportunityId);
   }
 
@@ -518,12 +538,32 @@ export class OpportunitiesService {
     return file;
   }
 
-  async deleteOpportunityFile(opportunityId: string, fileId: string): Promise<Opportunity> {
+  async deleteOpportunityFile(opportunityId: string, fileId: string, user: User): Promise<Opportunity> {
+    const opportunity = await this.findOne(opportunityId);
     const file = await this.getOpportunityFile(opportunityId, fileId);
 
     await this.storageService.deleteFile(file.filePath);
 
     await this.opportunityFileRepository.remove(file);
+
+    // Registrar en el historial
+    const username = user?.username || 'Sistema';
+    await this.interactionsService.create({
+      opportunity_id: opportunityId,
+      comment: `El usuario ${username} eliminó el archivo "${file.fileName}".`,
+    });
+
+    // Notificar al ejecutivo asignado
+    if (opportunity.ejecutivo_id) {
+      await this.notificationsService.createAndSendNotification(
+        opportunity.ejecutivo_id,
+        'Archivo Eliminado de Oportunidad',
+        `El usuario ${username} eliminó el archivo "${file.fileName}" de la oportunidad "${opportunity.nombre_proyecto}".`,
+        'opportunity_file_deleted',
+        opportunity.id,
+      );
+    }
+
     return this.findOne(opportunityId);
   }
 

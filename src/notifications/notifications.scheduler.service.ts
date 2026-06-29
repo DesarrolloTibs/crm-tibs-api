@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between } from 'typeorm';
+import { Repository, Between, LessThanOrEqual } from 'typeorm';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
@@ -64,6 +64,65 @@ export class NotificationsSchedulerService implements OnModuleInit {
       this.logger.log('Ejecución programada de notificaciones completada con éxito');
     } catch (error) {
       this.logger.error('Error durante la ejecución programada de notificaciones:', error);
+    }
+  }
+
+  /**
+   * Tarea programada que se ejecuta cada minuto.
+   * Busca recordatorios que no hayan sido notificados y cuya fecha/hora sea menor o igual a la actual,
+   * y envía notificaciones in-app y por correo electrónico de inmediato.
+   */
+  @Cron('* * * * *', {
+    name: 'exact_time_reminders',
+    timeZone: 'America/Mexico_City',
+  })
+  async checkExactTimeReminders(): Promise<void> {
+    try {
+      const now = new Date();
+      const pendingReminders = await this.reminderRepository.find({
+        where: {
+          notified: false,
+          date: LessThanOrEqual(now),
+        },
+        relations: [
+          'activity',
+          'activity.user',
+          'activity.opportunity',
+        ],
+      });
+
+      if (pendingReminders.length === 0) return;
+
+      this.logger.log(`Procesando ${pendingReminders.length} recordatorios programados a la hora exacta.`);
+
+      for (const rem of pendingReminders) {
+        // Notificar al ejecutivo de la oportunidad, o en su defecto al creador de la actividad
+        const userId = rem.activity?.opportunity?.ejecutivo_id || rem.activity?.userId;
+        if (!userId) {
+          this.logger.debug(`Omitiendo recordatorio "${rem.title}" (${rem.id}): No hay usuario asignado.`);
+          rem.notified = true;
+          await this.reminderRepository.save(rem);
+          continue;
+        }
+
+        const opportunityId = rem.activity?.opportunityId || undefined;
+
+        // Enviar notificación in-app y correo electrónico inmediatamente
+        await this.notificationsService.createAndSendNotification(
+          userId,
+          '🔔 Recordatorio de Actividad',
+          `Tienes un recordatorio de actividad programado: "${rem.title}".`,
+          'activity_reminder',
+          opportunityId,
+          true, // Enviar correo electrónico
+        );
+
+        // Marcar como notificado
+        rem.notified = true;
+        await this.reminderRepository.save(rem);
+      }
+    } catch (error) {
+      this.logger.error('Error procesando recordatorios a la hora exacta:', error);
     }
   }
 

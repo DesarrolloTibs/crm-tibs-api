@@ -503,3 +503,9 @@ CREATE TABLE IF NOT EXISTS ticket_interactions (
   CONSTRAINT fk_ticket_interactions_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE
 );
 
+-- =========================================================================
+-- RECORDATORIOS EN TIEMPO REAL (2026-06-29)
+-- =========================================================================
+-- Agregar columna notified a la tabla reminders si no existe
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notified boolean NOT NULL DEFAULT false;
+

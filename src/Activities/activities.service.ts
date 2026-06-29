@@ -20,6 +20,7 @@ import { CreateTypeActivityDto } from './dto/create-type-activity.dto';
 import { UpdateTypeActivityDto } from './dto/update-type-activity.dto';
 import { Client } from 'src/clients/entities/client.entity';
 import { RemindersService } from 'src/reminders/reminders.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
 
 @Injectable()
 export class ActivitiesService {
@@ -35,6 +36,7 @@ export class ActivitiesService {
     private readonly usersService: UsersService,
     private readonly interactionsService: InteractionsService,
     private readonly remindersService: RemindersService,
+    private readonly notificationsService: NotificationsService,
   ) { }
 
 
@@ -214,6 +216,24 @@ export class ActivitiesService {
     });
     if (result) {
       (result as any).reminder = await this.remindersService.findByActivity(savedActivity.id);
+
+      // Notificar al ejecutivo asignado a la oportunidad
+      if (result.opportunity && result.opportunity.ejecutivo_id) {
+        const fullUser = await this.usersService.findOneById(userId);
+        const username = fullUser?.username || 'Sistema';
+        const typeAct = result.typeActivityId
+          ? await this.typeActivityRepository.findOne({ where: { id: result.typeActivityId } })
+          : null;
+        const typeName = typeAct ? typeAct.strname : 'Actividad';
+
+        await this.notificationsService.createAndSendNotification(
+          result.opportunity.ejecutivo_id,
+          'Nueva Actividad en Oportunidad',
+          `El usuario ${username} creó una actividad de tipo "${typeName}" para la oportunidad "${result.opportunity.nombre_proyecto}": "${result.activity}".`,
+          'activity_created',
+          result.opportunity.id,
+        );
+      }
     }
     return this.fillDeletedType(result!);
   }
@@ -338,8 +358,8 @@ export class ActivitiesService {
 
     // Registrar los cambios en el historial de la oportunidad
     const targetOpportunityId = savedActivity.opportunityId || originalActivity.opportunityId;
+    const changes: string[] = [];
     if (targetOpportunityId) {
-      const changes: string[] = [];
       if (updateActivityDto.activity !== undefined && updateActivityDto.activity !== originalActivity.activity) {
         changes.push(`- Descripción: "${originalActivity.activity}" -> "${updateActivityDto.activity}"`);
       }
@@ -385,6 +405,26 @@ export class ActivitiesService {
     });
     if (result) {
       (result as any).reminder = await this.remindersService.findByActivity(savedActivity.id);
+
+      // Notificar al ejecutivo de la oportunidad si hay cambios
+      if (changes.length > 0 && result.opportunity && result.opportunity.ejecutivo_id) {
+        const fullUser = await this.usersService.findOneById(currentUserId);
+        const username = fullUser?.username || 'Sistema';
+        const typeAct = result.typeActivityId
+          ? await this.typeActivityRepository.findOne({ where: { id: result.typeActivityId } })
+          : null;
+        const typeName = typeAct ? typeAct.strname : 'Actividad';
+
+        const changesText = changes.map(c => c.replace(/\s*->\s*/, ' a ').replace(/^- /, '• ')).join('\n');
+
+        await this.notificationsService.createAndSendNotification(
+          result.opportunity.ejecutivo_id,
+          'Actividad Modificada en Oportunidad',
+          `El usuario ${username} modificó la actividad de tipo "${typeName}" en la oportunidad "${result.opportunity.nombre_proyecto}":\n${changesText}`,
+          'activity_updated',
+          result.opportunity.id,
+        );
+      }
     }
     return this.fillDeletedType(result!);
   }
@@ -397,7 +437,10 @@ export class ActivitiesService {
 
     const [fullCurrentUser, activity] = await Promise.all([
       this.usersService.findOneById(currentUserId),
-      this.activityRepository.findOne({ where: { id } }),
+      this.activityRepository.findOne({
+        where: { id },
+        relations: ['opportunity', 'typeActivity'],
+      }),
     ]);
 
     if (!activity) {
@@ -407,6 +450,21 @@ export class ActivitiesService {
     /* if (fullCurrentUser.role !== Role.Admin && activity.userId !== currentUserId) {
        throw new ForbiddenException('No tienes permiso para eliminar esta actividad.');
      }*/
+
+    // Notificar al ejecutivo de la oportunidad antes de eliminar
+    if (activity.opportunity && activity.opportunity.ejecutivo_id) {
+      const username = fullCurrentUser?.username || 'Sistema';
+      const typeName = activity.typeActivity?.strname || 'Actividad';
+
+      await this.notificationsService.createAndSendNotification(
+        activity.opportunity.ejecutivo_id,
+        'Actividad Eliminada de Oportunidad',
+        `El usuario ${username} eliminó la actividad de tipo "${typeName}" de la oportunidad "${activity.opportunity.nombre_proyecto}".`,
+        'activity_deleted',
+        activity.opportunity.id,
+      );
+    }
+
     const result = await this.activityRepository.delete(id);
     if (result.affected === 0) {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada.`);
