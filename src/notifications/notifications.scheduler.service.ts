@@ -10,6 +10,7 @@ import { User } from '../users/entities/user.entity';
 import { Ticket } from '../tickets/entities/ticket.entity';
 import { HelpdeskCronConfig } from '../tickets/entities/helpdesk-cron-config.entity';
 import { Opportunity } from '../opportunities/entities/opportunity.entity';
+import { Notification } from './entities/notification.entity';
 import { Role } from '../role.enum';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from './notifications.service';
@@ -32,6 +33,8 @@ export class NotificationsSchedulerService implements OnModuleInit {
     private readonly cronConfigRepository: Repository<HelpdeskCronConfig>,
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
+    @InjectRepository(Notification)
+    private readonly notificationRepository: Repository<Notification>,
     private readonly mailService: MailService,
     private readonly notificationsService: NotificationsService,
     private readonly configService: ConfigService,
@@ -58,7 +61,6 @@ export class NotificationsSchedulerService implements OnModuleInit {
     this.logger.log('Iniciando ejecución programada (cron) de notificaciones diarias a las 9:00 AM');
     try {
       await this.sendDailyNotifications();
-      await this.checkRedOpportunities();
       this.logger.log('Ejecución programada de notificaciones completada con éxito');
     } catch (error) {
       this.logger.error('Error durante la ejecución programada de notificaciones:', error);
@@ -326,11 +328,16 @@ export class NotificationsSchedulerService implements OnModuleInit {
     const job = new CronJob(
       cronExpression,
       async () => {
-        this.logger.log('Iniciando verificación de tickets desatendidos (cron dinámico)...');
+        this.logger.log('Iniciando verificación de tickets desatendidos y semáforos vencidos (cron dinámico)...');
         try {
           await this.checkUnattendedTickets();
         } catch (error) {
           this.logger.error('Error durante la verificación de tickets desatendidos:', error);
+        }
+        try {
+          await this.checkRedOpportunities();
+        } catch (error) {
+          this.logger.error('Error durante la verificación de semáforos vencidos:', error);
         }
       },
       null,

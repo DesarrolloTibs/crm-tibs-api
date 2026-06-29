@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Notification } from './entities/notification.entity';
 import { User } from '../users/entities/user.entity';
 import { NotificationsGateway } from './notifications.gateway';
@@ -17,6 +18,7 @@ export class NotificationsService {
     private readonly userRepository: Repository<User>,
     private readonly notificationsGateway: NotificationsGateway,
     private readonly mailService: MailService,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -60,7 +62,14 @@ export class NotificationsService {
       try {
         const user = await this.userRepository.findOne({ where: { id: userId } });
         if (user && user.email && user.isActive) {
-          await this.mailService.sendGeneralNotificationEmail(user.email, title, message);
+          const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
+          let actionUrl: string | undefined = undefined;
+
+          if (saved.relatedId && saved.type && saved.type.includes('opportunity')) {
+            actionUrl = `${frontendUrl}/pipeline?opportunityId=${saved.relatedId}`;
+          }
+
+          await this.mailService.sendGeneralNotificationEmail(user.email, title, message, actionUrl);
         }
       } catch (mailError) {
         this.logger.error(`Error enviando correo de notificación a ejecutivo ${userId}:`, mailError);
