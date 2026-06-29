@@ -9,8 +9,10 @@ import { Activity } from '../Activities/entities/activity.entity';
 import { User } from '../users/entities/user.entity';
 import { Ticket } from '../tickets/entities/ticket.entity';
 import { HelpdeskCronConfig } from '../tickets/entities/helpdesk-cron-config.entity';
+import { Opportunity } from '../opportunities/entities/opportunity.entity';
 import { Role } from '../role.enum';
 import { MailService } from '../mail/mail.service';
+import { NotificationsService } from './notifications.service';
 
 @Injectable()
 export class NotificationsSchedulerService implements OnModuleInit {
@@ -28,7 +30,10 @@ export class NotificationsSchedulerService implements OnModuleInit {
     private readonly ticketRepository: Repository<Ticket>,
     @InjectRepository(HelpdeskCronConfig)
     private readonly cronConfigRepository: Repository<HelpdeskCronConfig>,
+    @InjectRepository(Opportunity)
+    private readonly opportunityRepository: Repository<Opportunity>,
     private readonly mailService: MailService,
+    private readonly notificationsService: NotificationsService,
     private readonly configService: ConfigService,
     private readonly schedulerRegistry: SchedulerRegistry,
   ) {}
@@ -53,9 +58,43 @@ export class NotificationsSchedulerService implements OnModuleInit {
     this.logger.log('Iniciando ejecución programada (cron) de notificaciones diarias a las 9:00 AM');
     try {
       await this.sendDailyNotifications();
+      await this.checkRedOpportunities();
       this.logger.log('Ejecución programada de notificaciones completada con éxito');
     } catch (error) {
       this.logger.error('Error durante la ejecución programada de notificaciones:', error);
+    }
+  }
+
+  /**
+   * Revisa oportunidades cuyo semáforo ha vencido (en rojo) y envía alertas solo al ejecutivo asignado.
+   * Si la oportunidad no tiene ejecutivo asignado, no notifica a nadie.
+   */
+  async checkRedOpportunities(): Promise<void> {
+    this.logger.log('Revisando oportunidades con semáforo vencido (en rojo)...');
+    try {
+      const opportunities = await this.opportunityRepository.find({
+        where: { archived: false },
+        relations: ['stage', 'ejecutivo'],
+      });
+
+      const now = new Date();
+      for (const opp of opportunities) {
+        if (!opp.stage || !opp.stage.intmaxdays || opp.stage.intmaxdays <= 0) continue;
+        if (!opp.stage_entered_at || !opp.ejecutivo_id) continue; // Si no tiene ejecutivo asignado, no notifica a nadie
+
+        const diffDays = Math.floor((now.getTime() - new Date(opp.stage_entered_at).getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays > opp.stage.intmaxdays) {
+          await this.notificationsService.createAndSendNotification(
+            opp.ejecutivo_id,
+            '🚨 Semáforo Vencido (Oportunidad en Rojo)',
+            `La oportunidad "${opp.nombre_proyecto}" ha permanecido ${diffDays} días en la etapa "${opp.stage.strname}" (Máximo permitido: ${opp.stage.intmaxdays} días).`,
+            'opportunity_red',
+            opp.id,
+          );
+        }
+      }
+    } catch (e) {
+      this.logger.error('Error verificando oportunidades con semáforo vencido:', e);
     }
   }
 
@@ -151,7 +190,7 @@ export class NotificationsSchedulerService implements OnModuleInit {
 
     const emailsSent: string[] = [];
     
-    // 3. Enviar un único correo resumen por cada usuario
+    // 3. Enviar un único correo resumen por cada usuario y generar notificaciones in-app
     for (const [userId, data] of userMap.entries()) {
       if (data.reminders.length === 0 && data.activities.length === 0) {
         continue;
@@ -160,6 +199,30 @@ export class NotificationsSchedulerService implements OnModuleInit {
       this.logger.log(
         `Enviando resumen a ${data.user.username} (${data.user.email}) - Recordatorios: ${data.reminders.length}, Actividades: ${data.activities.length}`,
       );
+
+      // Notificaciones in-app para cada recordatorio del día
+      for (const rem of data.reminders) {
+        await this.notificationsService.createAndSendNotification(
+          userId,
+          '🔔 Recordatorio del Día',
+          `Tienes un recordatorio hoy: "${rem.title}".`,
+          'activity_reminder',
+          rem.id,
+          false, // El correo se envía agrupado en el resumen diario
+        );
+      }
+
+      // Notificaciones in-app para cada actividad del día
+      for (const act of data.activities) {
+        await this.notificationsService.createAndSendNotification(
+          userId,
+          '📋 Actividad Programada para Hoy',
+          `Tienes la actividad: "${act.activity}".`,
+          'activity_reminder',
+          act.id,
+          false, // El correo se envía agrupado en el resumen diario
+        );
+      }
 
       try {
         await this.mailService.sendDailySummary(

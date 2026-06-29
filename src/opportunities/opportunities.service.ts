@@ -23,6 +23,7 @@ import { Client, ClientCategory } from 'src/clients/entities/client.entity';
 import { Pipeline } from '../pipelines/entities/pipeline.entity';
 import { Stage } from '../stages/entities/stage.entity';
 import { Product } from '../products/entities/product.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class OpportunitiesService {
@@ -44,6 +45,7 @@ export class OpportunitiesService {
     private readonly clientsService: ClientsService,
     private readonly storageService: StorageService,
     private readonly interactionsService: InteractionsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto, user?: User): Promise<Opportunity> {
@@ -153,6 +155,17 @@ export class OpportunitiesService {
           });
         }
       }
+    }
+
+    // Si la oportunidad tiene un ejecutivo asignado, le notifica únicamente a él. Si no tiene, no notifica a nadie.
+    if (savedOpportunity.ejecutivo_id) {
+      await this.notificationsService.createAndSendNotification(
+        savedOpportunity.ejecutivo_id,
+        'Nueva Oportunidad Creada',
+        `Se ha creado la oportunidad "${savedOpportunity.nombre_proyecto}".`,
+        'opportunity_created',
+        savedOpportunity.id,
+      );
     }
 
     // Cargar la relación stage completa antes de retornar
@@ -426,6 +439,35 @@ export class OpportunitiesService {
         opportunity_id: id,
         comment,
       });
+
+      // Solo notifica al ejecutivo asignado. Si la oportunidad no tiene ejecutivo, no notifica a nadie.
+      if (savedOpportunity.ejecutivo_id) {
+        if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
+          await this.notificationsService.createAndSendNotification(
+            savedOpportunity.ejecutivo_id,
+            'Asignación de Oportunidad',
+            `Te han asignado la oportunidad "${savedOpportunity.nombre_proyecto}".`,
+            'opportunity_assigned',
+            savedOpportunity.id,
+          );
+        } else if (updateOpportunityDto.stage_id && updateOpportunityDto.stage_id !== originalStageId) {
+          await this.notificationsService.createAndSendNotification(
+            savedOpportunity.ejecutivo_id,
+            'Movimiento de Oportunidad',
+            `La oportunidad "${savedOpportunity.nombre_proyecto}" fue movida a la etapa "${selectedStage?.strname || 'N/A'}".`,
+            'opportunity_moved',
+            savedOpportunity.id,
+          );
+        } else {
+          await this.notificationsService.createAndSendNotification(
+            savedOpportunity.ejecutivo_id,
+            'Oportunidad Actualizada',
+            `Se han actualizado datos en la oportunidad "${savedOpportunity.nombre_proyecto}".`,
+            'opportunity_updated',
+            savedOpportunity.id,
+          );
+        }
+      }
     }
 
     return this.findOne(savedOpportunity.id);

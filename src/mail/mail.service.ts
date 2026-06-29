@@ -431,6 +431,76 @@ export class MailService {
   }
 
   /**
+   * Envía un correo de notificación individual / alerta interna.
+   */
+  async sendGeneralNotificationEmail(
+    to: string,
+    title: string,
+    message: string,
+    actionUrl?: string,
+  ): Promise<void> {
+    const from = this.configService.get<string>('SMTP_FROM') || '"Friday" <noreply@tibs.com.mx>';
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
+    const targetUrl = actionUrl || frontendUrl;
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${title} - Friday</title>
+        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+      </head>
+      <body style="background-color: #f8fafc; font-family: 'Outfit', 'Inter', sans-serif; padding: 40px 0; margin: 0; width: 100%;">
+        <table align="center" border="0" cellpadding="0" cellspacing="0" width="550" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin: 0 auto;">
+          <tr>
+            <td align="center" style="background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); padding: 32px 30px; text-align: center;">
+              <span style="color: #6366f1; font-weight: 700; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; display: block; margin-bottom: 6px;">Friday CRM</span>
+              <h1 style="color: #ffffff; margin: 0; font-size: 22px; font-weight: 700;">${title}</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 36px 30px;">
+              <div style="background-color: #f8fafc; border-radius: 12px; padding: 20px; margin-bottom: 24px; border: 1px solid #e2e8f0;">
+                <p style="color: #334155; font-size: 15px; margin: 0; line-height: 1.6; whitespace-pre-wrap;">
+                  ${message}
+                </p>
+              </div>
+
+              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-top: 10px; margin-bottom: 16px;">
+                <tr>
+                  <td align="center" style="background-color: #4f46e5; border-radius: 10px;">
+                    <a href="${targetUrl}" target="_blank" style="display: inline-block; padding: 12px 28px; font-size: 14px; font-weight: 600; color: #ffffff; text-decoration: none;">Ver en el CRM</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 20px 30px; text-align: center;">
+              <p style="color: #94a3b8; font-size: 12px; margin: 0;">Este correo ha sido generado automáticamente por Friday CRM.</p>
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from,
+        to,
+        subject: `🔔 ${title}`,
+        html: htmlContent,
+      });
+      this.logger.log(`Correo de notificación "${title}" enviado con éxito a ${to}`);
+    } catch (error) {
+      this.logger.error(`Error al enviar correo de notificación a ${to}:`, error);
+    }
+  }
+
+  /**
    * Retorna los colores de la etiqueta según el tipo de actividad para enriquecer visualmente el correo.
    */
   private getActivityTypeBadgeColor(type: string): { bg: string; fg: string } {

@@ -4,23 +4,26 @@ import { ConfigModule } from '@nestjs/config';
 import { Reminder } from '../reminders/entities/reminder.entity';
 import { Activity } from '../Activities/entities/activity.entity';
 import { User } from '../users/entities/user.entity';
+import { Ticket } from '../tickets/entities/ticket.entity';
+import { HelpdeskCronConfig } from '../tickets/entities/helpdesk-cron-config.entity';
+import { Notification } from './entities/notification.entity';
+import { Opportunity } from '../opportunities/entities/opportunity.entity';
 import { MailModule } from '../mail/mail.module';
 import { NotificationsSchedulerService } from './notifications.scheduler.service';
 import { NotificationsController } from './notifications.controller';
-import { Ticket } from '../tickets/entities/ticket.entity';
-import { HelpdeskCronConfig } from '../tickets/entities/helpdesk-cron-config.entity';
+import { NotificationsService } from './notifications.service';
+import { NotificationsGateway } from './notifications.gateway';
 import { TicketsModule } from '../tickets/tickets.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Reminder, Activity, User, Ticket, HelpdeskCronConfig]),
+    TypeOrmModule.forFeature([Reminder, Activity, User, Ticket, HelpdeskCronConfig, Notification, Opportunity]),
     MailModule,
     ConfigModule,
     forwardRef(() => TicketsModule),
   ],
-  providers: [NotificationsSchedulerService],
+  providers: [NotificationsSchedulerService, NotificationsService, NotificationsGateway],
   controllers: [NotificationsController],
-  exports: [NotificationsSchedulerService],
+  exports: [NotificationsSchedulerService, NotificationsService, NotificationsGateway],
 })
 export class NotificationsModule {}
-
