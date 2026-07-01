@@ -73,7 +73,13 @@ export class NotificationsService {
             }
           }
 
-          await this.mailService.sendGeneralNotificationEmail(user.email, title, message, actionUrl);
+          await this.mailService.sendGeneralNotificationEmail(
+            user.email,
+            title,
+            message,
+            actionUrl,
+            saved.type,
+          );
         }
       } catch (mailError) {
         this.logger.error(`Error enviando correo de notificación a ejecutivo ${userId}:`, mailError);

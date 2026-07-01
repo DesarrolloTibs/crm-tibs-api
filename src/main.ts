@@ -12,6 +12,11 @@ async function bootstrap() {
     prefix: '/uploads/',
   });
 
+  // Servir archivos estáticos desde la carpeta 'static'
+  app.useStaticAssets(join(process.cwd(), 'static'), {
+    prefix: '/static/',
+  });
+
   // Middleware para servir desde Azure si no se encuentra localmente
   app.use('/uploads', async (req: any, res: any) => {
     const storageType = process.env.STORAGE_TYPE || 'local';

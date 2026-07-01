@@ -28,6 +28,14 @@ export class MailService {
     });
   }
 
+  private getApiUrl(): string {
+    let apiUrl = this.configService.get<string>('API_URL') || 'http://localhost:3091';
+    if (apiUrl.endsWith('/')) {
+      apiUrl = apiUrl.slice(0, -1);
+    }
+    return apiUrl;
+  }
+
   /**
    * Envía el resumen diario de actividades y recordatorios a un usuario.
    */
@@ -69,6 +77,7 @@ export class MailService {
     const from = this.configService.get<string>('SMTP_FROM') || '"Billy Sales & Services" <noreply@tibs.com.mx>';
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
     const resetUrl = `${frontendUrl}/reset-password?token=${token}`;
+    const apiUrl = this.getApiUrl();
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -92,14 +101,14 @@ export class MailService {
         <table align="center" border="0" cellpadding="0" cellspacing="0" width="550" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin: 0 auto;">
           <!-- HEADER -->
           <tr>
-            <td align="center" style="background-color: #2563eb; background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%); padding: 36px 30px; text-align: center;">
-              <span style="color: #ffffff; font-weight: 800; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; display: block; margin-bottom: 8px;">Billy <span style="color: #93c5fd; font-weight: 900;">Sales & Services</span></span>
-              <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">Restablecer tu Contraseña</h1>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/header_restore_password.png" alt="Header" style="width: 100%; max-width: 550px; display: block; border-top-left-radius: 16px; border-top-right-radius: 16px;" />
             </td>
           </tr>
           <!-- CONTENT -->
           <tr>
             <td style="padding: 40px 30px; text-align: center;">
+              <h2 style="color: #1e293b; margin: 0 0 24px 0; font-size: 20px; font-weight: 700; text-align: left;">Restablecer tu Contraseña</h2>
               <div style="background-color: #f8fafc; border-radius: 12px; padding: 24px; margin-bottom: 24px; border: 1px solid #f1f5f9; text-align: left;">
                 <p style="color: #334155; font-size: 15px; margin: 0 0 12px 0; line-height: 1.6;">
                   Hola,
@@ -126,9 +135,8 @@ export class MailService {
           </tr>
           <!-- FOOTER -->
           <tr>
-            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 30px; text-align: center;">
-              <p style="color: #94a3b8; font-size: 12px; margin: 0 0 6px 0;">Este correo ha sido generado automáticamente por el sistema Billy Sales & Services.</p>
-              <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; 2026 TIBS. Todos los derechos reservados.</p>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/footer.png" alt="Footer" style="width: 100%; max-width: 550px; display: block; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;" />
             </td>
           </tr>
         </table>
@@ -227,6 +235,7 @@ export class MailService {
         .join('');
     }
 
+    const apiUrl = this.getApiUrl();
     return `
       <!DOCTYPE html>
       <html>
@@ -252,15 +261,16 @@ export class MailService {
         <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin: 0 auto;">
           <!-- HEADER -->
           <tr>
-            <td align="center" style="background-color: #2563eb; background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%); padding: 36px 30px; text-align: center;">
-              <span style="color: #ffffff; font-weight: 800; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; display: block; margin-bottom: 8px;">Billy <span style="color: #93c5fd; font-weight: 900;">Sales & Services</span></span>
-              <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">Tu Agenda del Día</h1>
-              <p style="color: #c7d2fe; font-size: 14px; margin: 8px 0 0 0; font-weight: 400;">${dateStr}</p>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/header_email_summary.png" alt="Header" style="width: 100%; max-width: 600px; display: block; border-top-left-radius: 16px; border-top-right-radius: 16px;" />
             </td>
           </tr>
           <!-- CONTENT -->
           <tr>
             <td style="padding: 30px 30px;">
+              <h2 style="color: #1e293b; margin: 0 0 16px 0; font-size: 20px; font-weight: 700;">Tu Agenda del Día</h2>
+              <p style="color: #64748b; font-size: 13px; margin: -10px 0 24px 0; font-weight: 500;">${dateStr}</p>
+              
               <p style="color: #334155; font-size: 16px; margin: 0 0 24px 0; line-height: 1.6;">
                 Hola <strong style="color: #2563eb;">${username}</strong>,
               </p>
@@ -297,9 +307,8 @@ export class MailService {
           </tr>
           <!-- FOOTER -->
           <tr>
-            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 30px; text-align: center;">
-              <p style="color: #94a3b8; font-size: 12px; margin: 0 0 6px 0;">Este correo ha sido generado automáticamente por el sistema Billy Sales & Services.</p>
-              <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; 2026 TIBS. Todos los derechos reservados.</p>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/footer.png" alt="Footer" style="width: 100%; max-width: 600px; display: block; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;" />
             </td>
           </tr>
         </table>
@@ -319,6 +328,7 @@ export class MailService {
   ): Promise<void> {
     const from = this.configService.get<string>('SMTP_FROM') || '"Billy Sales & Services" <noreply@tibs.com.mx>';
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
+    const apiUrl = this.getApiUrl();
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -340,17 +350,17 @@ export class MailService {
       </head>
       <body style="background-color: #f8fafc; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 40px 0; margin: 0; width: 100%;">
         <table align="center" border="0" cellpadding="0" cellspacing="0" width="550" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin: 0 auto;">
-          <!-- HEADER (ALERT RED) -->
+          <!-- HEADER -->
           <tr>
-            <td align="center" style="background-color: #dc2626; background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%); padding: 36px 30px; text-align: center;">
-              <span style="color: #ffffff; font-weight: 800; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; display: block; margin-bottom: 8px;">Billy <span style="color: #fca5a5; font-weight: 900;">Sales & Services</span></span>
-              <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px;">Alerta de Mesa de Ayuda</h1>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/header_helpdesk_alert.png" alt="Header" style="width: 100%; max-width: 550px; display: block; border-top-left-radius: 16px; border-top-right-radius: 16px;" />
             </td>
           </tr>
 
           <!-- Content Body -->
           <tr>
             <td style="padding: 40px 30px 30px 30px;">
+              <h2 style="color: #e11d48; margin: 0 0 20px 0; font-size: 20px; font-weight: 700;">Alerta de Mesa de Ayuda</h2>
               <p style="color: #334155; font-size: 15px; line-height: 1.6; margin: 0 0 16px 0;">
                 Estimado Administrador,
               </p>
@@ -410,9 +420,8 @@ export class MailService {
 
           <!-- Footer -->
           <tr>
-            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 30px; text-align: center; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;">
-              <p style="color: #94a3b8; font-size: 12px; margin: 0 0 6px 0; font-weight: 500;">Este correo ha sido generado automáticamente por el sistema Billy Sales & Services.</p>
-              <p style="color: #cbd5e1; font-size: 11px; margin: 0;">&copy; 2026 TIBS. Todos los derechos reservados.</p>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/footer.png" alt="Footer" style="width: 100%; max-width: 550px; display: block; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;" />
             </td>
           </tr>
         </table>
@@ -442,10 +451,37 @@ export class MailService {
     title: string,
     message: string,
     actionUrl?: string,
+    notificationType?: string,
   ): Promise<void> {
     const from = this.configService.get<string>('SMTP_FROM') || '"Billy Sales & Services" <noreply@tibs.com.mx>';
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
     const targetUrl = actionUrl || frontendUrl;
+    const apiUrl = this.getApiUrl();
+
+    // Mapeo de tipo de notificación a su respectiva imagen de cabecera
+    const headerImageMap: Record<string, string> = {
+      // Oportunidades
+      opportunity_created: 'header_assign_opportunity.png',
+      opportunity_assigned: 'header_assign_opportunity.png',
+      opportunity_moved: 'header_opportunity_movement.png',
+      opportunity_updated: 'header_opportunity_modified.png',
+      opportunity_file_added: 'header_opportunity_modified.png',
+      opportunity_file_deleted: 'header_file_deleted.png',
+      opportunity_red: 'header_missed_opportunity.png',
+
+      // Actividades
+      activity_created: 'header_new_activity.png',
+      activity_updated: 'header_activity_modified.png',
+      activity_deleted: 'header_file_deleted.png',
+      activity_reminder: 'header_reminder_activity.png',
+
+      // Tickets
+      ticket_assigned: 'header_ticket_assign.png',
+      ticket_moved: 'header_ticket_movement.png',
+      ticket_updated: 'header_ticket_modified.png',
+    };
+
+    const headerImage = (notificationType && headerImageMap[notificationType]) || 'header_assign_opportunity.png';
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -469,14 +505,14 @@ export class MailService {
         <table align="center" border="0" cellpadding="0" cellspacing="0" width="550" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin: 0 auto;">
           <!-- HEADER -->
           <tr>
-            <td align="center" style="background-color: #2563eb; background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%); padding: 32px 30px; text-align: center;">
-              <span style="color: #ffffff; font-weight: 800; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; display: block; margin-bottom: 6px;">Billy <span style="color: #93c5fd; font-weight: 900;">Sales & Services</span></span>
-              <h1 style="color: #ffffff; margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px;">${title}</h1>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/${headerImage}" alt="Header" style="width: 100%; max-width: 550px; display: block; border-top-left-radius: 16px; border-top-right-radius: 16px;" />
             </td>
           </tr>
           <!-- CONTENT -->
           <tr>
             <td style="padding: 36px 30px;">
+              <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 20px; font-weight: 700;">${title}</h2>
               <div style="background-color: #f8fafc; border-radius: 12px; padding: 20px; margin-bottom: 24px; border: 1px solid #e2e8f0;">
                 <p style="color: #334155; font-size: 15px; margin: 0; line-height: 1.6; white-space: pre-wrap; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;">
                   ${message}
@@ -495,9 +531,8 @@ export class MailService {
           </tr>
           <!-- FOOTER -->
           <tr>
-            <td style="background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px 30px; text-align: center;">
-              <p style="color: #94a3b8; font-size: 12px; margin: 0 0 6px 0;">Este correo ha sido generado automáticamente por el sistema Billy Sales & Services.</p>
-              <p style="color: #94a3b8; font-size: 12px; margin: 0;">&copy; 2026 TIBS. Todos los derechos reservados.</p>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/footer.png" alt="Footer" style="width: 100%; max-width: 550px; display: block; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;" />
             </td>
           </tr>
         </table>
