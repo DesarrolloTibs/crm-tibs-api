@@ -13,6 +13,9 @@ export class Stage {
   @Column({ type: 'boolean', default: true, nullable: false })
   blnstatus: boolean;
 
+  @Column({ type: 'boolean', default: true, name: 'bln_show_dashboard' })
+  bln_show_dashboard: boolean;
+
   @Column({ type: 'uuid', nullable: false })
   pipeline_id: string;
 

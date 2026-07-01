@@ -41,4 +41,10 @@ export class HelpdesksController {
   saveCronConfig(@Body() dto: UpdateHelpdeskCronConfigDto) {
     return this.helpdesksService.saveCronConfig(dto);
   }
+
+  @Get()
+  @ApiOperation({ summary: 'Obtener todas las mesas de ayuda con sus etapas' })
+  findAll() {
+    return this.helpdesksService.findAll();
+  }
 }

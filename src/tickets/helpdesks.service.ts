@@ -62,6 +62,7 @@ export class HelpdesksService {
         strcolor?: string | null;
         blninitial: boolean;
         intmaxdays?: number | null;
+        bln_show_dashboard?: boolean;
       }>;
     }
   ): Promise<Helpdesk & { stages: TicketStage[] }> {
@@ -160,6 +161,9 @@ export class HelpdesksService {
           if (stageInput.intmaxdays !== undefined) {
             stage.intmaxdays = stageInput.intmaxdays;
           }
+          if (stageInput.bln_show_dashboard !== undefined) {
+            stage.bln_show_dashboard = stageInput.bln_show_dashboard;
+          }
           stage.dtmlastmodified = new Date();
 
           await manager.save(TicketStage, stage);
@@ -246,5 +250,18 @@ export class HelpdesksService {
     await this.schedulerService.rescheduleUnattendedTicketsCron();
 
     return saved;
+  }
+
+  async findAll(): Promise<Helpdesk[]> {
+    const helpdesks = await this.helpdeskRepository.find({
+      relations: ['stages'],
+      order: { dtmcreated: 'ASC' },
+    });
+    for (const h of helpdesks) {
+      if (h.stages) {
+        h.stages = h.stages.sort((a: any, b: any) => a.display_order - b.display_order);
+      }
+    }
+    return helpdesks;
   }
 }

@@ -48,6 +48,7 @@ export class PipelinesService {
         strcolor?: string | null;
         blninitial: boolean;
         intmaxdays?: number | null;
+        bln_show_dashboard?: boolean;
       }>;
     }
   ): Promise<Pipeline> {
@@ -118,6 +119,9 @@ export class PipelinesService {
           if (stageInput.intmaxdays !== undefined) {
             stage.intmaxdays = stageInput.intmaxdays;
           }
+          if (stageInput.bln_show_dashboard !== undefined) {
+            stage.bln_show_dashboard = stageInput.bln_show_dashboard;
+          }
           stage.dtmlastmodified = new Date();
 
           await manager.save(Stage, stage);
@@ -130,5 +134,16 @@ export class PipelinesService {
 
     // Return updated pipeline
     return this.getMainPipeline();
+  }
+
+  async findAll(): Promise<Pipeline[]> {
+    const pipelines = await this.pipelineRepository.find({
+      relations: ['stages'],
+      order: { dtmcreated: 'ASC' },
+    });
+    for (const p of pipelines) {
+      p.stages = p.stages.sort((a, b) => a.display_order - b.display_order);
+    }
+    return pipelines;
   }
 }

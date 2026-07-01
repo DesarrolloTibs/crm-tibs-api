@@ -1,4 +1,5 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
+import { TicketStage } from './ticket-stage.entity';
 
 @Entity('helpdesks')
 export class Helpdesk {
@@ -13,6 +14,9 @@ export class Helpdesk {
 
   @Column({ type: 'boolean', default: true })
   blnstatus: boolean;
+
+  @OneToMany(() => TicketStage, (stage) => stage.helpdesk)
+  stages: TicketStage[];
 
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   dtmcreated: Date;

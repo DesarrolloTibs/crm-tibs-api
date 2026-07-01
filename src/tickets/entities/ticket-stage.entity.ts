@@ -12,6 +12,9 @@ export class TicketStage {
   @Column({ type: 'boolean', default: true })
   blnstatus: boolean;
 
+  @Column({ type: 'boolean', default: true, name: 'bln_show_dashboard' })
+  bln_show_dashboard: boolean;
+
   @Column({ type: 'uuid' })
   helpdesk_id: string;
 

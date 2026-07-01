@@ -29,4 +29,10 @@ export class PipelinesController {
     // We can use a loose validation or map type because of dynamic inline stage list edits
     return this.pipelinesService.updateMainPipeline(updateDto);
   }
+
+  @Get()
+  @ApiOperation({ summary: 'Obtener todos los pipelines con sus etapas' })
+  findAll() {
+    return this.pipelinesService.findAll();
+  }
 }
