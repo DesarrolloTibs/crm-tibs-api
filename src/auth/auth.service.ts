@@ -50,7 +50,7 @@ export class AuthService {
       user.resetPasswordExpires = expires;
 
       await this.usersService.save(user);
-      await this.mailService.sendResetPasswordEmail(user.email, token);
+      await this.mailService.sendResetPasswordEmail(user.email, token, user.username);
     } catch (error) {
       // Si el usuario no se encuentra, findOneByEmail lanza NotFoundException
       if (error instanceof NotFoundException) return;

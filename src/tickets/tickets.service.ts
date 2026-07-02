@@ -141,10 +141,14 @@ export class TicketsService {
     this.ticketsGateway.emitTicketCreated(fullTicket);
 
     if (fullTicket.responsable_id) {
+      const ticketNumStr = fullTicket.ticket_number.toString().padStart(5, '0');
+      const creatorName = user?.username || 'Sistema';
+      const assignMessage = `Se te ha asignado el ticket <strong>#${ticketNumStr}</strong>: ${fullTicket.strtitle}.<br/><br/>El usuario <strong>${creatorName}</strong> creó el ticket y te asignó como agente responsable.<br/><br/>Por favor, ingresa a la plataforma para revisar el caso y dar seguimiento a la brevedad.`;
+
       await this.notificationsService.createAndSendNotification(
         fullTicket.responsable_id,
         'Asignación de Ticket',
-        `Te han asignado el ticket #${fullTicket.ticket_number.toString().padStart(5, '0')}: "${fullTicket.strtitle}".`,
+        assignMessage,
         'ticket_assigned',
         fullTicket.id,
       );
@@ -186,6 +190,8 @@ export class TicketsService {
     const changes: string[] = [];
     const originalStageId = ticket.stage_id;
     const originalResponsableId = ticket.responsable_id;
+    const originalStageName = ticket.stage ? ticket.stage.strname : 'N/A';
+    const originalResponsable = ticket.responsable;
 
     // Title
     if (updateTicketDto.strtitle !== undefined && updateTicketDto.strtitle !== ticket.strtitle) {
@@ -309,28 +315,53 @@ export class TicketsService {
 
         if (updateTicketDto.responsable_id !== undefined && updateTicketDto.responsable_id !== originalResponsableId) {
           // Asignado a un nuevo responsable
+          const oldAgentName = originalResponsable ? originalResponsable.username : 'Sin asignar';
+          const newAgentName = fullTicket.responsable ? fullTicket.responsable.username : 'Sin asignar';
+
+          const assignMessage = `Se te ha asignado el ticket <strong>#${ticketNumStr}</strong>: ${fullTicket.strtitle}.<br/><br/>El usuario <strong>${username}</strong> actualizó el ticket, asignándote como agente responsable.<br/><br/><strong>Cambio realizado:</strong><br/><br/>Agente responsable: de <strong>${oldAgentName} -> Asignado a ${newAgentName}</strong>.<br/><br/>Por favor, ingresa a la plataforma para revisar el caso y dar seguimiento a la brevedad.`;
+
           await this.notificationsService.createAndSendNotification(
             fullTicket.responsable_id,
             'Asignación de Ticket',
-            `Te han asignado el ticket #${ticketNumStr}: "${fullTicket.strtitle}".\n\n${detailMessage}`,
+            assignMessage,
             'ticket_assigned',
             fullTicket.id,
           );
         } else if (updateTicketDto.stage_id && updateTicketDto.stage_id !== originalStageId) {
           // Cambiado de etapa
+          const newStageName = fullTicket.stage ? fullTicket.stage.strname : 'N/A';
+          const moveMessage = `El usuario <strong>${username}</strong> realizó una actualización en el ticket <strong>#${ticketNumStr}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>Etapa: de <strong>${originalStageName} -> ${newStageName}</strong>.`;
+
           await this.notificationsService.createAndSendNotification(
             fullTicket.responsable_id,
             'Movimiento de Ticket',
-            detailMessage,
+            moveMessage,
             'ticket_moved',
             fullTicket.id,
           );
         } else {
           // Datos actualizados
+          const formattedChanges = changes.map(c => {
+            let cleaned = c.replace(/^- /, '');
+            const parts = cleaned.split(/\s*->\s*/);
+            if (parts.length === 2) {
+              const colonIndex = parts[0].indexOf(':');
+              if (colonIndex !== -1) {
+                const label = parts[0].substring(0, colonIndex).trim();
+                const originalVal = parts[0].substring(colonIndex + 1).replace(/"/g, '').trim();
+                const newVal = parts[1].replace(/"/g, '').trim();
+                return `${label}: de <strong>${originalVal} -> ${newVal}</strong>.`;
+              }
+            }
+            return cleaned;
+          }).join('<br/>');
+
+          const updateMessage = `El usuario <strong>${username}</strong> realizó una actualización en el ticket <strong>#${ticketNumStr}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>${formattedChanges}<br/><br/>Ingresa a la plataforma para revisar los cambios y dar el seguimiento correspondiente, si es necesario.`;
+
           await this.notificationsService.createAndSendNotification(
             fullTicket.responsable_id,
             'Ticket Actualizado',
-            detailMessage,
+            updateMessage,
             'ticket_updated',
             fullTicket.id,
           );

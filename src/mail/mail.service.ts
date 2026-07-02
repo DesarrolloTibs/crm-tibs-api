@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
+import { join } from 'path';
 
 @Injectable()
 export class MailService {
@@ -60,7 +61,7 @@ export class MailService {
       await this.transporter.sendMail({
         from,
         to,
-        subject: `📅 Resumen Diario de Actividades y Recordatorios - ${todayStr}`,
+        subject: `Resumen Diario de Actividades y Recordatorios - ${todayStr}`,
         html: htmlContent,
       });
       this.logger.log(`Resumen diario enviado con éxito a ${to}`);
@@ -73,11 +74,12 @@ export class MailService {
   /**
    * Envía un correo con el enlace para restablecer la contraseña.
    */
-  async sendResetPasswordEmail(email: string, token: string): Promise<void> {
+  async sendResetPasswordEmail(email: string, token: string, username: string): Promise<void> {
     const from = this.configService.get<string>('SMTP_FROM') || '"Billy Sales & Services" <noreply@tibs.com.mx>';
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
     const resetUrl = `${frontendUrl}/reset-password?token=${token}`;
     const apiUrl = this.getApiUrl();
+    const formattedUsername = username ? username.charAt(0).toUpperCase() + username.slice(1) : '';
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -107,29 +109,38 @@ export class MailService {
           </tr>
           <!-- CONTENT -->
           <tr>
-            <td style="padding: 40px 30px; text-align: center;">
-              <h2 style="color: #1e293b; margin: 0 0 24px 0; font-size: 20px; font-weight: 700; text-align: left;">Restablecer tu Contraseña</h2>
-              <div style="background-color: #f8fafc; border-radius: 12px; padding: 24px; margin-bottom: 24px; border: 1px solid #f1f5f9; text-align: left;">
-                <p style="color: #334155; font-size: 15px; margin: 0 0 12px 0; line-height: 1.6;">
-                  Hola,
-                </p>
-                <p style="color: #64748b; font-size: 14px; margin: 0 0 16px 0; line-height: 1.6;">
-                  Recibimos una solicitud para restablecer la contraseña de tu cuenta en <strong>Billy Sales & Services</strong>. Para continuar con el proceso, haz clic en el siguiente botón:
-                </p>
-              </div>
+            <td style="padding: 40px 30px; text-align: left;">
+              <p style="color: #000000; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 700; margin: 0 0 20px 0;">
+                Hola ${formattedUsername},
+              </p>
+              <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; margin: 0 0 24px 0; line-height: 1.6;">
+                Hemos recibido una solicitud para restablecer tu contraseña en la aplicación <strong>Billy Sales & Services</strong>, para continuar con el proceso da clic en el siguiente botón.
+              </p>
 
               <!-- CTA BUTTON -->
-              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-top: 10px; margin-bottom: 24px;">
+              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-top: 10px; margin-bottom: 24px; width: 100%;">
                 <tr>
-                  <td align="center" style="background-color: #2563eb; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2);">
-                    <a href="${resetUrl}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 14px; font-weight: 700; color: #ffffff; text-decoration: none; letter-spacing: 0.5px;">Restablecer mi contraseña</a>
+                  <td align="center">
+                    <table border="0" cellpadding="0" cellspacing="0" style="background-color: #054c04; border-radius: 24px;">
+                      <tr>
+                        <td align="center" style="padding: 12px 32px;">
+                          <a href="${resetUrl}" target="_blank" style="font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; color: #00e600; text-decoration: none; display: inline-block;">Restablecer contraseña</a>
+                        </td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
               </table>
 
-              <p style="color: #94a3b8; font-size: 12px; margin: 24px 0 0 0; line-height: 1.6; text-align: center;">
-                Este enlace de recuperación es válido por <strong>1 hora</strong>.<br/>
-                Si tú no solicitaste este cambio, puedes ignorar este correo de forma segura.
+              <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px; margin: 24px 0 8px 0; line-height: 1.6;">
+                Si no puedes dar click en el boton copia y pega el siguiente link en tu navegador:
+              </p>
+              <p style="margin: 0 0 24px 0; word-break: break-all;">
+                <a href="${resetUrl}" target="_blank" style="color: #054c04; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-weight: 700; text-decoration: underline; font-size: 14px;">${resetUrl}</a>
+              </p>
+
+              <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px; margin: 0; line-height: 1.6;">
+                Si tu no hiciste la solicitud, puedes ignorar este correo. Si tienes dudas relacionadas con la solicitud puedes responder este correo para recibir ayuda personalizada.
               </p>
             </td>
           </tr>
@@ -148,7 +159,7 @@ export class MailService {
       await this.transporter.sendMail({
         from,
         to: email,
-        subject: '🔒 Restablecer Contraseña - Billy Sales & Services',
+        subject: 'Restablecer Contraseña - Billy Sales & Services',
         html: htmlContent,
       });
       this.logger.log(`Enlace de restablecimiento enviado con éxito a ${email}`);
@@ -262,7 +273,7 @@ export class MailService {
           <!-- HEADER -->
           <tr>
             <td align="center" style="padding: 0; text-align: center;">
-              <img src="${apiUrl}/static/header_email_summary.png" alt="Header" style="width: 100%; max-width: 600px; display: block; border-top-left-radius: 16px; border-top-right-radius: 16px;" />
+              <img src="${apiUrl}/static/header_reminder_activity.png" alt="Header" style="width: 100%; max-width: 600px; display: block; border-top-left-radius: 16px; border-top-right-radius: 16px;" />
             </td>
           </tr>
           <!-- CONTENT -->
@@ -325,10 +336,13 @@ export class MailService {
     ticketNumber: string,
     ticketTitle: string,
     elapsedTime: string,
+    tipoIncidencia: string,
+    username: string,
   ): Promise<void> {
     const from = this.configService.get<string>('SMTP_FROM') || '"Billy Sales & Services" <noreply@tibs.com.mx>';
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
     const apiUrl = this.getApiUrl();
+    const formattedUsername = username ? username.charAt(0).toUpperCase() + username.slice(1) : '';
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -359,65 +373,65 @@ export class MailService {
 
           <!-- Content Body -->
           <tr>
-            <td style="padding: 40px 30px 30px 30px;">
-              <h2 style="color: #e11d48; margin: 0 0 20px 0; font-size: 20px; font-weight: 700;">Alerta de Mesa de Ayuda</h2>
-              <p style="color: #334155; font-size: 15px; line-height: 1.6; margin: 0 0 16px 0;">
-                Estimado Administrador,
+            <td style="padding: 40px 30px; text-align: left;">
+              <p style="color: #000000; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 700; margin: 0 0 20px 0;">
+                Hola ${formattedUsername},
               </p>
-              <p style="color: #64748b; font-size: 15px; line-height: 1.6; margin: 0 0 24px 0;">
-                Se ha detectado un ticket en la Mesa de Ayuda que requiere atención inmediata por llevar demasiado tiempo sin un agente asignado:
+              <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; margin: 0 0 24px 0; line-height: 1.6;">
+                Se ha generado un nuevo ticket en la Mesa de Ayuda que requiere <strong>atención inmediata</strong>, ya que ha permanecido sin un agente asignado durante un periodo mayor al esperado.
               </p>
 
               <!-- Ticket Info Card -->
-              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 24px;">
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.02);">
                 <tr>
-                  <td style="padding: 24px;">
-                    <!-- Badge: Ticket Number -->
-                    <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 12px;">
+                  <td style="padding: 24px; text-align: left;">
+                    <!-- Badge at top right and title on left -->
+                    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 16px;">
                       <tr>
-                        <td style="background-color: #ffe4e6; color: #e11d48; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.5px;">
-                          Ticket #${ticketNumber}
+                        <td align="left">
+                          <p style="margin: 0; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; color: #334155;">
+                            <strong>Tipo de alerta:</strong> ${tipoIncidencia || 'Falla'}
+                          </p>
+                        </td>
+                        <td align="right" valign="top">
+                          <span style="background-color: #d1fae5; color: #065f46; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 6px; display: inline-block;">
+                            Ticket #${ticketNumber}
+                          </span>
                         </td>
                       </tr>
                     </table>
                     
-                    <!-- Ticket Title -->
-                    <h2 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 700; color: #0f172a; line-height: 1.4;">
-                      ${ticketTitle}
-                    </h2>
+                    <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px; margin: 0 0 16px 0; line-height: 1.6;">
+                      Este caso ha permanecido <strong>${elapsedTime}</strong> en estado <strong>Nuevo</strong>, sin que se haya asignado un agente responsable para su atención.
+                    </p>
                     
-                    <!-- Warning / Info Detail -->
-                    <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                      <tr>
-                        <td width="24" valign="top" style="padding-top: 2px;">
-                          <span style="font-size: 16px; line-height: 1;">⚠️</span>
-                        </td>
-                        <td style="padding-left: 8px; color: #475569; font-size: 14px; line-height: 1.5;">
-                          Este caso lleva <strong style="color: #0f172a;">${elapsedTime}</strong> en estado <strong style="color: #dc2626;">Nuevo</strong> sin un agente responsable asignado.
-                        </td>
-                      </tr>
-                    </table>
+                    <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px; margin: 0; line-height: 1.6;">
+                      Debido al tiempo transcurrido, es necesario asignar un responsable y dar seguimiento al ticket a la <strong>brevedad</strong>, con el fin de evitar mayores retrasos y asegurar el cumplimiento de los niveles de servicio establecidos.
+                    </p>
                   </td>
                 </tr>
               </table>
 
-              <p style="color: #64748b; font-size: 14px; line-height: 1.6; margin: 0 0 28px 0; text-align: center;">
-                Por favor, ingresa a la plataforma para asignar un responsable y dar el seguimiento correspondiente.
+              <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; margin: 0 0 28px 0;">
+                Por favor, ingresa a la plataforma para asignar un <strong>responsable</strong> y realizar el seguimiento correspondiente.
               </p>
 
               <!-- Action Button -->
-              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 12px;">
+              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-top: 10px; margin-bottom: 16px; width: 100%;">
                 <tr>
-                  <td align="center" style="background-color: #dc2626; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(220, 38, 38, 0.2);">
-                    <a href="${frontendUrl}/helpdesk" target="_blank" style="display: inline-block; padding: 14px 32px; font-size: 14px; font-weight: 700; color: #ffffff; text-decoration: none; letter-spacing: 0.5px;">
-                      VER MESA DE AYUDA
-                    </a>
+                  <td align="center">
+                    <table border="0" cellpadding="0" cellspacing="0" style="background-color: #054c04; border-radius: 24px;">
+                      <tr>
+                        <td align="center" style="padding: 12px 32px;">
+                          <a href="${frontendUrl}/helpdesk" target="_blank" style="font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; color: #00e600; text-decoration: none; display: inline-block;">Asignar ticket a agente</a>
+                        </td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
               </table>
             </td>
           </tr>
-
           <!-- Footer -->
           <tr>
             <td align="center" style="padding: 0; text-align: center;">
@@ -433,7 +447,7 @@ export class MailService {
       await this.transporter.sendMail({
         from,
         to,
-        subject: `⚠️ Alerta: Ticket #${ticketNumber} sin atender por ${elapsedTime}`,
+        subject: `Alerta: Ticket #${ticketNumber} sin atender por ${elapsedTime}`,
         html: htmlContent,
       });
       this.logger.log(`Alerta de ticket #${ticketNumber} enviada con éxito a ${to}`);
@@ -452,11 +466,13 @@ export class MailService {
     message: string,
     actionUrl?: string,
     notificationType?: string,
+    username?: string,
   ): Promise<void> {
     const from = this.configService.get<string>('SMTP_FROM') || '"Billy Sales & Services" <noreply@tibs.com.mx>';
     const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
     const targetUrl = actionUrl || frontendUrl;
     const apiUrl = this.getApiUrl();
+    const formattedUsername = username ? username.charAt(0).toUpperCase() + username.slice(1) : '';
 
     // Mapeo de tipo de notificación a su respectiva imagen de cabecera
     const headerImageMap: Record<string, string> = {
@@ -482,6 +498,28 @@ export class MailService {
     };
 
     const headerImage = (notificationType && headerImageMap[notificationType]) || 'header_assign_opportunity.png';
+
+    let buttonText = 'Ver en el CRM';
+    if (notificationType === 'ticket_moved' || notificationType === 'opportunity_moved') {
+      buttonText = 'Ver movimiento en el CRM';
+    } else if (notificationType === 'ticket_assigned' || notificationType === 'opportunity_assigned') {
+      buttonText = 'Ver asignación en el CRM';
+    } else if (notificationType === 'opportunity_updated') {
+      buttonText = 'Ver actualización en el CRM';
+    } else if (
+      notificationType === 'opportunity_file_deleted' ||
+      notificationType === 'activity_deleted' ||
+      notificationType === 'activity_updated' ||
+      notificationType === 'ticket_updated'
+    ) {
+      buttonText = 'Ver cambios en el CRM';
+    } else if (notificationType?.includes('opportunity')) {
+      buttonText = 'Ver oportunidad en el CRM';
+    } else if (notificationType?.includes('ticket')) {
+      buttonText = 'Ver ticket en el CRM';
+    } else if (notificationType?.includes('activity')) {
+      buttonText = 'Ver recordatorio en el CRM';
+    }
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -511,19 +549,27 @@ export class MailService {
           </tr>
           <!-- CONTENT -->
           <tr>
-            <td style="padding: 36px 30px;">
-              <h2 style="color: #1e293b; margin: 0 0 20px 0; font-size: 20px; font-weight: 700;">${title}</h2>
-              <div style="background-color: #f8fafc; border-radius: 12px; padding: 20px; margin-bottom: 24px; border: 1px solid #e2e8f0;">
-                <p style="color: #334155; font-size: 15px; margin: 0; line-height: 1.6; white-space: pre-wrap; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;">
-                  ${message}
-                </p>
-              </div>
+            <td style="padding: 40px 30px; text-align: left;">
+              ${formattedUsername ? `
+              <p style="color: #000000; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 700; margin: 0 0 20px 0;">
+                Hola ${formattedUsername},
+              </p>
+              ` : ''}
+              <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; margin: 0 0 24px 0; line-height: 1.6;">
+                ${message}
+              </p>
 
               <!-- CTA BUTTON -->
-              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-top: 10px; margin-bottom: 16px;">
+              <table align="center" border="0" cellpadding="0" cellspacing="0" style="margin-top: 10px; margin-bottom: 16px; width: 100%;">
                 <tr>
-                  <td align="center" style="background-color: #2563eb; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2);">
-                    <a href="${targetUrl}" target="_blank" style="display: inline-block; padding: 12px 28px; font-size: 14px; font-weight: 700; color: #ffffff; text-decoration: none; letter-spacing: 0.5px;">Ver en el CRM</a>
+                  <td align="center">
+                    <table border="0" cellpadding="0" cellspacing="0" style="background-color: #054c04; border-radius: 24px;">
+                      <tr>
+                        <td align="center" style="padding: 12px 32px;">
+                          <a href="${targetUrl}" target="_blank" style="font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; color: #00e600; text-decoration: none; display: inline-block;">${buttonText}</a>
+                        </td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
               </table>
@@ -544,7 +590,7 @@ export class MailService {
       await this.transporter.sendMail({
         from,
         to,
-        subject: `🔔 ${title}`,
+        subject: `${title}`,
         html: htmlContent,
       });
       this.logger.log(`Correo de notificación "${title}" enviado con éxito a ${to}`);

@@ -108,10 +108,12 @@ export class NotificationsSchedulerService implements OnModuleInit {
         const opportunityId = rem.activity?.opportunityId || undefined;
 
         // Enviar notificación in-app y correo electrónico inmediatamente
+        const reminderMessage = `Tienes una actividad programada pendiente.<br/><br/>Actividad: <strong>${rem.activity?.activity || 'N/A'}</strong>.<br/>Recordatorio: <strong>${rem.title}</strong>.<br/><br/>Te recomendamos revisarla y darle seguimiento en el tiempo previsto.`;
+
         await this.notificationsService.createAndSendNotification(
           userId,
-          '🔔 Recordatorio de Actividad',
-          `Tienes un recordatorio de actividad programado: "${rem.title}".`,
+          'Recordatorio de Actividad',
+          reminderMessage,
           'activity_reminder',
           opportunityId,
           true, // Enviar correo electrónico
@@ -148,7 +150,7 @@ export class NotificationsSchedulerService implements OnModuleInit {
           await this.notificationsService.createAndSendNotification(
             opp.ejecutivo_id,
             '🚨 Semáforo Vencido (Oportunidad en Rojo)',
-            `La oportunidad "${opp.nombre_proyecto}" ha permanecido ${diffDays} días en la etapa "${opp.stage.strname}" (Máximo permitido: ${opp.stage.intmaxdays} días).`,
+            `Te recordamos que la oportunidad <strong>${opp.nombre_proyecto}</strong> ha permanecido <strong>${diffDays} días</strong> sin movimiento en la etapa de <strong>${opp.stage.strname}</strong>. El máximo permitido para dicha etapa es de ${opp.stage.intmaxdays} días.`,
             'opportunity_red',
             opp.id,
           );
@@ -265,7 +267,7 @@ export class NotificationsSchedulerService implements OnModuleInit {
       for (const rem of data.reminders) {
         await this.notificationsService.createAndSendNotification(
           userId,
-          '🔔 Recordatorio del Día',
+          'Recordatorio del Día',
           `Tienes un recordatorio hoy: "${rem.title}".`,
           'activity_reminder',
           rem.activity?.opportunityId || rem.id,
@@ -277,7 +279,7 @@ export class NotificationsSchedulerService implements OnModuleInit {
       for (const act of data.activities) {
         await this.notificationsService.createAndSendNotification(
           userId,
-          '📋 Actividad Programada para Hoy',
+          'Actividad Programada para Hoy',
           `Tienes la actividad: "${act.activity}".`,
           'activity_reminder',
           act.opportunityId || act.id,
@@ -463,7 +465,9 @@ export class NotificationsSchedulerService implements OnModuleInit {
             admin.email,
             ticketNumStr,
             ticket.strtitle,
-            elapsedTime
+            elapsedTime,
+            ticket.tipo_incidencia,
+            admin.username,
           );
         } catch (mailError) {
           this.logger.error(`Error al enviar correo de alerta al admin ${admin.email} para ticket #${ticketNumStr}:`, mailError);

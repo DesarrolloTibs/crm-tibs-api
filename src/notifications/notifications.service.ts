@@ -38,10 +38,15 @@ export class NotificationsService {
       return null;
     }
 
+    // Quitar tags HTML para la notificación en base de datos e in-app
+    const plainMessage = message
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/?[^>]+(>|$)/g, '');
+
     const notification = this.notificationRepository.create({
       userId,
       title,
-      message,
+      message: plainMessage,
       type,
       relatedId: relatedId || null,
       read: false,
@@ -79,6 +84,7 @@ export class NotificationsService {
             message,
             actionUrl,
             saved.type,
+            user.username,
           );
         }
       } catch (mailError) {

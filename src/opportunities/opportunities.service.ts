@@ -159,10 +159,13 @@ export class OpportunitiesService {
 
     // Si la oportunidad tiene un ejecutivo asignado, le notifica únicamente a él. Si no tiene, no notifica a nadie.
     if (savedOpportunity.ejecutivo_id) {
+      const creatorName = user?.username || 'Sistema';
+      const assignMessage = `Te han asignado la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>. El usuario <strong>${creatorName}</strong> creó la oportunidad y te asignó como ejecutivo responsable.`;
+
       await this.notificationsService.createAndSendNotification(
         savedOpportunity.ejecutivo_id,
         'Nueva Oportunidad Creada',
-        `Se ha creado la oportunidad "${savedOpportunity.nombre_proyecto}".`,
+        assignMessage,
         'opportunity_created',
         savedOpportunity.id,
       );
@@ -246,12 +249,15 @@ export class OpportunitiesService {
     }
 
     const originalStageId = existingOpportunity.stage_id;
+    const originalStageName = existingOpportunity.stage ? existingOpportunity.stage.strname : 'N/A';
     const { contactIds, productIds, ...dtoWithoutContacts } = updateOpportunityDto;
     delete (dtoWithoutContacts as any).stage_entered_at;
 
     // Detectar cambios antes de aplicar el preload
     const changes: string[] = [];
     const username = user?.username || 'Sistema';
+    let oldEjecutivoName = 'Sin asignar';
+    let newEjecutivoName = 'Sin asignar';
 
     // Obtener etiquetas de oportunidad desde base de datos de manera dinámica para que coincidan con la configuración del catálogo
     const labelRepo = this.opportunityRepository.manager.getRepository(OpportunityLabel);
@@ -309,7 +315,9 @@ export class OpportunitiesService {
     if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
       const oldEjecutivo = await this.usersService.findOneById(existingOpportunity.ejecutivo_id).catch(() => null);
       const newEjecutivo = await this.usersService.findOneById(updateOpportunityDto.ejecutivo_id).catch(() => null);
-      changes.push(`- Ejecutivo: "${oldEjecutivo?.username || 'N/A'}" -> "${newEjecutivo?.username || 'N/A'}"`);
+      oldEjecutivoName = oldEjecutivo?.username || 'Sin asignar';
+      newEjecutivoName = newEjecutivo?.username || 'Sin asignar';
+      changes.push(`- Ejecutivo: "${oldEjecutivoName}" -> "${newEjecutivoName}"`);
     }
     if (updateOpportunityDto.cliente_id !== undefined && updateOpportunityDto.cliente_id !== existingOpportunity.cliente_id) {
       const oldCliente = existingOpportunity.cliente;
@@ -447,26 +455,48 @@ export class OpportunitiesService {
         const detailMessage = `El usuario ${username} modificó la oportunidad "${savedOpportunity.nombre_proyecto}":\n${changesText}`;
 
         if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
+          const assignMessage = `Te han asignado la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>. El usuario <strong>${username}</strong> modificó la oportunidad ${savedOpportunity.nombre_proyecto}.<br/><br/>Ejecutivo: de <strong>${oldEjecutivoName} -> ${newEjecutivoName}</strong>.`;
+
           await this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Asignación de Oportunidad',
-            `Te han asignado la oportunidad "${savedOpportunity.nombre_proyecto}".\n\n${detailMessage}`,
+            assignMessage,
             'opportunity_assigned',
             savedOpportunity.id,
           );
         } else if (updateOpportunityDto.stage_id && updateOpportunityDto.stage_id !== originalStageId) {
+          const newStageName = selectedStage ? selectedStage.strname : 'N/A';
+          const moveMessage = `El usuario <strong>${username}</strong> realizó una actualización en la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>Etapa: de <strong>${originalStageName} -> ${newStageName}</strong>.<br/><br/>Ingresa a la plataforma para ver el detalle del movimiento.`;
+
           await this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Movimiento de Oportunidad',
-            detailMessage,
+            moveMessage,
             'opportunity_moved',
             savedOpportunity.id,
           );
         } else {
+          const formattedChanges = changes.map(c => {
+            let cleaned = c.replace(/^- /, '');
+            const parts = cleaned.split(/\s*->\s*/);
+            if (parts.length === 2) {
+              const colonIndex = parts[0].indexOf(':');
+              if (colonIndex !== -1) {
+                const label = parts[0].substring(0, colonIndex).trim();
+                const originalVal = parts[0].substring(colonIndex + 1).replace(/"/g, '').trim();
+                const newVal = parts[1].replace(/"/g, '').trim();
+                return `${label}: de <strong>${originalVal} -> ${newVal}</strong>.`;
+              }
+            }
+            return cleaned;
+          }).join('<br/>');
+
+          const updateMessage = `El usuario <strong>${username}</strong> realizó una actualización en la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>${formattedChanges}<br/><br/>Ingresa a la plataforma para revisar los cambios y dar el seguimiento correspondiente, si es necesario.`;
+
           await this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Oportunidad Actualizada',
-            detailMessage,
+            updateMessage,
             'opportunity_updated',
             savedOpportunity.id,
           );
@@ -555,10 +585,12 @@ export class OpportunitiesService {
 
     // Notificar al ejecutivo asignado
     if (opportunity.ejecutivo_id) {
+      const deleteMessage = `El usuario <strong>${username}</strong> eliminó el archivo:<br/><strong>${file.fileName}</strong> de la oportunidad <strong>${opportunity.nombre_proyecto}</strong>.<br/><br/>Si este archivo era necesario para el seguimiento de la oportunidad, ingresa a la plataforma para revisar el historial de cambios o realizar las acciones correspondientes.`;
+
       await this.notificationsService.createAndSendNotification(
         opportunity.ejecutivo_id,
         'Archivo Eliminado de Oportunidad',
-        `El usuario ${username} eliminó el archivo "${file.fileName}" de la oportunidad "${opportunity.nombre_proyecto}".`,
+        deleteMessage,
         'opportunity_file_deleted',
         opportunity.id,
       );

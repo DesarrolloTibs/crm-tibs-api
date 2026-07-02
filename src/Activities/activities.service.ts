@@ -226,10 +226,12 @@ export class ActivitiesService {
           : null;
         const typeName = typeAct ? typeAct.strname : 'Actividad';
 
+        const activityMessage = `El usuario <strong>${username}</strong> creó una nueva actividad de tipo <strong>${typeName}</strong> para la oportunidad <strong>${result.opportunity.nombre_proyecto}</strong>.<br/><br/>Actividad: <strong>${result.activity}</strong>.<br/><br/>Ingresa a la plataforma para consultar los detalles y dar el seguimiento correspondiente.`;
+
         await this.notificationsService.createAndSendNotification(
           result.opportunity.ejecutivo_id,
           'Nueva Actividad en Oportunidad',
-          `El usuario ${username} creó una actividad de tipo "${typeName}" para la oportunidad "${result.opportunity.nombre_proyecto}": "${result.activity}".`,
+          activityMessage,
           'activity_created',
           result.opportunity.id,
         );
@@ -415,12 +417,27 @@ export class ActivitiesService {
           : null;
         const typeName = typeAct ? typeAct.strname : 'Actividad';
 
-        const changesText = changes.map(c => c.replace(/\s*->\s*/, ' a ').replace(/^- /, '• ')).join('\n');
+        const formattedChanges = changes.map(c => {
+          let cleaned = c.replace(/^- /, '');
+          const parts = cleaned.split(/\s*->\s*/);
+          if (parts.length === 2) {
+            const colonIndex = parts[0].indexOf(':');
+            if (colonIndex !== -1) {
+              const label = parts[0].substring(0, colonIndex).trim();
+              const originalVal = parts[0].substring(colonIndex + 1).replace(/"/g, '').trim();
+              const newVal = parts[1].replace(/"/g, '').trim();
+              return `${label}: de <strong>${originalVal} -> ${newVal}</strong>.`;
+            }
+          }
+          return cleaned;
+        }).join('<br/>');
+
+        const updateMessage = `El usuario <strong>${username}</strong> modificó una actividad de tipo <strong>${typeName}</strong> asociada a la oportunidad <strong>${result.opportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>${formattedChanges}<br/><br/>Ingresa a la plataforma para consultar los detalles y dar seguimiento a la modificación de la actividad, si es necesario.`;
 
         await this.notificationsService.createAndSendNotification(
           result.opportunity.ejecutivo_id,
           'Actividad Modificada en Oportunidad',
-          `El usuario ${username} modificó la actividad de tipo "${typeName}" en la oportunidad "${result.opportunity.nombre_proyecto}":\n${changesText}`,
+          updateMessage,
           'activity_updated',
           result.opportunity.id,
         );
