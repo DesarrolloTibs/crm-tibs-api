@@ -60,5 +60,6 @@ import { NotificationsModule } from '../notifications/notifications.module';
   ],
   controllers: [OpportunitiesController, OpportunityLabelsController, OpportunityCatalogsController],
   providers: [OpportunitiesService, OpportunityLabelsService, OpportunityCatalogsService],
+  exports: [OpportunitiesService],
 })
-export class OpportunitiesModule {}
+export class OpportunitiesModule { }

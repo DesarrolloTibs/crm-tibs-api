@@ -19,8 +19,8 @@ export class Client {
   @Column({ type: 'varchar', length: 255 })
   apellido: string;
 
-  @Column({ type: 'varchar', length: 255, unique: true })
-  correo: string;
+  @Column({ type: 'varchar', length: 255, unique: true, nullable: true })
+  correo: string | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   empresa: string | null;
@@ -29,7 +29,7 @@ export class Client {
   puesto: string;
 
   @Column({ type: 'varchar', length: 50, nullable: true })
-  telefono: string;
+  telefono: string | null;
 
   @Column({
     type: 'enum',
@@ -55,4 +55,3 @@ export class Client {
   @JoinColumn({ name: 'companyId' })
   company: Company | null;
 }
-

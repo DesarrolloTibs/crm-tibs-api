@@ -20,6 +20,7 @@ import { ProductsModule } from './products/products.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { TicketInteractionsModule } from './ticket-interactions/ticket-interactions.module';
 import { ReportsModule } from './reports/reports.module';
+import { ConversationsModule } from './conversations/conversations.module';
 import { DataSource } from 'typeorm';
 
 
@@ -60,12 +61,13 @@ import { DataSource } from 'typeorm';
     TicketsModule,
     TicketInteractionsModule,
     ReportsModule,
+    ConversationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule implements OnApplicationBootstrap {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly dataSource: DataSource) { }
 
   async onApplicationBootstrap() {
     console.log('Running automatic data migration...');

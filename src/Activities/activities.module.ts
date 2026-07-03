@@ -21,5 +21,6 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
   ],
   controllers: [ActivitiesController],
   providers: [ActivitiesService],
+  exports: [ActivitiesService],
 })
-export class ActivitiesModule { }
+export class ActivitiesModule { }
