@@ -55,6 +55,18 @@ export class ActivitiesService {
     return this.typeActivityRepository.find({ order: { strname: 'ASC' } });
   }
 
+  /**
+   * Obtiene todas las actividades de un asesor en un rango de fecha/hora.
+   * Utilizado por el Agente IA para verificar disponibilidad antes de agendar.
+   */
+  async findByUserAndDate(userId: string, dateStart: Date, dateEnd: Date): Promise<Activity[]> {
+    return this.activityRepository.createQueryBuilder('activity')
+      .where('activity.userId = :userId', { userId })
+      .andWhere('activity.date >= :dateStart', { dateStart })
+      .andWhere('activity.date <= :dateEnd', { dateEnd })
+      .getMany();
+  }
+
   async createType(
     createTypeActivityDto: CreateTypeActivityDto,
     user: User,

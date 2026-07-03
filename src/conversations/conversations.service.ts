@@ -266,6 +266,7 @@ export class ConversationsService {
     }
 
     conversation.assignedUserId = assignedUserId;
+    conversation.assignedUser = newUser;
     const updated = await this.conversationRepository.save(conversation);
 
     const triggerUser = await this.userRepository.findOne({ where: { id: triggerUserId } });

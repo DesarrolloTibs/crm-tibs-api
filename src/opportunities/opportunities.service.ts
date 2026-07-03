@@ -106,6 +106,52 @@ export class OpportunitiesService {
       throw new BadRequestException('La etapa seleccionada no pertenece al pipeline de la oportunidad.');
     }
 
+    const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+    // Validar e inyectar valores por defecto para linea_negocio_id
+    if (!opportunityData.linea_negocio_id || opportunityData.linea_negocio_id === 'default') {
+      const blRepo = this.opportunityRepository.manager.getRepository(BusinessLineOption);
+      const defaultBL = await blRepo.findOne({
+        where: { blnstatus: true },
+        order: { strname: 'ASC' }
+      });
+      opportunityData.linea_negocio_id = defaultBL ? defaultBL.id : null;
+    } else if (!isUuid(opportunityData.linea_negocio_id)) {
+      throw new BadRequestException('El ID de Línea de negocio no tiene un formato UUID válido.');
+    }
+
+    // Validar e inyectar valores por defecto para tipo_entrega_id
+    if (!opportunityData.tipo_entrega_id || opportunityData.tipo_entrega_id === 'default') {
+      const dtRepo = this.opportunityRepository.manager.getRepository(DeliveryTypeOption);
+      const defaultDT = await dtRepo.findOne({
+        where: { blnstatus: true },
+        order: { strname: 'ASC' }
+      });
+      opportunityData.tipo_entrega_id = defaultDT ? defaultDT.id : null;
+    } else if (!isUuid(opportunityData.tipo_entrega_id)) {
+      throw new BadRequestException('El ID de Tipo de entrega no tiene un formato UUID válido.');
+    }
+
+    // Validar e inyectar valores por defecto para licenciamiento_id
+    if (!opportunityData.licenciamiento_id || opportunityData.licenciamiento_id === 'default') {
+      const licRepo = this.opportunityRepository.manager.getRepository(LicensingOption);
+      const defaultLic = await licRepo.findOne({
+        where: { blnstatus: true },
+        order: { strname: 'ASC' }
+      });
+      opportunityData.licenciamiento_id = defaultLic ? defaultLic.id : null;
+    } else if (!isUuid(opportunityData.licenciamiento_id)) {
+      throw new BadRequestException('El ID de Licenciamiento no tiene un formato UUID válido.');
+    }
+
+    // Validar formato de cliente_id y ejecutivo_id si existen
+    if (opportunityData.cliente_id && !isUuid(opportunityData.cliente_id)) {
+      throw new BadRequestException('El ID de Cliente no tiene un formato UUID válido.');
+    }
+    if (opportunityData.ejecutivo_id && !isUuid(opportunityData.ejecutivo_id)) {
+      throw new BadRequestException('El ID de Ejecutivo no tiene un formato UUID válido.');
+    }
+
     const opportunity = this.opportunityRepository.create({
       ...opportunityData,
       stage_entered_at: new Date(),
@@ -232,6 +278,9 @@ export class OpportunitiesService {
   }
 
   async findOne(id: string): Promise<Opportunity> {
+    if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      throw new NotFoundException(`Opportunity with ID "${id}" not found (invalid UUID format)`);
+    }
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
       relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage', 'products'],
@@ -240,6 +289,18 @@ export class OpportunitiesService {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
     }
     return opportunity;
+  }
+
+  async findByClientId(clientId: string): Promise<Opportunity[]> {
+    if (!clientId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientId)) {
+      return [];
+    }
+    return this.opportunityRepository.createQueryBuilder('opportunity')
+      .leftJoin('opportunity.contacts', 'contact')
+      .leftJoinAndSelect('opportunity.stage', 'stage')
+      .where('opportunity.cliente_id = :clientId', { clientId })
+      .orWhere('contact.id = :clientId', { clientId })
+      .getMany();
   }
 
   async update(id: string, updateOpportunityDto: UpdateOpportunityDto, user?: User): Promise<Opportunity> {
