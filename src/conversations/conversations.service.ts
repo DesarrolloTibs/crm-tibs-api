@@ -385,6 +385,10 @@ export class ConversationsService {
         const pageId = entry?.id;
 
         if (messaging && messaging.message && messaging.message.text) {
+          if (messaging.message.is_echo) {
+            this.logger.log(`[Webhook ${channel.toUpperCase()}] Ignorando mensaje echo (is_echo: true)`);
+            return { status: 'SUCCESS' };
+          }
           const senderId = messaging.sender.id;
           const text = messaging.message.text;
 
@@ -423,6 +427,10 @@ export class ConversationsService {
         const igAccountId = entry?.id;
 
         if (messaging && messaging.message && messaging.message.text) {
+          if (messaging.message.is_echo) {
+            this.logger.log(`[Webhook ${channel.toUpperCase()}] Ignorando mensaje echo (is_echo: true)`);
+            return { status: 'SUCCESS' };
+          }
           const senderId = messaging.sender.id;
           const text = messaging.message.text;
 
