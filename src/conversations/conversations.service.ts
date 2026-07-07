@@ -5,6 +5,7 @@ import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { Client } from '../clients/entities/client.entity';
 import { User } from '../users/entities/user.entity';
+import { ChannelConfig } from './entities/channel-config.entity';
 import { ConversationsGateway } from './conversations.gateway';
 import { AiAgentService } from './ai-agent.service';
 
@@ -21,6 +22,8 @@ export class ConversationsService {
     private readonly clientRepository: Repository<Client>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(ChannelConfig)
+    private readonly channelConfigRepository: Repository<ChannelConfig>,
     private readonly gateway: ConversationsGateway,
     private readonly aiAgentService: AiAgentService,
   ) {}
@@ -71,7 +74,13 @@ export class ConversationsService {
   /**
    * Registra y procesa un mensaje entrante (simulado o webhook real de Meta).
    */
-  async receiveIncomingMessage(channel: string, externalId: string, clientNickname: string, text: string): Promise<Message> {
+  async receiveIncomingMessage(
+    channel: string,
+    externalId: string,
+    clientNickname: string,
+    text: string,
+    channelConfigId?: string,
+  ): Promise<Message> {
     // 1. Buscar o crear la conversación
     let conversation = await this.conversationRepository.findOne({
       where: { channel, externalId },
@@ -121,6 +130,7 @@ export class ConversationsService {
         clientId: linkedClientId,
         assignedUserId: config.defaultUserId,
         botActive: true,
+        channelConfigId: channelConfigId || null,
       });
       conversation = await this.conversationRepository.save(conversation);
     }
@@ -161,8 +171,8 @@ export class ConversationsService {
         });
         const savedBot = await this.messageRepository.save(botMessage);
         
-        // Simular envío de mensaje al canal externo
-        this.logger.log(`[MOCK META OUTBOUND] Canal: ${conversation.channel} | Para: ${conversation.externalId} | Mensaje: "${aiReply}"`);
+        // Envío real o simulado inteligente
+        await this.sendOutboundMessage(conversation, aiReply);
 
         this.gateway.emitMessage(savedBot);
 
@@ -201,8 +211,8 @@ export class ConversationsService {
 
     this.gateway.emitMessage(fullMessage!);
 
-    // Simular envío de mensaje al canal externo
-    this.logger.log(`[MOCK META OUTBOUND INTERVENCIÓN] Canal: ${conversation.channel} | Para: ${conversation.externalId} | Mensaje: "${content}"`);
+    // Envío real o simulado inteligente
+    await this.sendOutboundMessage(conversation, content);
 
     // Actualizar timestamp
     conversation.updatedAt = new Date();
@@ -294,5 +304,264 @@ export class ConversationsService {
     this.gateway.emitMessage(fullAudit!);
 
     return updated;
+  }
+
+  // ── MÉTODOS CRUD DE CONFIGURACIÓN DE CANALES ───────────────────────────────
+
+  async findChannels(): Promise<ChannelConfig[]> {
+    return this.channelConfigRepository.find({ order: { createdAt: 'DESC' } });
+  }
+
+  async saveChannel(dto: Partial<ChannelConfig>): Promise<ChannelConfig> {
+    if (dto.id) {
+      const existing = await this.channelConfigRepository.findOne({ where: { id: dto.id } });
+      if (!existing) throw new NotFoundException('Canal no encontrado');
+      Object.assign(existing, dto);
+      return this.channelConfigRepository.save(existing);
+    } else {
+      const newConfig = this.channelConfigRepository.create(dto);
+      return this.channelConfigRepository.save(newConfig);
+    }
+  }
+
+  async deleteChannel(id: string): Promise<void> {
+    const existing = await this.channelConfigRepository.findOne({ where: { id } });
+    if (!existing) throw new NotFoundException('Canal no encontrado');
+    await this.channelConfigRepository.remove(existing);
+  }
+
+  // ── VALIDACIÓN Y RECEPCIÓN DE WEBHOOKS DE META ─────────────────────────────
+
+  async verifyMetaWebhook(channel: string, mode: string, token: string, challenge: string): Promise<string> {
+    this.logger.log(`[Webhook ${channel.toUpperCase()}] Petición de verificación recibida. mode=${mode}, token=${token}, challenge=${challenge}`);
+    
+    if (mode === 'subscribe' && token) {
+      const allConfigs = await this.channelConfigRepository.find({ where: { channel } });
+      this.logger.log(`[Webhook ${channel.toUpperCase()}] Configuraciones en DB para este canal: ${JSON.stringify(allConfigs)}`);
+
+      const config = await this.channelConfigRepository.findOne({
+        where: { channel, verifyToken: token, isActive: true },
+      });
+      if (config) {
+        this.logger.log(`[Webhook ${channel.toUpperCase()}] Webhook verificado correctamente`);
+        return challenge;
+      }
+    }
+    this.logger.warn(`[Webhook ${channel.toUpperCase()}] Falló intento de verificación de webhook`);
+    throw new NotFoundException('Token de verificación inválido o canal inactivo');
+  }
+
+  async handleIncomingWebhook(channel: string, payload: any): Promise<any> {
+    this.logger.log(`[Webhook ${channel.toUpperCase()}] Recibido body: ${JSON.stringify(payload)}`);
+
+    try {
+      if (channel === 'whatsapp') {
+        const entry = payload.entry?.[0];
+        const change = entry?.changes?.[0];
+        const value = change?.value;
+        const message = value?.messages?.[0];
+
+        if (message && message.type === 'text') {
+          const externalId = message.from;
+          const text = message.text.body;
+          const clientNickname = value.contacts?.[0]?.profile?.name || 'Cliente WhatsApp';
+          const phoneNumberId = value.metadata?.phone_number_id;
+
+          const channelConfig = await this.channelConfigRepository.findOne({
+            where: { channel: 'whatsapp', phoneNumberId, isActive: true },
+          });
+
+          await this.receiveIncomingMessage(
+            'whatsapp',
+            externalId,
+            clientNickname,
+            text,
+            channelConfig?.id,
+          );
+        }
+      } else if (channel === 'facebook' || channel === 'messenger') {
+        const entry = payload.entry?.[0];
+        const messaging = entry?.messaging?.[0];
+        const pageId = entry?.id;
+
+        if (messaging && messaging.message && messaging.message.text) {
+          const senderId = messaging.sender.id;
+          const text = messaging.message.text;
+
+          const channelConfig = await this.channelConfigRepository.findOne({
+            where: { channel: 'facebook', accountId: pageId, isActive: true },
+          });
+
+          let clientNickname = 'Usuario de Facebook';
+          if (channelConfig && channelConfig.accessToken) {
+            try {
+              const res = await fetch(
+                `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name&access_token=${channelConfig.accessToken}`
+              );
+              if (res.ok) {
+                const data: any = await res.json();
+                if (data && data.first_name) {
+                  clientNickname = `${data.first_name} ${data.last_name || ''}`.trim();
+                }
+              }
+            } catch (err) {
+              this.logger.error(`Error obteniendo perfil de FB: ${err.message}`);
+            }
+          }
+
+          await this.receiveIncomingMessage(
+            'messenger',
+            senderId,
+            clientNickname,
+            text,
+            channelConfig?.id,
+          );
+        }
+      } else if (channel === 'instagram') {
+        const entry = payload.entry?.[0];
+        const messaging = entry?.messaging?.[0];
+        const igAccountId = entry?.id;
+
+        if (messaging && messaging.message && messaging.message.text) {
+          const senderId = messaging.sender.id;
+          const text = messaging.message.text;
+
+          const channelConfig = await this.channelConfigRepository.findOne({
+            where: { channel: 'instagram', accountId: igAccountId, isActive: true },
+          });
+
+          let clientNickname = 'Usuario de Instagram';
+          if (channelConfig && channelConfig.accessToken) {
+            try {
+              const res = await fetch(
+                `https://graph.facebook.com/v19.0/${senderId}?fields=username&access_token=${channelConfig.accessToken}`
+              );
+              if (res.ok) {
+                const data: any = await res.json();
+                if (data && data.username) {
+                  clientNickname = data.username;
+                }
+              }
+            } catch (err) {
+              this.logger.error(`Error obteniendo perfil de IG: ${err.message}`);
+            }
+          }
+
+          await this.receiveIncomingMessage(
+            'instagram',
+            senderId,
+            clientNickname,
+            text,
+            channelConfig?.id,
+          );
+        }
+      }
+
+      return { status: 'SUCCESS' };
+    } catch (error) {
+      this.logger.error(`Error procesando webhook de ${channel}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ── ENVÍO DE MENSAJES HACIA EL EXTERIOR ────────────────────────────────────
+
+  private async sendOutboundMessage(conversation: Conversation, content: string): Promise<void> {
+    let channelConfig = conversation.channelConfig;
+    if (!channelConfig && conversation.channelConfigId) {
+      channelConfig = await this.channelConfigRepository.findOne({ where: { id: conversation.channelConfigId } });
+    }
+    if (!channelConfig) {
+      channelConfig = await this.channelConfigRepository.findOne({
+        where: { channel: conversation.channel, isActive: true }
+      });
+    }
+
+    if (!channelConfig || !channelConfig.accessToken) {
+      this.logger.log(`[SIMULADO / MOCK OUTBOUND] Canal: ${conversation.channel} | Para: ${conversation.externalId} | Mensaje: "${content}"`);
+      return;
+    }
+
+    const { channel, externalId } = conversation;
+    const token = channelConfig.accessToken;
+
+    try {
+      if (channel === 'whatsapp') {
+        const phoneId = channelConfig.phoneNumberId;
+        if (!phoneId) {
+          this.logger.warn(`WhatsApp configurado pero no tiene phoneNumberId. Mensaje simulado.`);
+          return;
+        }
+
+        const url = `https://graph.facebook.com/v19.0/${phoneId}/messages`;
+        const body = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: externalId,
+          type: 'text',
+          text: { body: content }
+        };
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(`Meta API error: ${JSON.stringify(errData)}`);
+        }
+
+        this.logger.log(`[REAL WHATSAPP OUTBOUND] Mensaje enviado con éxito a ${externalId}`);
+      } else if (channel === 'messenger' || channel === 'facebook') {
+        const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${token}`;
+        const body = {
+          recipient: { id: externalId },
+          message: { text: content }
+        };
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(`Meta API error: ${JSON.stringify(errData)}`);
+        }
+
+        this.logger.log(`[REAL MESSENGER OUTBOUND] Mensaje enviado con éxito a ${externalId}`);
+      } else if (channel === 'instagram') {
+        const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${token}`;
+        const body = {
+          recipient: { id: externalId },
+          message: { text: content }
+        };
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(`Meta API error: ${JSON.stringify(errData)}`);
+        }
+
+        this.logger.log(`[REAL INSTAGRAM OUTBOUND] Mensaje enviado con éxito a ${externalId}`);
+      }
+    } catch (err) {
+      this.logger.error(`Error enviando mensaje real por ${channel} a ${externalId}: ${err.message}`);
+    }
   }
 }

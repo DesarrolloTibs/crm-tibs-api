@@ -3,12 +3,15 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   ParseUUIDPipe,
   UsePipes,
   ValidationPipe,
+  Res,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
@@ -17,11 +20,9 @@ import { AiAgentService } from './ai-agent.service';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
-import { AiAgentConfig } from './entities/ai-agent-config.entity';
 
 @ApiTags('conversations')
 @ApiBearerAuth()
-@UseGuards(AuthGuard('jwt'))
 @Controller('conversations')
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class ConversationsController {
@@ -31,6 +32,7 @@ export class ConversationsController {
   ) {}
 
   @Get()
+  @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener todas las conversaciones de los canales' })
   async getConversations(@GetUser() user: User) {
     const isAdmin = user.role === Role.Admin;
@@ -38,25 +40,28 @@ export class ConversationsController {
   }
 
   @Get('ai-config')
+  @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener la configuración global del Agente de IA' })
   async getAiConfig() {
     return this.aiAgentService.getOrInitConfig();
   }
 
   @Post('ai-config')
+  @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Guardar/Actualizar la configuración global del Agente de IA' })
   async updateAiConfig(@Body() body: any) {
-    // Permitir cualquier campo parcial de AiAgentConfig
     return this.aiAgentService.saveConfig(body);
   }
 
   @Get(':id/messages')
+  @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener los mensajes de una conversación específica' })
   async getMessages(@Param('id', ParseUUIDPipe) id: string) {
     return this.conversationsService.findMessages(id);
   }
 
   @Post(':id/messages')
+  @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Enviar un mensaje manual (intervención humana)' })
   async sendManualMessage(
     @Param('id', ParseUUIDPipe) id: string,
@@ -67,6 +72,7 @@ export class ConversationsController {
   }
 
   @Patch(':id/bot-status')
+  @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Activar o desactivar el bot en una conversación' })
   async toggleBotStatus(
     @Param('id', ParseUUIDPipe) id: string,
@@ -77,6 +83,7 @@ export class ConversationsController {
   }
 
   @Patch(':id/assign')
+  @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Reasignar la conversación a otro ejecutivo' })
   async assignUser(
     @Param('id', ParseUUIDPipe) id: string,
@@ -84,6 +91,51 @@ export class ConversationsController {
     @Body('assignedUserId') assignedUserId: string,
   ) {
     return this.conversationsService.assignUser(id, assignedUserId, user.id);
+  }
+
+  @Get('channels')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Obtener todas las configuraciones de canales' })
+  async getChannels() {
+    return this.conversationsService.findChannels();
+  }
+
+  @Post('channels')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Crear o actualizar la configuración de un canal' })
+  async saveChannel(@Body() body: any) {
+    return this.conversationsService.saveChannel(body);
+  }
+
+  @Delete('channels/:id')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Eliminar la configuración de un canal' })
+  async deleteChannel(@Param('id', ParseUUIDPipe) id: string) {
+    return this.conversationsService.deleteChannel(id);
+  }
+
+  @Get('webhook/:channel')
+  @ApiOperation({ summary: 'Verificación del webhook de Meta (GET)' })
+  async verifyMetaWebhook(
+    @Param('channel') channel: string,
+    @Query() query: any,
+    @Res() res: any,
+  ) {
+    const mode = query['hub.mode'] || query.hub?.mode;
+    const token = query['hub.verify_token'] || query.hub?.verify_token;
+    const challenge = query['hub.challenge'] || query.hub?.challenge;
+
+    const verifiedChallenge = await this.conversationsService.verifyMetaWebhook(channel, mode, token, challenge);
+    return res.status(200).send(verifiedChallenge);
+  }
+
+  @Post('webhook/:channel')
+  @ApiOperation({ summary: 'Procesamiento de webhook de Meta (POST)' })
+  async handleMetaWebhook(
+    @Param('channel') channel: string,
+    @Body() body: any,
+  ) {
+    return this.conversationsService.handleIncomingWebhook(channel, body);
   }
 
   @Post('test-receive')
@@ -95,17 +147,5 @@ export class ConversationsController {
     @Body('text') text: string,
   ) {
     return this.conversationsService.receiveIncomingMessage(channel, externalId, clientNickname, text);
-  }
-
-  @Post('webhook/:channel')
-  @ApiOperation({ summary: 'Webhook oficial de Meta Graph API' })
-  async webhook(
-    @Param('channel') channel: string,
-    @Body() body: any,
-  ) {
-    // En producción, aquí mapearíamos el webhook oficial de Meta
-    // extrayendo el sender, el texto y llamando a receiveIncomingMessage.
-    console.log(`[META WEBHOOK RECEIVED] Canal: ${channel}`, JSON.stringify(body));
-    return { status: 'OK' };
   }
 }

@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 import { Client } from '../../clients/entities/client.entity';
 import { User } from '../../users/entities/user.entity';
+import { ChannelConfig } from './channel-config.entity';
 
 @Entity('conversations')
 export class Conversation {
@@ -32,6 +33,13 @@ export class Conversation {
 
   @Column({ type: 'boolean', default: true })
   botActive: boolean;
+
+  @Column({ type: 'uuid', nullable: true })
+  channelConfigId: string | null;
+
+  @ManyToOne(() => ChannelConfig, { nullable: true, onDelete: 'SET NULL', eager: true })
+  @JoinColumn({ name: 'channelConfigId' })
+  channelConfig: ChannelConfig | null;
 
   @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
