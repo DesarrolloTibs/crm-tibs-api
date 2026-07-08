@@ -93,6 +93,27 @@ export class ConversationsController {
     return this.conversationsService.assignUser(id, assignedUserId, user.id);
   }
 
+  @Get('sub-agents')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Obtener todos los sub-agentes configurados' })
+  async getSubAgents() {
+    return this.aiAgentService.getSubAgents();
+  }
+
+  @Post('sub-agents')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Crear o actualizar la configuración de un sub-agente' })
+  async saveSubAgent(@Body() body: any) {
+    return this.aiAgentService.saveSubAgent(body);
+  }
+
+  @Delete('sub-agents/:id')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Eliminar un sub-agente' })
+  async deleteSubAgent(@Param('id', ParseUUIDPipe) id: string) {
+    return this.aiAgentService.deleteSubAgent(id);
+  }
+
   @Get('channels')
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener todas las configuraciones de canales' })

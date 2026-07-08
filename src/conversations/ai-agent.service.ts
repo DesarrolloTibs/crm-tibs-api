@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AiAgentConfig } from './entities/ai-agent-config.entity';
@@ -6,14 +6,16 @@ import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { Client } from '../clients/entities/client.entity';
 import { User } from '../users/entities/user.entity';
+import { AiSubAgent } from './entities/ai-sub-agent.entity';
 import { OpportunitiesService } from '../opportunities/opportunities.service';
 import { ActivitiesService } from '../Activities/activities.service';
 import { RemindersService } from '../reminders/reminders.service';
 import { ClientsService } from '../clients/clients.service';
+import { TicketsService } from '../tickets/tickets.service';
 import { Currency } from '../opportunities/entities/opportunity.entity';
 
 @Injectable()
-export class AiAgentService {
+export class AiAgentService implements OnModuleInit {
   private readonly logger = new Logger('AiAgentService');
 
   constructor(
@@ -23,11 +25,161 @@ export class AiAgentService {
     private readonly messageRepository: Repository<Message>,
     @InjectRepository(Client)
     private readonly clientRepository: Repository<Client>,
+    @InjectRepository(AiSubAgent)
+    private readonly aiSubAgentRepository: Repository<AiSubAgent>,
     private readonly opportunitiesService: OpportunitiesService,
     private readonly activitiesService: ActivitiesService,
     private readonly remindersService: RemindersService,
     private readonly clientsService: ClientsService,
+    private readonly ticketsService: TicketsService,
   ) {}
+
+  /**
+   * Se ejecuta al inicializar el módulo.
+   */
+  async onModuleInit() {
+    await this.runOneTimeSubAgentMigration();
+  }
+
+  /**
+   * Realiza la migración y desglose inicial del contexto general hacia los sub-agentes si la tabla está vacía.
+   */
+  async runOneTimeSubAgentMigration(): Promise<void> {
+    try {
+      const config = await this.getOrInitConfig();
+
+      // Si el context de config contiene el prompt comercial anterior o el simple del enrutador, lo reemplazamos con el del Enrutador Principal robustecido
+      if (!config.context || 
+          config.context.includes('el agente conversacional del área comercial') || 
+          config.context.includes('todo el portafolio comercial de TIBS') || 
+          config.context.includes('Identidad y propósito') ||
+          !config.context.includes('Ecosistema de IA de TIBS')) {
+        config.context = `# Prompt del Agente Principal (Enrutador) — Billy de TIBS
+
+Eres el Agente Principal (Enrutador) del ecosistema de IA de TIBS (https://tibs.com.mx/). Tu única tarea es clasificar el último mensaje del cliente en el contexto de la conversación histórica para redirigir el chat al sub-agente especializado correcto.
+
+## Sub-Agentes Disponibles en el Ecosistema:
+*   **comercial:** Úsalo cuando el cliente pregunte precios, cotizaciones, información detallada de productos (Billy IDP, Billy Vision, Billy S&S CRM, Inteligencia de Negocios BI o Desarrollos a la medida), o demuestre intención de contratar o comprar un servicio.
+*   **seguimiento:** Úsalo cuando el cliente solicite agendar demostraciones, llamadas, citas, reuniones, o confirme días y horarios de disponibilidad para un seguimiento comercial.
+*   **soporte_atencion:** Úsalo cuando el cliente tenga quejas, problemas con facturación, reportes de errores en el sistema, caídas del servicio o requiera soporte técnico sobre herramientas ya contratadas.
+*   **general:** Úsalo cuando el cliente salude, se despida, agradezca, platique de forma informal (small talk), haga preguntas directas sobre TIBS (sitio web, ubicación) o si el mensaje no encaja en las intenciones de los otros sub-agentes.
+
+## Reglas Críticas de Enrutamiento:
+1. **Historial de Conversación:** Si el cliente venía hablando de un producto (intención comercial) pero en su último mensaje dice "Agenda la cita para mañana a las 3", debes clasificarlo en "seguimiento" porque su intención inmediata ha transicionado a agendar.
+2. **Pequeñas Respuestas de Seguimiento:** Mensajes cortos como "Sí, a las 4pm me parece bien" o "No, a esa hora no puedo" dentro de un contexto de agendamiento corresponden a la ruta "seguimiento".
+3. **Reportes y Quejas:** Si el cliente dice "No sirve el sistema" o "Tengo problemas para entrar", redirígelo de inmediato a "soporte_atencion".
+4. **Respuestas de Pequeña Plática / Saludo:** Saludos simples como "Hola" o despedidas como "Gracias, hasta luego" deben ir a "general".
+
+## Formato Obligatorio de Salida:
+Debes responder ÚNICAMENTE con un objeto JSON válido y limpio. Sin bloques de código markdown (\`\`\`json), sin texto explicativo antes o después.
+Estructura del JSON:
+{
+  "thought": "Análisis de la intención del último mensaje del usuario en base al historial y por qué se selecciona esta ruta.",
+  "route": "key_del_subagente"
+}
+
+## Ejemplos de Clasificación:
+*   Cliente dice: "Hola, buenos días."
+    {"thought": "El usuario saluda al bot, no hay intención comercial, de soporte ni agendamiento aún.", "route": "general"}
+*   Cliente dice: "Me interesa una demo de Billy IDP, cuánto cuesta?"
+    {"thought": "El usuario pregunta precios y detalles técnicos de un producto, es de naturaleza de ventas.", "route": "comercial"}
+*   Cliente dice: "Mañana a las 2 pm está perfecto para la llamada."
+    {"thought": "El usuario confirma un horario de cita para una llamada comercial en el historial, corresponde a agendar seguimiento.", "route": "seguimiento"}
+*   Cliente dice: "No puedo subir mis facturas al validador de IDP, me marca error 500."
+    {"thought": "El usuario reporta una falla técnica con una herramienta en producción, requiere soporte técnico.", "route": "soporte_atencion"}`;
+        await this.aiAgentConfigRepository.save(config);
+        this.logger.log('Se actualizó el prompt principal config.context con las directivas de enrutamiento robustas.');
+      }
+
+      const count = await this.aiSubAgentRepository.count();
+      if (count > 0) {
+        return;
+      }
+
+      this.logger.log('Iniciando migración única para desglose de contexto en sub-agentes...');
+      const currentContext = config.context || '';
+
+      const baseCommonPrompt = `Eres un asistente conversacional de inteligencia artificial.
+Atiendes a los usuarios a través de los canales de chat integrados.
+Tono y estilo: Profesional, cercano, resolutivo y breve (mensajes cortos adaptados a chat). Nunca hables con lenguaje técnico de base de datos ni reveles IDs o errores de sistema al cliente.
+Idioma: Responde siempre en el mismo idioma en que escribe el cliente (español o inglés).
+Privacidad: Protege la información personal. No compartas datos sensibles de un contacto con otro.
+Redirección: Deriva con un asesor humano si hay inconformidades graves, quejas o si el cliente lo solicita explícitamente, creando una actividad con recordatorio.`;
+
+      const comercialInstructions = `[INSTRUCCIONES COMERCIALES]
+- Identifica el interés comercial del cliente, califica sus requerimientos y registra oportunidades en el CRM.
+- Responde de forma clara sobre nuestro portafolio de productos y servicios.
+- Si el cliente solicita cotización, información de precios o muestra interés en adquirir un servicio, crea una Oportunidad Comercial.
+- Campos para oportunidad: nombreProyecto (debe ser descriptivo del producto/proyecto), descripcion (detalle claro de la necesidad), montoTotal (0 si no se especifica), moneda (MXN o USD por defecto).
+- Si hay una oportunidad abierta del mismo producto en etapa activa, actualízala con modifyOpportunity en lugar de crear una nueva.
+- Asegúrate de vincular los datos del contacto. No crees oportunidades duplicadas.`;
+
+      const seguimientoInstructions = `[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]
+- Tu objetivo principal es agendar citas, llamadas de seguimiento, demostraciones o reuniones entre el cliente y el asesor asignado.
+- Consulta disponibilidad usando checkAvailability antes de agendar.
+- Si está AVAILABLE, procede a crear la actividad con createActivity.
+- Si está UNAVAILABLE, sugiere al cliente los slots propuestos en 'suggestedSlots'.
+- Si el cliente da fecha pero no hora, pregunta la hora. Si da hora pero no fecha, pregunta el día. Si da ambos, agenda directamente.
+- Agrega recordatorios ligados a la actividad de forma proactiva. Si no especifica hora de recordatorio, el sistema la calcula con la antelación configurada.
+- Valida que la oportunidad o actividad de seguimiento quede correctamente relacionada con el cliente.
+- Todo dato comercial o cita debe ser puramente informativo, libre de detalles técnicos (como UUIDs del sistema).`;
+
+      const soporteInstructions = `[INSTRUCCIONES DE SOPORTE Y ATENCIÓN (HELPDESK)]
+- Atiende quejas, incidencias y dudas de soporte técnico.
+- Si el cliente reporta una falla o requiere ayuda especializada con un servicio existente, genera un ticket de soporte técnico en el CRM con createTicket.
+- Campos para ticket: title (título resumido del problema), description (detalle completo de la falla), priority (1 = Bajo, 2 = Medio, 3 = Alto), category (ej. "Soporte Técnico", "Duda", "Facturación").
+- Informa al cliente que su reporte ha sido registrado de forma exitosa y que el equipo especializado le dará seguimiento.
+- En caso de fallas graves de sistema o de redirección, indícale de forma clara que derivas su caso a un asesor humano.`;
+
+      const generalInstructions = `[INSTRUCCIONES CONVERSACIONALES GENERALES]
+- Responde de forma amable, educada y profesional a saludos, despedidas, agradecimientos o preguntas generales sobre la empresa.
+- No intentes llamar a ninguna herramienta si el cliente solo te saluda o hace plática informal.`;
+
+      const subAgentsToInsert = [
+        {
+          key: 'comercial',
+          name: 'Sub-Agente Comercial',
+          description: 'Se encarga de calificar prospectos, cotizaciones y gestionar oportunidades comerciales de venta en el CRM.',
+          context: `${baseCommonPrompt}\n\n${comercialInstructions}\n\n[CONTEXTO ORIGINAL DE NEGOCIO]\n${currentContext}`,
+          tools: ['registerContact', 'updateContact', 'createOpportunity', 'modifyOpportunity'],
+          isActive: true,
+        },
+        {
+          key: 'seguimiento',
+          name: 'Sub-Agente de Seguimiento',
+          description: 'Se encarga de agendar citas, llamadas, demostraciones, consultar disponibilidad de asesores y crear recordatorios.',
+          context: `${baseCommonPrompt}\n\n${seguimientoInstructions}\n\n[CONTEXTO ORIGINAL DE NEGOCIO]\n${currentContext}`,
+          tools: ['registerContact', 'updateContact', 'checkAvailability', 'createActivity'],
+          isActive: true,
+        },
+        {
+          key: 'soporte_atencion',
+          name: 'Sub-Agente de Soporte',
+          description: 'Atiende incidencias de soporte, quejas, dudas técnicas y genera tickets de soporte en la mesa de ayuda (Helpdesk).',
+          context: `${baseCommonPrompt}\n\n${soporteInstructions}\n\n[CONTEXTO ORIGINAL DE NEGOCIO]\n${currentContext}`,
+          tools: ['registerContact', 'updateContact', 'createTicket'],
+          isActive: true,
+        },
+        {
+          key: 'general',
+          name: 'Sub-Agente Conversacional',
+          description: 'Responde saludos, despedidas, preguntas generales sobre la empresa y pláticas informales sin uso de herramientas.',
+          context: `${baseCommonPrompt}\n\n${generalInstructions}\n\n[CONTEXTO ORIGINAL DE NEGOCIO]\n${currentContext}`,
+          tools: [],
+          isActive: true,
+        },
+      ];
+
+      for (const agentData of subAgentsToInsert) {
+        const subAgent = this.aiSubAgentRepository.create(agentData);
+        await this.aiSubAgentRepository.save(subAgent);
+      }
+
+      this.logger.log('Migración y desglose inicial de sub-agentes completado con éxito.');
+    } catch (error) {
+      this.logger.error('Error durante la migración de sub-agentes:', error);
+    }
+  }
 
   /**
    * Obtiene la configuración activa del Agente de IA. Si no existe, crea una por defecto.
@@ -37,9 +189,7 @@ export class AiAgentService {
     if (!config) {
       config = this.aiAgentConfigRepository.create({
         isActive: true,
-        context: `Configura aquí el contexto y las instrucciones de comportamiento de tu agente. Define su identidad, los productos o servicios que ofrece, el tono de comunicación y los criterios para gestionar contactos, oportunidades y actividades en el CRM.
-
-Este campo es completamente personalizable desde el panel de configuración.`,
+        context: `Configura aquí el contexto y las instrucciones de comportamiento de tu agente. Define su identidad, los productos o servicios que ofrece, el tono de comunicación y los criterios para gestionar contactos, oportunidades y actividades en el CRM.`,
         temperature: 0.7,
         modelProvider: 'gemini',
         modelName: 'gemini-1.5-flash',
@@ -57,6 +207,35 @@ Este campo es completamente personalizable desde el panel de configuración.`,
     const existing = await this.getOrInitConfig();
     const updated = this.aiAgentConfigRepository.merge(existing, data);
     return this.aiAgentConfigRepository.save(updated);
+  }
+
+  /**
+   * Obtiene todos los sub-agentes configurados.
+   */
+  async getSubAgents(): Promise<AiSubAgent[]> {
+    return this.aiSubAgentRepository.find({ order: { key: 'ASC' } });
+  }
+
+  /**
+   * Crea o actualiza la configuración de un sub-agente.
+   */
+  async saveSubAgent(data: any): Promise<AiSubAgent> {
+    if (data.id) {
+      const existing = await this.aiSubAgentRepository.findOne({ where: { id: data.id } });
+      if (existing) {
+        const updated = this.aiSubAgentRepository.merge(existing, data);
+        return this.aiSubAgentRepository.save(updated);
+      }
+    }
+    const created = this.aiSubAgentRepository.create(data as Partial<AiSubAgent>);
+    return this.aiSubAgentRepository.save(created);
+  }
+
+  /**
+   * Elimina un sub-agente por su ID.
+   */
+  async deleteSubAgent(id: string): Promise<void> {
+    await this.aiSubAgentRepository.delete(id);
   }
 
   /**
@@ -92,7 +271,7 @@ Este campo es completamente personalizable desde el panel de configuración.`,
         }
       }
 
-      // 2. Obtener lista de tipos de actividad disponibles para guiar a la IA
+      // 2. Obtener lista de tipos de actividad disponibles
       const activityTypes = await this.activitiesService.findAllTypes();
       const activityTypesText = activityTypes
         .map(t => `- ID ${t.id}: ${t.strname}`)
@@ -110,7 +289,6 @@ Este campo es completamente personalizable desde el panel de configuración.`,
 
       // 4. Inyectar fecha y hora actual para resolución de fechas relativas
       const now = new Date();
-      // Zona horaria de México (UTC-6 en invierno, UTC-5 en verano — se calcula dinámicamente)
       const mexicoCityISO = new Date(now.toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
       const diasSemana = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
       const meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -120,7 +298,6 @@ Este campo es completamente personalizable desde el panel de configuración.`,
       const anioActual = mexicoCityISO.getFullYear();
       const horaActual = mexicoCityISO.toTimeString().slice(0, 5); // HH:MM
 
-      // Calcular fechas clave relativas
       const manana = new Date(mexicoCityISO); manana.setDate(manana.getDate() + 1);
       const pasadoManana = new Date(mexicoCityISO); pasadoManana.setDate(pasadoManana.getDate() + 2);
       const formatDate = (d: Date) => `${diasSemana[d.getDay()]} ${d.getDate()} de ${meses[d.getMonth()]} de ${d.getFullYear()}`;
@@ -131,14 +308,103 @@ Este campo es completamente personalizable desde el panel de configuración.`,
         `Pasado mañana: ${formatDate(pasadoManana)}`,
       ].join('\n');
 
-      // 5. Construir el Prompt del Sistema
+      // 5. ENRUTAMIENTO DINÁMICO: Consultar sub-agentes activos de la BD
+      const subAgents = await this.aiSubAgentRepository.find({ where: { isActive: true } });
+      const subAgentsDescriptionText = subAgents
+        .map(sa => `- Clave: "${sa.key}" - Descripción: "${sa.description}"`)
+        .join('\n');
+
+      const routerPrompt = `
+${config.context || 'Eres el Agente Principal (Enrutador) de TIBS.'}
+
+[SUB-AGENTES DISPONIBLES EN EL SISTEMA]
+${subAgentsDescriptionText}
+- Clave: "general" - Descripción: "Úsala si el mensaje del cliente es un saludo, despedida, agradecimiento, charla informal (small talk), preguntas generales cortas que no requieran herramientas, o si ninguna de las otras claves es aplicable."
+
+[REGLA DE RESPUESTA OBLIGATORIA]
+Responde ÚNICAMENTE con un objeto JSON por turno. Sin texto antes o después.
+Estructura de respuesta:
+{"thought": "...", "route": "CLAVE_ELEGIDA"}
+
+[HISTORIAL DE CONVERSACIÓN]
+${historyText}
+
+[ÚLTIMO MENSAJE DEL CLIENTE]
+Cliente: ${incomingContent}
+
+Genera la clasificación en formato JSON:
+{"thought": "`;
+
+      let routerResponse = await this.callLLM(config, routerPrompt);
+      routerResponse = this.cleanJsonOutput(routerResponse);
+
+      let selectedRoute = 'general';
+      try {
+        const parsedRouter = JSON.parse(routerResponse);
+        selectedRoute = parsedRouter.route || 'general';
+        this.logger.log(`[Agente Principal Router] Clasificado en la ruta: '${selectedRoute}' | Razonamiento: ${parsedRouter.thought}`);
+      } catch (e) {
+        this.logger.error(`Error parseando decisión del enrutador: ${routerResponse}`);
+      }
+
+      // Obtener el sub-agente activo
+      let subAgent = subAgents.find(sa => sa.key === selectedRoute);
+      if (!subAgent) {
+        subAgent = subAgents.find(sa => sa.key === 'general');
+      }
+
+      // 6. MAPEO DE HERRAMIENTAS ASIGNADAS AL SUB-AGENTE
+      const ALL_TOOL_PROMPTS: Record<string, string> = {
+        createOpportunity: `1. createOpportunity — Registra una nueva oportunidad comercial.
+Campos: nombreProyecto (string), descripcion (string), montoTotal (number, usa 0 si no se conoce), moneda (string, "MXN" por defecto).
+{"thought": "...", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "...", "descripcion": "...", "montoTotal": 0, "moneda": "MXN"}}`,
+
+        modifyOpportunity: `2. modifyOpportunity — Edita una oportunidad existente. Usa el ID real del contacto, nunca un placeholder.
+Campos modificables: nombreProyecto, descripcion, montoTotal, moneda, etapa. Omite los que no cambien.
+{"thought": "...", "tool_name": "modifyOpportunity", "tool_input": {"id": "ID_REAL", "nombreProyecto": "Nuevo nombre"}}`,
+
+        registerContact: `3. registerContact — Vincula un contacto al chat solo si no existe uno asociado.
+Campos: nombre (string), correo (string|null), telefono (string|null).
+{"thought": "...", "tool_name": "registerContact", "tool_input": {"nombre": "...", "correo": null, "telefono": null}}`,
+
+        updateContact: `4. updateContact — Actualiza datos del contacto ya vinculado al chat.
+Campos opcionales: nombre, correo, telefono. Envía solo los que cambian.
+{"thought": "...", "tool_name": "updateContact", "tool_input": {"correo": "nuevo@correo.com"}}`,
+
+        checkAvailability: `5. checkAvailability — Verifica si el asesor asignado tiene disponibilidad en una fecha/hora.
+Campos: proposedDate (string ISO 8601 UTC). Llama ANTES de crear cualquier actividad con horario específico.
+Respuesta AVAILABLE → procede con createActivity usando esa misma fecha.
+Respuesta UNAVAILABLE → presenta los horarios alternativos en 'suggestedSlots' al cliente y espera su elección. Llama de nuevo a checkAvailability con el slot elegido antes de crear la actividad.
+{"thought": "...", "tool_name": "checkAvailability", "tool_input": {"proposedDate": "2026-07-05T21:00:00.000Z"}}`,
+
+        createActivity: `6. createActivity — Crea una actividad (y opcionalmente un recordatorio). Úsala SOLO después de checkAvailability con status AVAILABLE cuando la actividad requiera horario.
+Campos: activityText (string), date (string ISO 8601 UTC), typeActivityId (number, del listado de tipos), opportunityId (string UUID, opcional), reminderTitle (string, opcional), reminderDate (string ISO 8601 UTC, opcional — si se omite el backend calcula automáticamente con ${config.reminderOffsetMinutes} min de antelación).
+Construcción del campo 'date': convierte la hora local del cliente a UTC usando el offset del bloque [FECHA Y HORA ACTUAL]. Si falta la hora, NO ejecutes esta herramienta — primero pídela al cliente.
+{"thought": "...", "tool_name": "createActivity", "tool_input": {"activityText": "...", "date": "2026-07-05T21:00:00.000Z", "typeActivityId": 1, "reminderTitle": "..."}}`,
+
+        createTicket: `7. createTicket — Registra un ticket de soporte técnico en la mesa de ayuda.
+Campos: title (string), description (string), priority (number: 1=Bajo, 2=Medio, 3=Alto), category (string: ej. "Soporte Técnico", "Facturación", "Duda", etc.).
+{"thought": "...", "tool_name": "createTicket", "tool_input": {"title": "...", "description": "...", "priority": 1, "category": "Soporte Técnico"}}`
+      };
+
+      const allowedTools = subAgent?.tools || [];
+      const toolsText = allowedTools
+        .map(toolKey => ALL_TOOL_PROMPTS[toolKey])
+        .filter(Boolean)
+        .join('\n\n');
+
+      const finalAnswerPrompt = `8. final_answer — Envía una respuesta en lenguaje natural al cliente. Es la única acción que genera un mensaje visible.
+{"thought": "...", "tool_name": "final_answer", "tool_input": {"answer": "Mensaje para el cliente"}}`;
+
+      const toolsSectionText = toolsText ? `${toolsText}\n\n${finalAnswerPrompt}` : finalAnswerPrompt;
+
+      // 7. CONSTRUIR EL PROMPT PARA EL SUB-AGENTE
       const systemPrompt = `
-[INSTRUCCIONES DEL AGENTE]
-${config.context || ''}
+[INSTRUCCIONES DEL SUB-AGENTE ACTIVO: ${subAgent?.name || 'General'}]
+${subAgent?.context || ''}
 
 [FECHA Y HORA ACTUAL — REFERENCIA PARA FECHAS RELATIVAS]
 ${fechaContexto}
-Usa este bloque para resolver expresiones como "hoy", "mañana", "pasado mañana", "el lunes", "la próxima semana", "en X días". Si el cliente ya dio fecha, NO la vuelvas a pedir — solo solicita la hora si falta. Si tiene ambas, procede directamente.
 
 [INFORMACIÓN ACTUAL DEL CONTACTO EN EL CRM]
 ${JSON.stringify(clientInfo, null, 2)}
@@ -153,35 +419,7 @@ ${config.reminderOffsetMinutes} minutos.
 HERRAMIENTAS DISPONIBLES — INSTRUCCIONES DE USO:
 Responde SIEMPRE con un único objeto JSON por turno. Sin texto adicional antes o después.
 
-1. createOpportunity — Registra una nueva oportunidad comercial.
-Campos: nombreProyecto (string), descripcion (string), montoTotal (number, usa 0 si no se conoce), moneda (string, "MXN" por defecto).
-{"thought": "...", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "...", "descripcion": "...", "montoTotal": 0, "moneda": "MXN"}}
-
-2. modifyOpportunity — Edita una oportunidad existente. Usa el ID real del contacto, nunca un placeholder.
-Campos modificables: nombreProyecto, descripcion, montoTotal, moneda, etapa. Omite los que no cambien.
-{"thought": "...", "tool_name": "modifyOpportunity", "tool_input": {"id": "ID_REAL", "nombreProyecto": "Nuevo nombre"}}
-
-3. registerContact — Vincula un contacto al chat solo si no existe uno asociado.
-Campos: nombre (string), correo (string|null), telefono (string|null).
-{"thought": "...", "tool_name": "registerContact", "tool_input": {"nombre": "...", "correo": null, "telefono": null}}
-
-4. updateContact — Actualiza datos del contacto ya vinculado al chat.
-Campos opcionales: nombre, correo, telefono. Envía solo los que cambian.
-{"thought": "...", "tool_name": "updateContact", "tool_input": {"correo": "nuevo@correo.com"}}
-
-5. checkAvailability — Verifica si el asesor asignado tiene disponibilidad en una fecha/hora.
-Campos: proposedDate (string ISO 8601 UTC). Llama ANTES de crear cualquier actividad con horario específico.
-Respuesta AVAILABLE → procede con createActivity usando esa misma fecha.
-Respuesta UNAVAILABLE → presenta los horarios alternativos en 'suggestedSlots' al cliente y espera su elección. Llama de nuevo a checkAvailability con el slot elegido antes de crear la actividad.
-{"thought": "...", "tool_name": "checkAvailability", "tool_input": {"proposedDate": "2026-07-05T21:00:00.000Z"}}
-
-6. createActivity — Crea una actividad (y opcionalmente un recordatorio). Úsala SOLO después de checkAvailability con status AVAILABLE cuando la actividad requiera horario.
-Campos: activityText (string), date (string ISO 8601 UTC), typeActivityId (number, del listado de tipos), opportunityId (string UUID, opcional), reminderTitle (string, opcional), reminderDate (string ISO 8601 UTC, opcional — si se omite el backend calcula automáticamente con ${config.reminderOffsetMinutes} min de antelación).
-Construcción del campo 'date': convierte la hora local del cliente a UTC usando el offset del bloque [FECHA Y HORA ACTUAL]. Si falta la hora, NO ejecutes esta herramienta — primero pídela al cliente.
-{"thought": "...", "tool_name": "createActivity", "tool_input": {"activityText": "...", "date": "2026-07-05T21:00:00.000Z", "typeActivityId": 1, "reminderTitle": "..."}}
-
-7. final_answer — Envía una respuesta en lenguaje natural al cliente. Es la única acción que genera un mensaje visible.
-{"thought": "...", "tool_name": "final_answer", "tool_input": {"answer": "Mensaje para el cliente"}}
+${toolsSectionText}
 
 REGLAS OBLIGATORIAS:
 - Un solo JSON por turno. Sin texto fuera del JSON.
@@ -195,12 +433,10 @@ REGLAS OBLIGATORIAS:
       const prompt = `${systemPrompt}\n\n[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n\n[ÚLTIMO MENSAJE DEL CLIENTE]\nCliente: ${incomingContent}\n\nGenera el siguiente paso en formato JSON:\n{"thought": "`;
 
       let agentResponse = await this.callLLM(config, prompt);
-
-      // Limpiar respuesta en caso de alucinaciones
       agentResponse = this.cleanJsonOutput(agentResponse);
 
       let loopCount = 0;
-      const maxLoops = 5; // Aumentado para soportar: checkAvailability → createActivity → final_answer
+      const maxLoops = 5;
 
       while (loopCount < maxLoops) {
         let action: any;
@@ -215,11 +451,22 @@ REGLAS OBLIGATORIAS:
           return action.tool_input?.answer || '';
         }
 
-        this.logger.log(`Agente IA ejecutando herramienta: ${action.tool_name}`);
+        // SEGURIDAD: Validar que el sub-agente tenga permitido ejecutar esta herramienta
+        if (!allowedTools.includes(action.tool_name)) {
+          this.logger.warn(`El sub-agente '${subAgent?.key}' intentó ejecutar la herramienta '${action.tool_name}' no permitida.`);
+          const toolErrorResult = { status: 'ERROR', message: `La herramienta '${action.tool_name}' no está disponible para este sub-agente.` };
+          
+          const nextPrompt = `${systemPrompt}\n\n[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n\n[ÚLTIMO MENSAJE DEL CLIENTE]\nCliente: ${incomingContent}\n\n[EJECUCIÓN DE HERRAMIENTA]\nHerramienta ejecutada: ${action.tool_name}\nResultado de herramienta: ${JSON.stringify(toolErrorResult)}\n\nGenera el siguiente paso en formato JSON (ej. final_answer para responderle al cliente):\n{"thought": "`;
+          agentResponse = await this.callLLM(config, nextPrompt);
+          agentResponse = this.cleanJsonOutput(agentResponse);
+          loopCount++;
+          continue;
+        }
+
+        this.logger.log(`Sub-Agente '${subAgent?.key}' ejecutando herramienta: ${action.tool_name}`);
         const toolResult = await this.executeTool(action.tool_name, action.tool_input, conversation, config);
         this.logger.log(`Resultado de la herramienta: ${JSON.stringify(toolResult)}`);
 
-        // Enviar el resultado de la herramienta de vuelta al LLM para la siguiente decisión
         const nextPrompt = `${systemPrompt}\n\n[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n\n[ÚLTIMO MENSAJE DEL CLIENTE]\nCliente: ${incomingContent}\n\n[EJECUCIÓN DE HERRAMIENTA]\nHerramienta ejecutada: ${action.tool_name}\nResultado de herramienta: ${JSON.stringify(toolResult)}\n\nGenera el siguiente paso en formato JSON (ej. final_answer para responderle al cliente):\n{"thought": "`;
         agentResponse = await this.callLLM(config, nextPrompt);
         agentResponse = this.cleanJsonOutput(agentResponse);
@@ -227,7 +474,6 @@ REGLAS OBLIGATORIAS:
         loopCount++;
       }
 
-      // Si excede el loop, tratar de extraer texto o dar fallback
       try {
         const parsed = JSON.parse(agentResponse);
         if (parsed.tool_name === 'final_answer') return parsed.tool_input?.answer || '';
@@ -255,7 +501,7 @@ REGLAS OBLIGATORIAS:
             moneda: input.moneda || Currency.USD,
             cliente_id: conversation.clientId || undefined,
             ejecutivo_id: conversation.assignedUserId || undefined,
-            linea_negocio_id: 'default', // Será resuelto por el backend
+            linea_negocio_id: 'default',
             tipo_entrega_id: 'default',
           } as any, userEntity);
           return { status: 'SUCCESS', message: 'Oportunidad creada con éxito', opportunityId: opp.id };
@@ -284,7 +530,6 @@ REGLAS OBLIGATORIAS:
             ejecutivo_id: conversation.assignedUserId || undefined,
           } as any);
 
-          // Vincular a la conversación
           conversation.clientId = client.id;
           conversation.clientName = `${client.nombre} ${client.apellido || ''}`.trim();
           await this.clientRepository.manager.save(Conversation, conversation);
@@ -308,7 +553,6 @@ REGLAS OBLIGATORIAS:
 
           const updated = await this.clientsService.update(conversation.clientId, updateData);
 
-          // Actualizar nombre en conversación
           conversation.clientName = `${updated.nombre} ${updated.apellido || ''}`.trim();
           await this.clientRepository.manager.save(Conversation, conversation);
 
@@ -320,7 +564,6 @@ REGLAS OBLIGATORIAS:
           
           let remDate = input.reminderDate;
           if (input.reminderTitle && !remDate) {
-            // Calcular fecha restando offset
             const actDate = new Date(input.date);
             const offsetMs = (config.reminderOffsetMinutes || 60) * 60 * 1000;
             remDate = new Date(actDate.getTime() - offsetMs).toISOString();
@@ -341,6 +584,21 @@ REGLAS OBLIGATORIAS:
           return { status: 'SUCCESS', message: 'Actividad y recordatorio programados', activityId: activity.id };
         }
 
+        case 'createTicket': {
+          const userEntity = conversation.assignedUserId ? { id: conversation.assignedUserId } as User : undefined;
+          const ticket = await this.ticketsService.create({
+            strtitle: input.title,
+            tipo_incidencia: input.category || 'Soporte Técnico',
+            description: input.description || 'Creado por Agente IA',
+            priority: input.priority || 1,
+            cliente_id: conversation.clientId || undefined,
+            contactName: conversation.clientName || undefined,
+            contactPhone: conversation.externalId || undefined,
+          } as any, userEntity);
+
+          return { status: 'SUCCESS', message: 'Ticket de soporte técnico creado con éxito', ticketId: ticket.id, ticketNumber: ticket.ticket_number };
+        }
+
         case 'checkAvailability': {
           const proposedDate = new Date(input.proposedDate);
           if (isNaN(proposedDate.getTime())) {
@@ -352,7 +610,6 @@ REGLAS OBLIGATORIAS:
             return { status: 'AVAILABLE', available: true, message: 'Sin asesor asignado — el horario está disponible.' };
           }
 
-          // Consultar todas las actividades del asesor en el mismo día UTC
           const dayStart = new Date(proposedDate);
           dayStart.setUTCHours(0, 0, 0, 0);
           const dayEnd = new Date(proposedDate);
@@ -360,7 +617,6 @@ REGLAS OBLIGATORIAS:
 
           const dayActivities = await this.activitiesService.findByUserAndDate(advisorId, dayStart, dayEnd);
 
-          // Verificar si hay conflicto: otra actividad dentro de una ventana de 1 hora
           const CONFLICT_WINDOW_MS = 60 * 60 * 1000;
           const conflicting = dayActivities.filter(act => {
             const diff = Math.abs(new Date(act.date).getTime() - proposedDate.getTime());
@@ -376,20 +632,17 @@ REGLAS OBLIGATORIAS:
             };
           }
 
-          // Calcular offset de timezone dinámicamente (America/Mexico_City)
-          const tzOffset = this.getMexicoCityUTCOffset(proposedDate); // ej. -6
+          const tzOffset = this.getMexicoCityUTCOffset(proposedDate);
 
-          // Horario laboral 8:00-18:00 hora local → convertido a UTC
-          const BIZ_START_LOCAL = 8;  // 8am
-          const BIZ_END_LOCAL = 18;   // 6pm (la última cita puede empezar a las 17:00)
-          const businessStartUTC = BIZ_START_LOCAL - tzOffset; // ej. 8-(-6)=14
-          const businessEndUTC = BIZ_END_LOCAL - tzOffset;     // ej. 18-(-6)=24
+          const BIZ_START_LOCAL = 8;
+          const BIZ_END_LOCAL = 18;
+          const businessStartUTC = BIZ_START_LOCAL - tzOffset;
+          const businessEndUTC = BIZ_END_LOCAL - tzOffset;
 
-          // Generar todos los slots horarios del día
           const bookedTimesUTC = new Set(
             dayActivities.map(act => {
               const d = new Date(act.date);
-              return d.getUTCHours(); // solo hora exacta
+              return d.getUTCHours();
             })
           );
 
@@ -403,7 +656,6 @@ REGLAS OBLIGATORIAS:
             allSlots.push(slot);
           }
 
-          // Filtrar slots libres (sin conflicto en ventana de 1h con cualquier actividad)
           const freeSlots = allSlots.filter(slot =>
             !dayActivities.some(act => {
               const diff = Math.abs(new Date(act.date).getTime() - slot.getTime());
@@ -411,7 +663,6 @@ REGLAS OBLIGATORIAS:
             })
           );
 
-          // Ordenar por proximidad a la hora propuesta y tomar los 3 más cercanos
           freeSlots.sort((a, b) =>
             Math.abs(a.getTime() - proposedDate.getTime()) -
             Math.abs(b.getTime() - proposedDate.getTime())
@@ -442,7 +693,7 @@ REGLAS OBLIGATORIAS:
           return { status: 'ERROR', message: `Herramienta '${name}' no reconocida.` };
       }
     } catch (error: any) {
-      this.logger.error(`Error ejecutando herramienta ${name}:`, error);
+      this.logger.error(`Error ejecutando herramienta ${error.message || error}`);
       return { status: 'ERROR', message: error.message || 'Error desconocido' };
     }
   }
@@ -467,7 +718,6 @@ REGLAS OBLIGATORIAS:
       if (!apiKey || !projectId) throw new Error('Credenciales de IBM WatsonX no configuradas.');
       return this.callWatsonx(model, apiKey, projectId, region, prompt, config.temperature);
     } else {
-      // Por defecto Gemini
       const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
       if (!apiKey) throw new Error('API Key de Gemini no configurada.');
       return this.callGemini(model, apiKey, prompt, config.temperature);
@@ -513,7 +763,6 @@ REGLAS OBLIGATORIAS:
     endpoint?: string | null,
     apiVersion?: string | null,
   ): Promise<string> {
-    // Si hay endpoint configurado, usamos Azure OpenAI
     const isAzure = !!endpoint;
     const url = isAzure
       ? `${endpoint.replace(/\/$/, '')}/openai/deployments/${model}/chat/completions?api-version=${apiVersion || '2024-12-01-preview'}`
@@ -530,7 +779,7 @@ REGLAS OBLIGATORIAS:
       method: 'POST',
       headers,
       body: JSON.stringify({
-        ...(isAzure ? {} : { model }),   // Azure infiere el modelo del deployment en la URL
+        ...(isAzure ? {} : { model }),
         messages: [{ role: 'user', content: prompt }],
         temperature: temperature,
         max_tokens: 1024,
@@ -551,7 +800,6 @@ REGLAS OBLIGATORIAS:
    * Llamada REST a IBM Watsonx
    */
   private async callWatsonx(model: string, apiKey: string, projectId: string, region: string, prompt: string, temperature: number): Promise<string> {
-    // 1. Obtener token IAM
     const tokenUrl = 'https://iam.cloud.ibm.com/identity/token';
     const tokenBody = `grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey=${apiKey}`;
     
@@ -571,7 +819,6 @@ REGLAS OBLIGATORIAS:
     const tokenData: any = await tokenResponse.json();
     const iamToken = tokenData.access_token;
 
-    // 2. Ejecutar generación de texto
     const apiUrl = `https://${region}.ml.cloud.ibm.com/ml/v1/text/generation?version=2023-05-29`;
     
     const response = await fetch(apiUrl, {
@@ -608,22 +855,18 @@ REGLAS OBLIGATORIAS:
   private cleanJsonOutput(text: string): string {
     let clean = text.trim();
     
-    // Si no empieza con {"thought" pero lo contiene, recortamos
     const firstBrace = clean.indexOf('{');
     if (firstBrace !== -1) {
       clean = clean.substring(firstBrace);
     } else {
-      // Forzar reconstrucción de thought
       clean = `{"thought": "Generando respuesta", ${clean}`;
     }
 
-    // Quitar marcas de formato markdown ```json
     if (clean.includes('```json')) {
       clean = clean.replace(/```json/gi, '');
       clean = clean.replace(/```/gi, '');
     }
 
-    // Validar y cerrar llaves balanceadas
     let openBraces = (clean.match(/\{/g) || []).length;
     let closeBraces = (clean.match(/\}/g) || []).length;
     while (openBraces > closeBraces) {
@@ -656,7 +899,6 @@ REGLAS OBLIGATORIAS:
 
   /**
    * Calcula el offset UTC de America/Mexico_City para una fecha dada (maneja horario de verano dinámicamente).
-   * Retorna el offset en horas (ej. -6 en invierno, -5 en verano).
    */
   private getMexicoCityUTCOffset(date: Date): number {
     const utcMs = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' })).getTime();
