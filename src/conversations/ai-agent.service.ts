@@ -749,6 +749,13 @@ REGLAS OBLIGATORIAS:
 
     const data: any = await response.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    
+    // Log token usage
+    const inputTokens = data.usageMetadata?.promptTokenCount || 0;
+    const outputTokens = data.usageMetadata?.candidatesTokenCount || 0;
+    const totalTokens = data.usageMetadata?.totalTokenCount || 0;
+    this.logger.log(`[Token Usage] Gemini - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
+
     return text.trim();
   }
 
@@ -793,6 +800,13 @@ REGLAS OBLIGATORIAS:
 
     const data: any = await response.json();
     const text = data.choices?.[0]?.message?.content || '';
+
+    // Log token usage
+    const inputTokens = data.usage?.prompt_tokens || 0;
+    const outputTokens = data.usage?.completion_tokens || 0;
+    const totalTokens = data.usage?.total_tokens || 0;
+    this.logger.log(`[Token Usage] ${isAzure ? 'Azure ' : ''}OpenAI - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
+
     return text.trim();
   }
 
@@ -846,6 +860,13 @@ REGLAS OBLIGATORIAS:
 
     const data: any = await response.json();
     const rawText = data.results?.[0]?.generated_text || '';
+
+    // Log token usage
+    const inputTokens = data.results?.[0]?.input_token_count || 0;
+    const outputTokens = data.results?.[0]?.generated_token_count || 0;
+    const totalTokens = inputTokens + outputTokens;
+    this.logger.log(`[Token Usage] WatsonX - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
+
     return rawText.trim();
   }
 
