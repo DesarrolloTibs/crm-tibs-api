@@ -1,8 +1,8 @@
 
 {
     "apps": [{
-     "name": "friday-api",
-     "script": "dist/src/main.js",
+     "name": "billyss-api",
+     "script": "dist/main.js",
      "args":"start",
      "watch":false,
 	 "ignore_watch" : [ "*.log"]
