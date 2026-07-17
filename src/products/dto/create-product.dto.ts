@@ -27,4 +27,9 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   imagenPortada?: string | null;
+
+  @ApiPropertyOptional({ description: 'Indica si el producto requiere análisis o es a la medida', default: false })
+  @IsBoolean()
+  @IsOptional()
+  requiere_analisis?: boolean;
 }

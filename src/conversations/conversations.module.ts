@@ -7,6 +7,8 @@ import { ChannelConfig } from './entities/channel-config.entity';
 import { AiSubAgent } from './entities/ai-sub-agent.entity';
 import { Client } from '../clients/entities/client.entity';
 import { User } from '../users/entities/user.entity';
+import { Product } from '../products/entities/product.entity';
+import { ProductFile } from '../products/entities/product-file.entity';
 import { ConversationsService } from './conversations.service';
 import { AiAgentService } from './ai-agent.service';
 import { ConversationsGateway } from './conversations.gateway';
@@ -16,15 +18,27 @@ import { ActivitiesModule } from '../Activities/activities.module';
 import { RemindersModule } from '../reminders/reminders.module';
 import { ClientsModule } from '../clients/clients.module';
 import { TicketsModule } from '../tickets/tickets.module';
+import { RagModule } from '../rag/rag.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Conversation, Message, AiAgentConfig, ChannelConfig, AiSubAgent, Client, User]),
+    TypeOrmModule.forFeature([
+      Conversation, 
+      Message, 
+      AiAgentConfig, 
+      ChannelConfig, 
+      AiSubAgent, 
+      Client, 
+      User,
+      Product,
+      ProductFile
+    ]),
     OpportunitiesModule,
     ActivitiesModule,
     RemindersModule,
     ClientsModule,
     TicketsModule,
+    RagModule,
   ],
   providers: [ConversationsService, AiAgentService, ConversationsGateway],
   controllers: [ConversationsController],

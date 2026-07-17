@@ -33,6 +33,9 @@ export class AiAgentConfig {
   @Column({ type: 'varchar', length: 50, nullable: true })
   openaiApiVersion: string | null;
 
+  @Column({ type: 'varchar', length: 100, default: 'text-embedding-ada-002' })
+  openaiEmbeddingModel: string;
+
   @Column({ type: 'varchar', length: 255, nullable: true })
   geminiApiKey: string | null;
 
@@ -45,8 +48,14 @@ export class AiAgentConfig {
   @Column({ type: 'varchar', length: 100, nullable: true })
   watsonxRegion: string | null;
 
+  @Column({ type: 'varchar', length: 100, default: 'ibm/slate-125m-english-rtrvr' })
+  watsonxEmbeddingModel: string;
+
   @Column({ type: 'integer', default: 60 })
   reminderOffsetMinutes: number;
+
+  @Column({ type: 'integer', default: 2048 })
+  maxNewTokens: number;
 
   @Column({ type: 'uuid', nullable: true })
   defaultUserId: string | null;

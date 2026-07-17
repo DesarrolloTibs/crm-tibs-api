@@ -15,11 +15,54 @@ export class PipelinesService {
   ) {}
 
   async getMainPipeline(): Promise<Pipeline> {
-    const pipeline = await this.pipelineRepository.findOne({
+    let pipeline = await this.pipelineRepository.findOne({
       where: {},
       order: { dtmcreated: 'ASC' },
       relations: ['stages'],
     });
+
+    if (!pipeline) {
+      // Lazy auto-seeding de Pipeline Comercial por defecto para bases de datos limpias (ej. Supabase nueva)
+      await this.dataSource.transaction(async (manager) => {
+        const newPipeline = new Pipeline();
+        newPipeline.strname = 'Pipeline Comercial Principal';
+        newPipeline.strdescription = 'Pipeline por defecto para gestionar oportunidades comerciales.';
+        newPipeline.blnstatus = true;
+        newPipeline.dtmcreated = new Date();
+        newPipeline.dtmlastmodified = new Date();
+        const savedPipeline = await manager.save(Pipeline, newPipeline);
+
+        const defaultStages = [
+          { strname: 'Prospecto', display_order: 1, blninitial: true, strcolor: '#3498db', bln_show_dashboard: true },
+          { strname: 'Calificado', display_order: 2, blninitial: false, strcolor: '#f1c40f', bln_show_dashboard: true },
+          { strname: 'Propuesta', display_order: 3, blninitial: false, strcolor: '#9b59b6', bln_show_dashboard: true },
+          { strname: 'Negociación', display_order: 4, blninitial: false, strcolor: '#e67e22', bln_show_dashboard: true },
+          { strname: 'Cierre Exitoso', display_order: 5, blninitial: false, strcolor: '#2ecc71', bln_show_dashboard: true },
+          { strname: 'Cierre Perdido', display_order: 6, blninitial: false, strcolor: '#e74c3c', bln_show_dashboard: false }
+        ];
+
+        for (const ds of defaultStages) {
+          const stage = new Stage();
+          stage.pipeline_id = savedPipeline.id;
+          stage.strname = ds.strname;
+          stage.display_order = ds.display_order;
+          stage.blninitial = ds.blninitial;
+          stage.blnstatus = true;
+          stage.strcolor = ds.strcolor;
+          stage.bln_show_dashboard = ds.bln_show_dashboard;
+          stage.dtmcreated = new Date();
+          stage.dtmlastmodified = new Date();
+          await manager.save(Stage, stage);
+        }
+      });
+
+      // Volver a consultar el pipeline con sus etapas insertadas
+      pipeline = await this.pipelineRepository.findOne({
+        where: {},
+        order: { dtmcreated: 'ASC' },
+        relations: ['stages'],
+      });
+    }
 
     if (!pipeline) {
       throw new NotFoundException('El Pipeline Principal no existe.');

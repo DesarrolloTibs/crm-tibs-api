@@ -13,8 +13,11 @@ export class Product {
   @Column({ type: 'text', nullable: true })
   descripcion: string | null;
 
-  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
-  precioBase: number;
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  precioBase: number | null;
+
+  @Column({ type: 'boolean', default: false })
+  requiere_analisis: boolean;
 
   @Column({ type: 'boolean', default: true })
   status: boolean;

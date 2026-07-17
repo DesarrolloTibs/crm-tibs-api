@@ -41,6 +41,9 @@ export class Conversation {
   @JoinColumn({ name: 'channelConfigId' })
   channelConfig: ChannelConfig | null;
 
+  @Column({ type: 'text', nullable: true })
+  summary: string | null;
+
   @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 

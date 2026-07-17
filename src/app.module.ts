@@ -22,6 +22,7 @@ import { TicketInteractionsModule } from './ticket-interactions/ticket-interacti
 import { ReportsModule } from './reports/reports.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { DataSource } from 'typeorm';
+import { RagModule } from './rag/rag.module';
 
 
 @Module({
@@ -62,6 +63,7 @@ import { DataSource } from 'typeorm';
     TicketInteractionsModule,
     ReportsModule,
     ConversationsModule,
+    RagModule,
   ],
   controllers: [AppController],
   providers: [AppService],

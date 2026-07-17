@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import type { Response } from 'express';
+import * as fs from 'fs';
 
 import { Product } from './entities/product.entity';
 import { ProductFile } from './entities/product-file.entity';
@@ -9,6 +10,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { User } from 'src/users/entities/user.entity';
 import { StorageService } from '../storage/storage.service';
+import { RagService } from '../rag/rag.service';
 
 @Injectable()
 export class ProductsService {
@@ -18,6 +20,7 @@ export class ProductsService {
     @InjectRepository(ProductFile)
     private readonly productFileRepository: Repository<ProductFile>,
     private readonly storageService: StorageService,
+    private readonly ragService: RagService,
   ) {}
 
   async create(createProductDto: CreateProductDto, currentUser: User): Promise<Product> {
@@ -117,7 +120,7 @@ export class ProductsService {
     file: Express.Multer.File,
     title?: string,
   ): Promise<Product> {
-    await this.findOne(productId); // Verifica que el producto exista
+    const product = await this.findOne(productId); // Verifica que el producto exista
 
     const relativePath = file.path.replace(/\\/g, '/');
     const filePath = await this.storageService.uploadFile(file.path, relativePath);
@@ -130,6 +133,24 @@ export class ProductsService {
     });
 
     await this.productFileRepository.save(productFile);
+
+    // Auto-indexado en el RAG si el archivo cargado al producto es un PDF
+    if (file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf')) {
+      try {
+        const productKey = product.nombre
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '') // Quitar acentos
+          .replace(/[^a-z0-9]+/g, '-')     // Cambiar caracteres no-alfanuméricos a guiones
+          .replace(/(^-|-$)+/g, '');       // Limpiar guiones al inicio/fin
+
+        const fileBuffer = fs.readFileSync(file.path);
+        await this.ragService.ingestPdf(fileBuffer, fileName, productKey);
+      } catch (ragError) {
+        console.error(`Error al indexar PDF en el RAG en addProductFile:`, ragError);
+      }
+    }
+
     return this.findOne(productId);
   }
 

@@ -25,10 +25,49 @@ export class HelpdesksService {
   ) {}
 
   async getMainHelpdesk(): Promise<Helpdesk & { stages: TicketStage[] }> {
-    const helpdesk = await this.helpdeskRepository.findOne({
+    let helpdesk = await this.helpdeskRepository.findOne({
       where: {},
       order: { dtmcreated: 'ASC' },
     });
+
+    if (!helpdesk) {
+      // Lazy auto-seeding de Mesa de Ayuda por defecto para bases de datos limpias (ej. Supabase nueva)
+      await this.dataSource.transaction(async (manager) => {
+        const newHelpdesk = new Helpdesk();
+        newHelpdesk.strname = 'Mesa de Ayuda Principal';
+        newHelpdesk.strdescription = 'Canal principal para soporte técnico y atención a clientes.';
+        newHelpdesk.dtmcreated = new Date();
+        newHelpdesk.dtmlastmodified = new Date();
+        const savedHelpdesk = await manager.save(Helpdesk, newHelpdesk);
+
+        const defaultStages = [
+          { strname: 'Nuevo', display_order: 1, blninitial: true, strcolor: '#e74c3c', bln_show_dashboard: true },
+          { strname: 'En Proceso', display_order: 2, blninitial: false, strcolor: '#f1c40f', bln_show_dashboard: true },
+          { strname: 'En Espera', display_order: 3, blninitial: false, strcolor: '#3498db', bln_show_dashboard: true },
+          { strname: 'Resuelto', display_order: 4, blninitial: false, strcolor: '#2ecc71', bln_show_dashboard: true }
+        ];
+
+        for (const ds of defaultStages) {
+          const stage = new TicketStage();
+          stage.helpdesk_id = savedHelpdesk.id;
+          stage.strname = ds.strname;
+          stage.display_order = ds.display_order;
+          stage.blninitial = ds.blninitial;
+          stage.blnstatus = true;
+          stage.strcolor = ds.strcolor;
+          stage.bln_show_dashboard = ds.bln_show_dashboard;
+          stage.dtmcreated = new Date();
+          stage.dtmlastmodified = new Date();
+          await manager.save(TicketStage, stage);
+        }
+      });
+
+      // Volver a consultar
+      helpdesk = await this.helpdeskRepository.findOne({
+        where: {},
+        order: { dtmcreated: 'ASC' },
+      });
+    }
 
     if (!helpdesk) {
       throw new NotFoundException('La Mesa de Ayuda Principal no existe en la base de datos.');
