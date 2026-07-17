@@ -289,4 +289,63 @@ export class RagService implements OnModuleInit {
     }
     return config;
   }
+
+  /**
+   * Genera un embedding para un producto del catálogo (nombre y descripción) e indexa su metadata
+   * en la base de datos vectorial para permitir búsquedas semánticas precisas.
+   */
+  async ingestProduct(productId: string, nombre: string, descripcion: string | null): Promise<void> {
+    try {
+      const store = await this.initializeVectorStore();
+
+      // Generar la llave única del producto (slug)
+      const productKey = nombre
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)+/g, '');
+
+      // 1. Eliminar embeddings previos de este producto para evitar duplicaciones
+      await this.aiAgentConfigRepository.manager.query(
+        "DELETE FROM product_knowledge_base WHERE metadata->>'productId' = $1",
+        [productId]
+      );
+
+      // 2. Construir el texto del catálogo estructurado
+      const contentText = `Producto: ${nombre}\nDescripción: ${descripcion || 'Sin descripción'}`;
+
+      // 3. Crear el formato de documento de LangChain
+      const document = {
+        pageContent: contentText,
+        metadata: {
+          source: 'database-catalog',
+          product: productKey,
+          productId: productId,
+        },
+      };
+
+      // 4. Guardar en pgvector
+      await store.addDocuments([document]);
+      this.logger.log(`Catálogo indexado en RAG: '${nombre}' (${productKey})`);
+    } catch (error: any) {
+      this.logger.error(`Error al indexar producto '${nombre}' en RAG: ${error.message}`);
+    }
+  }
+
+  /**
+   * Elimina los embeddings asociados a un producto específico del RAG pgvector.
+   */
+  async deleteProduct(productId: string): Promise<void> {
+    try {
+      await this.initializeVectorStore();
+      await this.aiAgentConfigRepository.manager.query(
+        "DELETE FROM product_knowledge_base WHERE metadata->>'productId' = $1",
+        [productId]
+      );
+      this.logger.log(`Producto eliminado de RAG: '${productId}'`);
+    } catch (error: any) {
+      this.logger.error(`Error al eliminar producto '${productId}' de RAG: ${error.message}`);
+    }
+  }
 }

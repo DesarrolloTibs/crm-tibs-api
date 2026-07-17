@@ -29,7 +29,9 @@ export class ProductsService {
       ...createProductDto,
       createdById: userId || null,
     });
-    return this.productRepository.save(product);
+    const saved = await this.productRepository.save(product);
+    await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion);
+    return saved;
   }
 
   findAll(): Promise<Product[]> {
@@ -69,13 +71,25 @@ export class ProductsService {
     if (!product) {
       throw new NotFoundException(`Product with ID "${id}" not found`);
     }
-    return this.productRepository.save(product);
+    const saved = await this.productRepository.save(product);
+    if (saved.status) {
+      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion);
+    } else {
+      await this.ragService.deleteProduct(saved.id);
+    }
+    return saved;
   }
 
   async updateStatus(id: string, status: boolean): Promise<Product> {
     const product = await this.findOne(id);
     product.status = status;
-    return this.productRepository.save(product);
+    const saved = await this.productRepository.save(product);
+    if (saved.status) {
+      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion);
+    } else {
+      await this.ragService.deleteProduct(saved.id);
+    }
+    return saved;
   }
 
   async updateCoverImage(id: string, file: Express.Multer.File): Promise<Product> {
@@ -112,6 +126,9 @@ export class ProductsService {
 
     // 3. Eliminar el registro en la base de datos
     await this.productRepository.remove(product);
+
+    // 4. Eliminar del RAG vectorial
+    await this.ragService.deleteProduct(id);
   }
 
   async addProductFile(

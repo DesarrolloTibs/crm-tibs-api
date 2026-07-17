@@ -9,6 +9,7 @@ import { Client } from '../clients/entities/client.entity';
 import { User } from '../users/entities/user.entity';
 import { AiSubAgent } from './entities/ai-sub-agent.entity';
 import { ProductFile } from '../products/entities/product-file.entity';
+import { Product } from '../products/entities/product.entity';
 import { OpportunitiesService } from '../opportunities/opportunities.service';
 import { ActivitiesService } from '../Activities/activities.service';
 import { RemindersService } from '../reminders/reminders.service';
@@ -25,7 +26,7 @@ import {
   CheckAvailabilitySchema, 
   CreateActivitySchema, 
   CreateTicketSchema, 
-  SearchProductSpecsSchema 
+  ConsultProductCatalogSchema 
 } from './dto/ai-agent-tools.schema';
 
 export const AgentStateAnnotation = Annotation.Root({
@@ -132,15 +133,16 @@ Tono y estilo: Profesional, resolutivo y breve (mensajes cortos adaptados a chat
 Idioma: Responde siempre en el mismo idioma en que escribe el cliente (español o inglés).
 ANCLAJE ESTRICTO DE CONOCIMIENTO (CUBE.DEV Y RAG): Está estrictamente prohibido inventar o alucinar información de productos, características, compatibilidades, precios o disponibilidad. Limítate única y exclusivamente a los datos reales provistos por Cube.dev o el RAG. Si no aparecen allí, responde amigablemente que no dispones de ese producto en el catálogo.
 ACTUALIZACIÓN DE CONTACTO OBLIGATORIA: Si el cliente te proporciona su nombre, correo electrónico o teléfono durante la charla (por ejemplo, para agendar una demo o cotizar), debes llamar de forma PRIORITARIA a la herramienta updateContact para actualizar sus datos en el CRM de inmediato, antes de proceder a agendar o cotizar.
+NO AUTOCOMPLETAR/SIMULAR HERRAMIENTAS: Tu respuesta debe finalizar inmediatamente al cerrar el JSON de tu turno (la llave de cierre }). Está estrictamente PROHIBIDO que simules la ejecución de la herramienta, que escribas '[Herramienta] ...' o que inventes el resultado del sistema.
 Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo solicita, creando una actividad con recordatorio.`;
 
       const comercialInstructions = `[INSTRUCCIONES COMERCIALES]
 - Registra oportunidades en el CRM.
-- PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento (tales como laptops, servidores, etc.). Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta search_product_specs para consultar la base de datos real. Si la búsqueda no devuelve coincidencias, responde cordialmente que en este momento no contamos con ese producto en el catálogo.
+- PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento (tales como laptops, servidores, etc.). Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta consult_product_catalog para consultar la base de datos real. Si la búsqueda no devuelve coincidencias, responde cordialmente que en este momento no contamos con ese producto en el catálogo.
 - REGLA CRÍTICA DE INVENTARIO: No manejan stock. Si el producto existe en Cube.dev/RAG, está disponible para cotización. NUNCA respondas que no hay stock en almacén.
 - Si el producto tiene manuales PDF en RAG, resume especificaciones clave.
 - Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity (montoTotal: null/0 si requiere análisis técnico, la bandera requiere_analisis es true o precioBase es null. De lo contrario, usa el precio obtenido).
-- Para detalles de compatibilidad, especificaciones o disponibilidad del catálogo, llama a search_product_specs.
+- Para detalles de compatibilidad, especificaciones o disponibilidad del catálogo, llama a consult_product_catalog.
 - Si hay una oportunidad activa del mismo producto, actualízala con modifyOpportunity.`;
 
       const seguimientoInstructions = `[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]
@@ -175,7 +177,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
           name: 'Sub-Agente Comercial',
           description: 'Se encarga de calificar prospectos, cotizaciones y gestionar oportunidades comerciales de venta en el CRM.',
           context: `${baseCommonPrompt}\n\n${comercialInstructions}`,
-          tools: ['registerContact', 'updateContact', 'createOpportunity', 'modifyOpportunity', 'search_product_specs'],
+          tools: ['registerContact', 'updateContact', 'createOpportunity', 'modifyOpportunity', 'consult_product_catalog'],
           isActive: true,
         },
         {
@@ -297,6 +299,18 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
         .map(m => `${m.sender === 'contact' ? 'Cliente' : 'Agente'}: ${m.content}`)
         .join('\n');
 
+      // Historial extendido para el enrutador (8 mensajes para no perder el contexto del hilo)
+      const routerMessages = await this.messageRepository.find({
+        where: { conversationId: conversation.id },
+        order: { createdAt: 'DESC' },
+        take: 8,
+      });
+      routerMessages.reverse();
+      const routerHistoryText = routerMessages
+        .filter(m => m.sender !== 'system')
+        .map(m => `${m.sender === 'contact' ? 'Cliente' : 'Agente'}: ${m.content}`)
+        .join('\n');
+
       // 2. Obtener lista de tipos de actividad disponibles
       const activityTypes = await this.activitiesService.findAllTypes();
       const activityTypesText = activityTypes
@@ -340,6 +354,11 @@ ${config.context || 'Eres el Agente Principal (Enrutador) de la Empresa.'}
 ${subAgentsDescriptionText}
 - Clave: "general" - Descripción: "Úsala si el mensaje del cliente es un saludo, despedida, agradecimiento, charla informal (small talk), preguntas generales cortas que no requieran herramientas, o si ninguna de las otras claves es aplicable."
 
+[REGLAS DE CONTINUIDAD Y CONTEXTO GENERAL]
+- Analiza la conversación histórica en [HISTORIAL DE CONVERSACIÓN RECIENTE] y el [RESUMEN DE LAS CONVERSACIONES PASADAS] como el hilo conductor de la conversación.
+- Si el cliente está dando una respuesta breve, una continuación, o confirmaciones simples (ej: 'sí', 'no', 'está bien', 'de acuerdo', 'agenda la demo', 'laptops'), NO lo derives a 'general'. Mantén el diálogo en la ruta del sub-agente activo con el que ya venía interactuando (ej: 'comercial' si hablaban de productos/precios, o 'seguimiento' si hablaban de agendar).
+- Solo cambia la ruta a 'general' si el cliente de verdad cambia de tema por completo a algo irrelevante (saludos o plática libre) o si la plática recién empieza y es un saludo.
+
 [REGLA DE RESPUESTA OBLIGATORIA]
 Responde ÚNICAMENTE con un objeto JSON por turno. Sin texto antes o después.
 Estructura de respuesta:
@@ -349,7 +368,7 @@ Estructura de respuesta:
 ${conversation.summary || 'No hay historial previo registrado.'}
 
 [HISTORIAL DE CONVERSACIÓN RECIENTE]
-${historyText}
+${routerHistoryText}
 
 [ÚLTIMO MENSAJE DEL CLIENTE]
 Cliente: ${incomingContent}
@@ -494,9 +513,9 @@ Campos: activityText(str), date(ISO 8601 UTC), typeActivityId(num), opportunityI
 Campos: title(str), description(str), priority(1=Bajo,2=Medio,3=Alto), category(str).
 {"thought": "Registrar ticket.", "tool_name": "createTicket", "tool_input": {"title": "Error login", "description": "Falla acceso", "priority": 2, "category": "Soporte"}}`,
 
-          search_product_specs: `7. search_product_specs: Busca en catálogo Cube/RAG. Llama ante dudas de compatibilidad, catálogo o precios.
-Campos: query(str), productKey(str,opc).
-{"thought": "Buscar producto.", "tool_name": "search_product_specs", "tool_input": {"query": "Red Magic"}}`
+          consult_product_catalog: `7. consult_product_catalog: Consulta información de productos en el catálogo, especificaciones técnicas, compatibilidad o precios. Úsala de forma libre para buscar cualquier producto o categoría.
+Campos: query(str, término de búsqueda o pregunta libre).
+{"thought": "Consultar catálogo.", "tool_name": "consult_product_catalog", "tool_input": {"query": "término o producto a buscar"}}`
         };
 
         const allowedTools = subAgent?.tools || [];
@@ -539,6 +558,14 @@ REGLAS: Un JSON por turno | Usa IDs reales del contexto | No confirmes acciones 
             // Solo status y slots sugeridos (si hay)
             compactResult = { status: res.status, available: res.available };
             if (res.suggestedSlots) compactResult.suggestedSlots = res.suggestedSlots;
+          } else if (state.toolCallName === 'consult_product_catalog') {
+            compactResult = { status: res.status };
+            if (res.data && Array.isArray(res.data) && res.data.length > 0) {
+              // Mapear los contenidos de los productos encontrados y listarlos
+              compactResult.productos = res.data.map((item: any) => item.content);
+            } else {
+              compactResult.mensaje = 'No se encontraron productos coincidentes en el catálogo.';
+            }
           } else {
             // Para otras tools: solo status + message + id si existe
             compactResult = { status: res.status };
@@ -546,6 +573,10 @@ REGLAS: Un JSON por turno | Usa IDs reales del contexto | No confirmes acciones 
             if (res.id) compactResult.id = res.id;
           }
           toolExecutionText = `\n[TOOL: ${state.toolCallName}] ${JSON.stringify(compactResult)}`;
+          // Agregar instrucción explícita post-tool para que el modelo no repita los datos sino que los use para responder
+          if (state.toolCallName !== 'checkAvailability') {
+            toolExecutionText += `\n[INSTRUCCIÓN OBLIGATORIA] El resultado anterior es de la herramienta '${state.toolCallName}'. Ahora DEBES generar un final_answer con una respuesta amigable y en lenguaje natural para el cliente usando esa información. JAMÁS repitas el JSON del resultado como respuesta.`;
+          }
         }
 
         const prompt = `${systemPrompt}\n\n[HISTORIAL]\n${historyText}\n\n[CLIENTE] ${incomingContent}${toolExecutionText}\n\nJSON:`;
@@ -585,10 +616,17 @@ REGLAS: Un JSON por turno | Usa IDs reales del contexto | No confirmes acciones 
                 cubeResults.push(...fallbackResults);
               }
               
-              const merged = [
+              let merged = [
                 ...cubeResults,
                 ...ragResults.map(r => ({ content: (r.pageContent || '').substring(0, 300) }))
               ];
+
+              // Fallback definitivo: Si no se encontró nada tras buscar por términos descriptivos del usuario (ej: 'para programar'),
+              // consultamos el catálogo completo para alimentar el contexto y que la IA de rescate sepa qué productos reales tenemos
+              if (merged.length === 0) {
+                const catalogResults = await this.queryCubeProducts('');
+                merged = catalogResults;
+              }
 
               if (merged.length > 0) {
                 ragContextText = `[CONOCIMIENTO DEL CATÁLOGO DE PRODUCTOS (CAPA SEMÁNTICA CUBE Y RAG)]\n` +
@@ -636,7 +674,45 @@ Asistente:`;
           const action = JSON.parse(agentResponse);
           
           if (!action.tool_name || action.tool_name === 'undefined') {
-            const fallbackAnswer = action.tool_input?.answer || action.answer || 'Con gusto le doy seguimiento a tu solicitud. ¿Te puedo ayudar en algo más?';
+            // Detectar si el modelo devolvió el resultado de la tool en lugar de un final_answer
+            // (el modelo a veces repite el JSON de la tool en vez de generar una respuesta)
+            const isToolResultEcho = action.specs || action.realTimeInventory || action.status || action.id || action.activityId || action.productos || action.mensaje;
+            if (isToolResultEcho && state.toolCallResult) {
+              const toolRes = state.toolCallResult as any;
+              
+              // Si el eco proviene de consult_product_catalog
+              if (state.toolCallName === 'consult_product_catalog' && toolRes.data && Array.isArray(toolRes.data)) {
+                if (toolRes.data.length > 0) {
+                  // Mapear y formatear de forma amigable los productos encontrados
+                  const prodText = toolRes.data
+                    .map((item: any) => {
+                      // El content suele traer Nombre, Descripción y Precio formateados
+                      return item.content || '';
+                    })
+                    .join('\n\n');
+                  return {
+                    nextAction: 'respond',
+                    response: `He consultado el catálogo. Esto es lo que tenemos disponible:\n\n${prodText}\n\n¿Te gustaría cotizar alguno o necesitas más detalles?`
+                  };
+                } else {
+                  return {
+                    nextAction: 'respond',
+                    response: 'Lo lamento, en este momento no contamos con ese producto en el catálogo de TIBS.'
+                  };
+                }
+              }
+
+              // Para otras tools (como createOpportunity, registerContact, etc.)
+              const productName = toolRes.specs?.nombre || toolRes.realTimeInventory?.nombre || '';
+              const price = toolRes.specs?.precioBase || toolRes.realTimeInventory?.precio || null;
+              const currency = toolRes.specs?.moneda || toolRes.realTimeInventory?.moneda || '';
+              const description = toolRes.specs?.descripcion || '';
+              let rescuedAnswer = productName
+                ? `Contamos con **${productName}**${description ? `: ${description}` : ''}.${price ? ` El precio es $${price.toLocaleString('es-MX')} ${currency}.` : ''} ¿Te gustaría más información o cotizar?`
+                : 'He revisado el catálogo. ¿Podrías ser más específico sobre el producto o servicio que buscas?';
+              return { nextAction: 'respond', response: rescuedAnswer };
+            }
+          const fallbackAnswer = action.tool_input?.answer || action.answer || 'Con gusto le doy seguimiento a tu solicitud. ¿Te puedo ayudar en algo más?';
             return {
               nextAction: 'respond',
               response: fallbackAnswer,
@@ -716,8 +792,8 @@ Asistente:`;
             case 'createTicket':
               validationResult = CreateTicketSchema.safeParse(input);
               break;
-            case 'search_product_specs':
-              validationResult = SearchProductSpecsSchema.safeParse(input);
+            case 'consult_product_catalog':
+              validationResult = ConsultProductCatalogSchema.safeParse(input);
               break;
             default:
               return {
@@ -737,7 +813,7 @@ Asistente:`;
           }
 
           // Si es la herramienta RAG, la direccionamos al RagService y a Cube.dev
-          if (state.toolCallName === 'search_product_specs') {
+          if (state.toolCallName === 'consult_product_catalog') {
             const parsedData = validationResult.data;
             
             // 1. Consulta RAG vectorial a pgvector (Búsqueda Semántica por Embeddings) - Limitado a 2 para control de tokens
@@ -1474,8 +1550,27 @@ Asistente:`;
       const token = this.generateCubeToken();
       // Extraer términos claves para la búsqueda (ignorar palabras comunes no sustantivas)
       const cleanKeyword = queryText
-        .replace(/^(dame|quiero|informacion|del|producto|sobre|que|empiezan|con|modelo|especificaciones|detalles|buscar|el|la|disponibilidad|catalogo|precios|precio|costo|cotizacion|comprar|venta|adquirir|fichas|ficha|manual|manuales|de)\s+/gi, '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '') // Quitar acentos
+        .replace(/[^a-z0-9\s]/g, '') // Quitar caracteres especiales
         .trim();
+
+      const stopwords = new Set([
+        'dame', 'quiero', 'informacion', 'del', 'producto', 'productos', 'sobre', 'que', 'empiezan',
+        'con', 'modelo', 'especificaciones', 'detalles', 'buscar', 'el', 'la', 'los', 'las',
+        'un', 'una', 'unos', 'unas', 'de', 'para', 'en', 'y', 'o', 'a', 'caracteristicas',
+        'tienes', 'tienen', 'disponible', 'disponibles', 'catalogo', 'precios', 'precio',
+        'costo', 'cotizacion', 'comprar', 'venta', 'adquirir', 'fichas', 'ficha', 'manual',
+        'manuales', 'disponibilidad', 'ver', 'mostrar', 'listar', 'lista', 'cuales',
+        'servicios', 'servicio', 'articulos', 'articulo', 'dispositivos', 'dispositivo', 'cosas'
+      ]);
+
+      const words = cleanKeyword.split(/\s+/).filter(w => w.length >= 2 && !stopwords.has(w));
+      
+      // Si no quedan palabras sustantivas (ej: el usuario buscó 'productos'), la búsqueda es general y no filtramos por nombre
+      const hasSearchTerm = words.length > 0;
+      const finalSearchTerm = hasSearchTerm ? words.sort((a, b) => b.length - a.length)[0] : '';
 
       const filters: any[] = [
         {
@@ -1485,11 +1580,11 @@ Asistente:`;
         }
       ];
 
-      if (cleanKeyword.length >= 2) {
+      if (hasSearchTerm && finalSearchTerm && finalSearchTerm.length >= 2) {
         filters.push({
           member: 'Productos.nombre',
           operator: 'contains',
-          values: [cleanKeyword.toLowerCase()]
+          values: [finalSearchTerm.toLowerCase()]
         });
       }
 
@@ -1586,8 +1681,31 @@ Estado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? '
         }
       }
       this.logger.log(`Sincronización retrospectiva finalizada. Se indexaron ${syncedCount} fichas técnicas PDF en pgvector.`);
+      // Sincronizar también los productos del catálogo en base de datos
+      await this.syncCatalogProductsToRag();
     } catch (err) {
       this.logger.error(`Error en la sincronización retrospectiva de fichas RAG: ${err.message}`);
+    }
+  }
+
+  /**
+   * Sincroniza retrospectivamente todos los productos activos del catálogo de SQL al RAG de pgvector.
+   */
+  private async syncCatalogProductsToRag(): Promise<void> {
+    try {
+      this.logger.log('Iniciando sincronización retrospectiva de productos del catálogo SQL a pgvector...');
+      const products = await this.productFileRepository.manager.find(Product, {
+        where: { status: true }
+      });
+
+      let syncedCount = 0;
+      for (const product of products) {
+        await this.ragService.ingestProduct(product.id, product.nombre, product.descripcion);
+        syncedCount++;
+      }
+      this.logger.log(`Sincronización de catálogo finalizada. Se indexaron ${syncedCount} productos en pgvector.`);
+    } catch (err: any) {
+      this.logger.error(`Error en la sincronización retrospectiva del catálogo a RAG: ${err.message}`);
     }
   }
 

@@ -47,7 +47,7 @@ export const CreateTicketSchema = z.object({
   category: z.string().optional().default('Soporte Técnico'),
 });
 
-export const SearchProductSpecsSchema = z.object({
-  query: z.string().min(3, 'Ingresa una consulta más detallada para la base de conocimientos.'),
-  productKey: z.string().nullable().optional().describe('Filtro por identificador de producto (ej: billy-vision, billy-idp)'),
+export const ConsultProductCatalogSchema = z.object({
+  query: z.string().min(2, 'Ingresa una consulta para el catálogo de productos.'),
+  productKey: z.string().nullable().optional().describe('Filtro por identificador del producto.'),
 });
