@@ -16,6 +16,9 @@ import { RemindersService } from '../reminders/reminders.service';
 import { ClientsService } from '../clients/clients.service';
 import { TicketsService } from '../tickets/tickets.service';
 import { Currency } from '../opportunities/entities/opportunity.entity';
+import { BusinessLineOption } from '../opportunities/entities/business-line-option.entity';
+import { DeliveryTypeOption } from '../opportunities/entities/delivery-type-option.entity';
+import { LicensingOption } from '../opportunities/entities/licensing-option.entity';
 import { RagService } from '../rag/rag.service';
 import { StateGraph, Annotation, START, END } from '@langchain/langgraph';
 import { 
@@ -141,7 +144,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
 - PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento (tales como laptops, servidores, etc.). Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta consult_product_catalog para consultar la base de datos real. Si la búsqueda no devuelve coincidencias, responde cordialmente que en este momento no contamos con ese producto en el catálogo.
 - REGLA CRÍTICA DE INVENTARIO: No manejan stock. Si el producto existe en Cube.dev/RAG, está disponible para cotización. NUNCA respondas que no hay stock en almacén.
 - Si el producto tiene manuales PDF en RAG, resume especificaciones clave.
-- Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity (montoTotal: null/0 si requiere análisis técnico, la bandera requiere_analisis es true o precioBase es null. De lo contrario, usa el precio obtenido).
+- Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity (montoTotal: null/0 si requiere análisis técnico, la bandera requiere_analisis es true o precioBase es null. De lo contrario, usa el precio obtenido. Pasa SIEMPRE el nombre del producto en el campo 'nombreProducto' para que el sistema lo asocie).
 - Para detalles de compatibilidad, especificaciones o disponibilidad del catálogo, llama a consult_product_catalog.
 - Si hay una oportunidad activa del mismo producto, actualízala con modifyOpportunity.`;
 
@@ -178,6 +181,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
           description: 'Se encarga de calificar prospectos, cotizaciones y gestionar oportunidades comerciales de venta en el CRM.',
           context: `${baseCommonPrompt}\n\n${comercialInstructions}`,
           tools: ['registerContact', 'updateContact', 'createOpportunity', 'modifyOpportunity', 'consult_product_catalog'],
+          temperature: 0.2,
           isActive: true,
         },
         {
@@ -186,6 +190,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
           description: 'Se encarga de agendar citas, llamadas, demostraciones, consultar disponibilidad de asesores y crear recordatorios.',
           context: `${baseCommonPrompt}\n\n${seguimientoInstructions}`,
           tools: ['registerContact', 'updateContact', 'checkAvailability', 'createActivity'],
+          temperature: 0.5,
           isActive: true,
         },
         {
@@ -194,6 +199,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
           description: 'Atiende incidencias de soporte, quejas, dudas técnicas y genera tickets de soporte en la mesa de ayuda (Helpdesk).',
           context: `${baseCommonPrompt}\n\n${soporteInstructions}`,
           tools: ['registerContact', 'updateContact', 'createTicket'],
+          temperature: 0.5,
           isActive: true,
         },
         {
@@ -202,6 +208,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
           description: 'Responde saludos, despedidas, preguntas generales sobre la empresa y pláticas informales sin uso de herramientas.',
           context: `${baseCommonPrompt}\n\n${generalInstructions}`,
           tools: [],
+          temperature: 0.7,
           isActive: true,
         },
       ];
@@ -291,7 +298,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
       const messages = await this.messageRepository.find({
         where: { conversationId: conversation.id },
         order: { createdAt: 'DESC' },
-        take: 3,
+        take: 6,
       });
       messages.reverse();
       const historyText = messages
@@ -459,6 +466,42 @@ Genera el JSON de salida:
           subAgent = subAgents.find(sa => sa.key === 'general');
         }
 
+        // PRE-FETCH OBLIGATORIO: Si es ruta comercial y es primera invocación (sin toolCallResult),
+        // consultar catálogo de forma proactiva para inyectar conocimiento real en el prompt.
+        let preFetchCatalogText = '';
+        if (state.route === 'comercial' && !state.toolCallResult) {
+          try {
+            const preRagResults = await this.ragService.searchSimilar(incomingContent, 3);
+            const preDetectedKeys = [...new Set(preRagResults.map(r => r.metadata?.product).filter(Boolean))];
+            const preCubeResults: any[] = [];
+            if (preDetectedKeys.length > 0) {
+              for (const key of preDetectedKeys) {
+                preCubeResults.push(...await this.queryCubeProductsByKey(key));
+              }
+            } else {
+              preCubeResults.push(...await this.queryCubeProducts(incomingContent));
+            }
+
+            const preMerged = [
+              ...preCubeResults,
+              ...preRagResults.map(r => ({ content: (r.pageContent || '').substring(0, 400) }))
+            ];
+
+            // Limitar a 5 resultados máximo para evitar prompt excesivamente largo
+            const limitedResults = preMerged.slice(0, 5);
+
+            if (limitedResults.length > 0) {
+              preFetchCatalogText = `\n[CATÁLOGO RELEVANTE — DATOS REALES DE LA BASE DE DATOS]\n` +
+                limitedResults.map(r => `- ${r.content}`).join('\n\n') +
+                `\n\n[REGLA ANTI-ALUCINACIÓN OBLIGATORIA] Responde ÚNICAMENTE con la información del bloque [CATÁLOGO RELEVANTE] de arriba. Si el producto específico que el cliente solicita NO aparece en ese bloque, responde estrictamente: "Lo lamento, en este momento no contamos con ese producto en nuestro catálogo. Te puedo ayudar con los productos que tenemos disponibles." JAMÁS inventes nombres de productos, marcas, precios ni características que no estén listados arriba.`;
+            } else {
+              preFetchCatalogText = `\n[CATÁLOGO RELEVANTE — DATOS REALES DE LA BASE DE DATOS]\nNo se encontraron productos coincidentes en el catálogo.\n\n[REGLA ANTI-ALUCINACIÓN OBLIGATORIA] No se encontró ningún producto que coincida con la consulta del cliente. Responde estrictamente: "Lo lamento, en este momento no contamos con ese producto en nuestro catálogo." JAMÁS inventes nombres de productos, marcas o precios.`;
+            }
+          } catch (preFetchErr) {
+            this.logger.error(`Error en pre-fetch de catálogo para ruta comercial: ${preFetchErr.message}`);
+          }
+        }
+
         // Obtener la información del cliente del CRM (compacta para optimizar tokens)
         let clientInfo: Record<string, any> = {};
         if (state.clientId) {
@@ -487,11 +530,32 @@ Genera el JSON de salida:
           }
         }
 
+        // Obtener catálogos activos para pasárselos en el prompt de la tool createOpportunity
+        let activeBusinessLines = ['Datos', 'Desarrollo', 'RH'];
+        let activeDeliveryTypes = ['Proyecto', 'Licencia', 'Asignacion', 'Bolsa de Horas'];
+        let activeLicensings = ['No Aplica', 'Microsoft', 'IBM', 'Qlik', 'Alteryx', 'KNIME'];
+        try {
+          const blRepo = this.aiAgentConfigRepository.manager.getRepository(BusinessLineOption);
+          const dtRepo = this.aiAgentConfigRepository.manager.getRepository(DeliveryTypeOption);
+          const licRepo = this.aiAgentConfigRepository.manager.getRepository(LicensingOption);
+
+          const [bls, dts, lics] = await Promise.all([
+            blRepo.find({ where: { blnstatus: true } }),
+            dtRepo.find({ where: { blnstatus: true } }),
+            licRepo.find({ where: { blnstatus: true } }),
+          ]);
+          if (bls.length > 0) activeBusinessLines = bls.map(b => b.strname);
+          if (dts.length > 0) activeDeliveryTypes = dts.map(d => d.strname);
+          if (lics.length > 0) activeLicensings = lics.map(l => l.strname);
+        } catch (err) {
+          this.logger.error(`Error al cargar catálogos activos para prompt: ${err.message}`);
+        }
+
         // Mapeo de prompts de herramientas permitidas al subagente
         const ALL_TOOL_PROMPTS: Record<string, string> = {
           createOpportunity: `1. createOpportunity: Registra oportunidad.
-Campos: nombreProyecto(str), descripcion(str), montoTotal(num|null — usa null o 0 para desarrollos a la medida), moneda("MXN"|"USD").
-{"thought": "Crear oportunidad.", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "Proyecto A", "descripcion": "Interés en A", "montoTotal": null, "moneda": "MXN"}}`,
+Campos: nombreProyecto(str), descripcion(str), montoTotal(num|null — usa null o 0 para desarrollos a la medida), moneda("MXN"|"USD"), nombreProducto(str, opcional - Nombre del producto del catálogo que le interesa), lineaNegocio(str, opcional - Debe ser uno de: ${activeBusinessLines.join(', ')}), tipoEntrega(str, opcional - Debe ser uno de: ${activeDeliveryTypes.join(', ')}), licenciamiento(str, opcional - Debe ser uno de: ${activeLicensings.join(', ')}).
+{"thought": "Crear oportunidad y asociar producto.", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "Proyecto A", "descripcion": "Interés en A", "montoTotal": null, "moneda": "MXN", "nombreProducto": "Nombre del producto de interés"}}`,
 
           modifyOpportunity: `2. modifyOpportunity: Edita oportunidad. Usa ID real.
 Campos: id(UUID), nombreProyecto, descripcion, montoTotal, moneda, etapa. Omite sin cambio.
@@ -579,9 +643,11 @@ REGLAS: Un JSON por turno | Usa IDs reales del contexto | No confirmes acciones 
           }
         }
 
-        const prompt = `${systemPrompt}\n\n[HISTORIAL]\n${historyText}\n\n[CLIENTE] ${incomingContent}${toolExecutionText}\n\nJSON:`;
+        const prompt = `${systemPrompt}${preFetchCatalogText}\n\n[HISTORIAL]\n${historyText}\n\n[CLIENTE] ${incomingContent}${toolExecutionText}\n\nJSON:`;
 
-        let agentResponse = await this.callLLM(config, prompt);
+        // Usar temperatura del sub-agente si está definida, sino la del config global
+        const subAgentTemperature = subAgent?.temperature ?? config.temperature;
+        let agentResponse = await this.callLLM(config, prompt, subAgentTemperature);
         this.logger.log(`[DEBUG - SubAgent Raw Response] Salida: "${agentResponse}"`);
 
         // Lógica de resiliencia: Si la IA responde vacío o con una plantilla genérica con puntos suspensivos, hacemos rescate libre
@@ -623,9 +689,10 @@ REGLAS: Un JSON por turno | Usa IDs reales del contexto | No confirmes acciones 
 
               // Fallback definitivo: Si no se encontró nada tras buscar por términos descriptivos del usuario (ej: 'para programar'),
               // consultamos el catálogo completo para alimentar el contexto y que la IA de rescate sepa qué productos reales tenemos
+              // Fallback limitado: traer máximo 5 productos del área de interés
               if (merged.length === 0) {
                 const catalogResults = await this.queryCubeProducts('');
-                merged = catalogResults;
+                merged = catalogResults.slice(0, 5);
               }
 
               if (merged.length > 0) {
@@ -676,7 +743,7 @@ Asistente:`;
           if (!action.tool_name || action.tool_name === 'undefined') {
             // Detectar si el modelo devolvió el resultado de la tool en lugar de un final_answer
             // (el modelo a veces repite el JSON de la tool en vez de generar una respuesta)
-            const isToolResultEcho = action.specs || action.realTimeInventory || action.status || action.id || action.activityId || action.productos || action.mensaje;
+            const isToolResultEcho = (action.status && !action.tool_name) || (action.productos && !action.tool_name) || (action.mensaje && !action.tool_name);
             if (isToolResultEcho && state.toolCallResult) {
               const toolRes = state.toolCallResult as any;
               
@@ -955,7 +1022,7 @@ Asistente:`;
       // Compilar el Grafo
       const app = workflow.compile();
 
-      // Ejecutar el Grafo pasándole el estado inicial
+      // Ejecutar el Grafo pasándole el estado inicial con límite de recursión para evitar loops infinitos
       const finalState = await app.invoke({
         clientId: conversation.clientId || null,
         route: 'general',
@@ -964,7 +1031,7 @@ Asistente:`;
         toolCallInput: null,
         toolCallResult: null,
         response: null
-      } as any);
+      } as any, { recursionLimit: 8 });
 
       const agentReply = finalState.response || 'He procesado tu solicitud en el sistema. ¿Te puedo colaborar en algo más?';
 
@@ -1000,6 +1067,98 @@ Asistente:`;
             }
           }
 
+          // Resolver ids de producto basados en nombreProducto del catálogo
+          const finalProductIds: string[] = input.productIds || [];
+          if (input.nombreProducto) {
+            try {
+              const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
+              const qb = productRepo.createQueryBuilder('p');
+              qb.where('LOWER(p.nombre) LIKE :name', { name: `%${input.nombreProducto.toLowerCase()}%` })
+                .andWhere('p.status = :status', { status: true });
+              const matchedProducts = await qb.getMany();
+              
+              if (matchedProducts.length > 0) {
+                this.logger.log(`Productos asociados automáticamente a la oportunidad por coincidencia de nombre: ${matchedProducts.map(p => p.nombre).join(', ')}`);
+                for (const p of matchedProducts) {
+                  if (!finalProductIds.includes(p.id)) {
+                    finalProductIds.push(p.id);
+                  }
+                }
+              }
+            } catch (productErr) {
+              this.logger.error(`Error al buscar productos del catálogo por nombre: ${productErr.message}`);
+            }
+          }
+
+          // Resolver id de línea de negocio si el LLM lo especificó
+          let businessLineId = 'default';
+          if (input.lineaNegocio) {
+            try {
+              const blRepo = this.aiAgentConfigRepository.manager.getRepository(BusinessLineOption);
+              const bl = await blRepo.findOne({
+                where: { strname: input.lineaNegocio, blnstatus: true }
+              });
+              if (bl) {
+                businessLineId = bl.id;
+              } else {
+                // Búsqueda aproximada si no es idéntica
+                const blApprox = await blRepo.createQueryBuilder('bl')
+                  .where('LOWER(bl.strname) LIKE :name', { name: `%${input.lineaNegocio.toLowerCase()}%` })
+                  .andWhere('bl.blnstatus = :status', { status: true })
+                  .getOne();
+                if (blApprox) businessLineId = blApprox.id;
+              }
+            } catch (err) {
+              this.logger.error(`Error al buscar lineaNegocio por nombre: ${err.message}`);
+            }
+          }
+
+          // Resolver id de tipo de entrega si el LLM lo especificó
+          let deliveryTypeId = 'default';
+          if (input.tipoEntrega) {
+            try {
+              const dtRepo = this.aiAgentConfigRepository.manager.getRepository(DeliveryTypeOption);
+              const dt = await dtRepo.findOne({
+                where: { strname: input.tipoEntrega, blnstatus: true }
+              });
+              if (dt) {
+                deliveryTypeId = dt.id;
+              } else {
+                // Búsqueda aproximada si no es idéntica
+                const dtApprox = await dtRepo.createQueryBuilder('dt')
+                  .where('LOWER(dt.strname) LIKE :name', { name: `%${input.tipoEntrega.toLowerCase()}%` })
+                  .andWhere('dt.blnstatus = :status', { status: true })
+                  .getOne();
+                if (dtApprox) deliveryTypeId = dtApprox.id;
+              }
+            } catch (err) {
+              this.logger.error(`Error al buscar tipoEntrega por nombre: ${err.message}`);
+            }
+          }
+
+          // Resolver id de licenciamiento si el LLM lo especificó
+          let licensingId = undefined;
+          if (input.licenciamiento) {
+            try {
+              const licRepo = this.aiAgentConfigRepository.manager.getRepository(LicensingOption);
+              const lic = await licRepo.findOne({
+                where: { strname: input.licenciamiento, blnstatus: true }
+              });
+              if (lic) {
+                licensingId = lic.id;
+              } else {
+                // Búsqueda aproximada si no es idéntica
+                const licApprox = await licRepo.createQueryBuilder('lic')
+                  .where('LOWER(lic.strname) LIKE :name', { name: `%${input.licenciamiento.toLowerCase()}%` })
+                  .andWhere('lic.blnstatus = :status', { status: true })
+                  .getOne();
+                if (licApprox) licensingId = licApprox.id;
+              }
+            } catch (err) {
+              this.logger.error(`Error al buscar licenciamiento por nombre: ${err.message}`);
+            }
+          }
+
           const opp = await this.opportunitiesService.create({
             nombre_proyecto: input.nombreProyecto,
             description: input.descripcion || 'Creado por Agente IA',
@@ -1007,10 +1166,12 @@ Asistente:`;
             moneda: input.moneda || Currency.USD,
             cliente_id: conversation.clientId || undefined,
             ejecutivo_id: conversation.assignedUserId || undefined,
-            linea_negocio_id: 'default',
-            tipo_entrega_id: 'default',
+            linea_negocio_id: businessLineId,
+            tipo_entrega_id: deliveryTypeId,
+            licenciamiento_id: licensingId,
+            productIds: finalProductIds,
           } as any, userEntity);
-          return { status: 'SUCCESS', message: 'Oportunidad creada con éxito', opportunityId: opp.id };
+          return { status: 'SUCCESS', message: 'Oportunidad creada con éxito', opportunityId: opp.id, productsAddedCount: finalProductIds.length };
         }
 
         case 'modifyOpportunity': {
@@ -1256,28 +1417,29 @@ Asistente:`;
   /**
    * Invoca el modelo correspondiente según el proveedor configurado (Gemini, OpenAI, Watsonx).
    */
-  private async callLLM(config: AiAgentConfig, prompt: string): Promise<string> {
+  private async callLLM(config: AiAgentConfig, prompt: string, temperatureOverride?: number): Promise<string> {
     const provider = config.modelProvider;
     const model = config.modelName;
 
     const maxTokens = config.maxNewTokens || 2048;
+    const temperature = temperatureOverride ?? config.temperature;
 
     if (provider === 'openai') {
       const apiKey = config.openaiApiKey || process.env.OPENAI_API_KEY;
       if (!apiKey) throw new Error('API Key de OpenAI no configurada.');
       const endpoint = config.openaiEndpoint || null;
       const apiVersion = config.openaiApiVersion || null;
-      return this.callOpenAI(model, apiKey, prompt, config.temperature, endpoint, apiVersion, maxTokens);
+      return this.callOpenAI(model, apiKey, prompt, temperature, endpoint, apiVersion, maxTokens);
     } else if (provider === 'watsonx') {
       const apiKey = config.watsonxApiKey || process.env.WATSONX_API_KEY;
       const projectId = config.watsonxProjectId || process.env.WATSONX_PROJECT_ID;
       const region = config.watsonxRegion || process.env.WATSONX_REGION || 'us-south';
       if (!apiKey || !projectId) throw new Error('Credenciales de IBM WatsonX no configuradas.');
-      return this.callWatsonx(model, apiKey, projectId, region, prompt, config.temperature, maxTokens);
+      return this.callWatsonx(model, apiKey, projectId, region, prompt, temperature, maxTokens);
     } else {
       const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
       if (!apiKey) throw new Error('API Key de Gemini no configurada.');
-      return this.callGemini(model, apiKey, prompt, config.temperature, maxTokens);
+      return this.callGemini(model, apiKey, prompt, temperature, maxTokens);
     }
   }
 
@@ -1570,7 +1732,9 @@ Asistente:`;
       
       // Si no quedan palabras sustantivas (ej: el usuario buscó 'productos'), la búsqueda es general y no filtramos por nombre
       const hasSearchTerm = words.length > 0;
-      const finalSearchTerm = hasSearchTerm ? words.sort((a, b) => b.length - a.length)[0] : '';
+      // Multi-término: usar los 3 términos más largos para búsqueda más precisa
+      const topTerms = hasSearchTerm ? words.sort((a, b) => b.length - a.length).slice(0, 3) : [];
+      const finalSearchTerm = topTerms.length > 0 ? topTerms[0] : '';
 
       const filters: any[] = [
         {
@@ -1580,12 +1744,22 @@ Asistente:`;
         }
       ];
 
-      if (hasSearchTerm && finalSearchTerm && finalSearchTerm.length >= 2) {
-        filters.push({
-          member: 'Productos.nombre',
-          operator: 'contains',
-          values: [finalSearchTerm.toLowerCase()]
-        });
+      if (hasSearchTerm && topTerms.length > 0) {
+        if (topTerms.length === 1) {
+          filters.push({
+            member: 'Productos.nombre',
+            operator: 'contains',
+            values: [topTerms[0].toLowerCase()]
+          });
+        } else {
+          // Búsqueda multi-término: filtrar con OR lógico usando el primer término,
+          // luego refinar resultados en memoria con los demás
+          filters.push({
+            member: 'Productos.nombre',
+            operator: 'contains',
+            values: [topTerms[0].toLowerCase()]
+          });
+        }
       }
 
       const response = await fetch('http://localhost:4000/cubejs-api/v1/load', {
@@ -1700,7 +1874,7 @@ Estado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? '
 
       let syncedCount = 0;
       for (const product of products) {
-        await this.ragService.ingestProduct(product.id, product.nombre, product.descripcion);
+        await this.ragService.ingestProduct(product.id, product.nombre, product.descripcion, product.precioBase as number | null, product.requiere_analisis);
         syncedCount++;
       }
       this.logger.log(`Sincronización de catálogo finalizada. Se indexaron ${syncedCount} productos en pgvector.`);

@@ -20,6 +20,9 @@ export class AiSubAgent {
   @Column({ type: 'jsonb', nullable: true })
   tools: string[] | null; // Array de nombres de herramientas permitidas (ej: ['registerContact', 'createOpportunity'])
 
+  @Column({ type: 'float', default: 0.7 })
+  temperature: number;
+
   @Column({ type: 'boolean', default: true })
   isActive: boolean;
 

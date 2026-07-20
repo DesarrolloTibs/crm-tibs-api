@@ -30,7 +30,7 @@ export class ProductsService {
       createdById: userId || null,
     });
     const saved = await this.productRepository.save(product);
-    await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion);
+    await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.requiere_analisis);
     return saved;
   }
 
@@ -73,7 +73,7 @@ export class ProductsService {
     }
     const saved = await this.productRepository.save(product);
     if (saved.status) {
-      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion);
+      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.requiere_analisis);
     } else {
       await this.ragService.deleteProduct(saved.id);
     }
@@ -85,7 +85,7 @@ export class ProductsService {
     product.status = status;
     const saved = await this.productRepository.save(product);
     if (saved.status) {
-      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion);
+      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.requiere_analisis);
     } else {
       await this.ragService.deleteProduct(saved.id);
     }

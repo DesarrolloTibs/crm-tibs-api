@@ -17,6 +17,11 @@ export const CreateOpportunitySchema = z.object({
   descripcion: z.string().optional().default('Creado por Agente IA'),
   montoTotal: z.number().nonnegative().nullable().optional().default(null), // Nullable para desarrollos a la medida
   moneda: z.enum(['MXN', 'USD']).optional().default('MXN'),
+  productIds: z.array(z.string()).optional(),
+  nombreProducto: z.string().optional(), // Nombre del producto del catálogo que le interesa
+  lineaNegocio: z.string().optional(), // 'Datos', 'Desarrollo', 'RH', etc.
+  tipoEntrega: z.string().optional(), // 'Proyecto', 'Licencia', 'Asignacion', 'Bolsa de Horas', etc.
+  licenciamiento: z.string().optional(), // 'Microsoft', 'IBM', 'Qlik', 'Alteryx', 'KNIME', etc.
 });
 
 export const ModifyOpportunitySchema = z.object({

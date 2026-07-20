@@ -294,7 +294,13 @@ export class RagService implements OnModuleInit {
    * Genera un embedding para un producto del catálogo (nombre y descripción) e indexa su metadata
    * en la base de datos vectorial para permitir búsquedas semánticas precisas.
    */
-  async ingestProduct(productId: string, nombre: string, descripcion: string | null): Promise<void> {
+  async ingestProduct(
+    productId: string,
+    nombre: string,
+    descripcion: string | null,
+    precioBase?: number | null,
+    requiereAnalisis?: boolean,
+  ): Promise<void> {
     try {
       const store = await this.initializeVectorStore();
 
@@ -308,12 +314,14 @@ export class RagService implements OnModuleInit {
 
       // 1. Eliminar embeddings previos de este producto para evitar duplicaciones
       await this.aiAgentConfigRepository.manager.query(
-        "DELETE FROM product_knowledge_base WHERE metadata->>'productId' = $1",
-        [productId]
+        "DELETE FROM product_knowledge_base WHERE metadata->>'productId' = $1 OR metadata->>'product' = $2",
+        [productId, productKey]
       );
 
-      // 2. Construir el texto del catálogo estructurado
-      const contentText = `Producto: ${nombre}\nDescripción: ${descripcion || 'Sin descripción'}`;
+      // 2. Construir el texto del catálogo estructurado con todos los atributos clave
+      const precioText = precioBase ? `$${precioBase} MXN` : 'A la medida / Por definir';
+      const analisisText = requiereAnalisis ? 'Sí (Requiere cotización personalizada)' : 'No (Precio estándar)';
+      const contentText = `Producto: ${nombre}\nDescripción: ${descripcion || 'Sin descripción'}\nPrecio Base: ${precioText}\nRequiere Análisis Técnico: ${analisisText}`;
 
       // 3. Crear el formato de documento de LangChain
       const document = {
