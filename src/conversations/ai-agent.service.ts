@@ -131,44 +131,74 @@ Estructura del JSON:
 
       const count = await this.aiSubAgentRepository.count();
       
-      const baseCommonPrompt = `Eres el asistente conversacional de inteligencia artificial del CRM.
+      const baseCommonPrompt = `Eres el asistente conversacional de la empresa del CRM.
 Tono y estilo: Profesional, resolutivo y breve (mensajes cortos adaptados a chat). Nunca hables con lenguaje técnico de base de datos ni reveles IDs.
 Idioma: Responde siempre en el mismo idioma en que escribe el cliente (español o inglés).
-ANCLAJE ESTRICTO DE CONOCIMIENTO (CUBE.DEV Y RAG): Está estrictamente prohibido inventar o alucinar información de productos, características, compatibilidades, precios o disponibilidad. Limítate única y exclusivamente a los datos reales provistos por Cube.dev o el RAG. Si no aparecen allí, responde amigablemente que no dispones de ese producto en el catálogo.
+REGLA CRÍTICA DE CONFIDENCIALIDAD E IDENTIDAD: Está estrictamente PROHIBIDO decir que eres una IA, un bot, un modelo automatizado o una inteligencia artificial. Está estrictamente PROHIBIDO usar el término 'asesor humano' o hacer cualquier alusión a que el cliente está hablando con una IA. Si el cliente solicita hablar con alguien más, o expresa molestar, quejas, urgencia o derivación, refiérete SIEMPRE a un 'ejecutivo especializado'.
+ANCLAJE ESTRICTO DE CONOCIMIENTO (CUBE.DEV Y RAG): Está strictly prohibido inventar o alucinar información de productos, características, compatibilidades, precios o disponibilidad. Limítate única y exclusivamente a los datos reales provistos por Cube.dev o el RAG. Si no aparecen allí, responde amigablemente que no dispones de ese producto en el catálogo.
 ACTUALIZACIÓN DE CONTACTO OBLIGATORIA: Si el cliente te proporciona su nombre, correo electrónico o teléfono durante la charla (por ejemplo, para agendar una demo o cotizar), debes llamar de forma PRIORITARIA a la herramienta updateContact para actualizar sus datos en el CRM de inmediato, antes de proceder a agendar o cotizar.
 NO AUTOCOMPLETAR/SIMULAR HERRAMIENTAS: Tu respuesta debe finalizar inmediatamente al cerrar el JSON de tu turno (la llave de cierre }). Está estrictamente PROHIBIDO que simules la ejecución de la herramienta, que escribas '[Herramienta] ...' o que inventes el resultado del sistema.
-Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo solicita, creando una actividad con recordatorio.`;
+Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quejas, molestia o si el cliente lo solicita.`;
 
       const comercialInstructions = `[INSTRUCCIONES COMERCIALES]
 - Registra oportunidades en el CRM.
-- PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento (tales como laptops, servidores, etc.). Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta consult_product_catalog para consultar la base de datos real. Si la búsqueda no devuelve coincidencias, responde cordialmente que en este momento no contamos con ese producto en el catálogo.
+- PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento. Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta consult_product_catalog para consultar la base de datos real.
 - REGLA CRÍTICA DE INVENTARIO: No manejan stock. Si el producto existe en Cube.dev/RAG, está disponible para cotización. NUNCA respondas que no hay stock en almacén.
 - Si el producto tiene manuales PDF en RAG, resume especificaciones clave.
-- Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity (montoTotal: null/0 si requiere análisis técnico, la bandera requiere_analisis es true o precioBase es null. De lo contrario, usa el precio obtenido. Pasa SIEMPRE el nombre del producto en el campo 'nombreProducto' para que el sistema lo asocie).
+- Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity.
 - Para detalles de compatibilidad, especificaciones o disponibilidad del catálogo, llama a consult_product_catalog.
 - Si hay una oportunidad activa del mismo producto, actualízala con modifyOpportunity.`;
 
       const seguimientoInstructions = `[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]
-- Tu objetivo es agendar llamadas, demostraciones o reuniones.
+- Tu objetivo es agendar llamadas, demostraciones o reuniones con un ejecutivo especializado.
 - Consulta disponibilidad usando checkAvailability antes de agendar.
 - Si está AVAILABLE, agenda con createActivity y añade recordatorios de forma proactiva.
 - Si está UNAVAILABLE, ofrece los slots de suggestedSlots.
-- Si falta fecha o hora, pregúntala. Si da ambos datos, agenda de inmediato.
+- Si falta fecha u hora, pregúntala. Si da ambos datos, agenda de inmediato.
 - Vincula la actividad con el cliente. No uses UUIDs del sistema.`;
 
       const soporteInstructions = `[INSTRUCCIONES DE SOPORTE Y HELPDESK]
-- Atiende incidencias y dudas de soporte técnico.
-- Genera un ticket en el CRM con createTicket.
-- Campos: title (título corto), description (falla), priority (1:Bajo, 2:Medio, 3:Alto), category (ej. Soporte Técnico).
-- Informa al cliente que el reporte fue registrado exitosamente.`;
+- Atiende incidencias, quejas y dudas de soporte técnico.
+- Si el cliente expresa molestia, urgencia o solicita hablar con un superior, indícale amablemente que lo derivarás con un ejecutivo especializado de inmediato para brindarle atención personalizada.
+- Genera un ticket en el CRM con createTicket si corresponde.
+- Campos: title (título corto), description (falla), priority (1:Bajo, 2:Medio, 3:Alto), category (ej. Soporte Técnico).`;
 
       const generalInstructions = `[INSTRUCCIONES CONVERSACIONALES GENERALES]
 - Responde amablemente a saludos, despedidas o preguntas de plática informal.
 - No intentes llamar a ninguna herramienta si el cliente solo te saluda.`;
 
       if (count > 0) {
-        // RESPETAR LA FUENTE DE VERDAD: Si ya existen subagentes en la base de datos, NO los sobreescribimos al arrancar.
-        // Esto permite que el usuario edite y personalice los prompts directamente en la BD sin que NestJS pise sus cambios.
+        // RESPETAR LA FUENTE DE VERDAD Y AUTO-MIGRACIÓN DE TEXTOS 'ASESOR HUMANO' EN BD
+        try {
+          const existingAgents = await this.aiSubAgentRepository.find();
+          for (const sa of existingAgents) {
+            let modified = false;
+            if (sa.context && (sa.context.includes('asesor humano') || sa.context.includes('disponibilidad de asesores'))) {
+              sa.context = sa.context
+                .replace(/asesor humano/g, 'ejecutivo especializado')
+                .replace(/disponibilidad de asesores/g, 'disponibilidad de ejecutivos');
+              modified = true;
+            }
+            if (sa.description && (sa.description.includes('asesor humano') || sa.description.includes('asesores'))) {
+              sa.description = sa.description
+                .replace(/asesor humano/g, 'ejecutivo especializado')
+                .replace(/asesores/g, 'ejecutivos especializados');
+              modified = true;
+            }
+            if (modified) {
+              await this.aiSubAgentRepository.save(sa);
+            }
+          }
+          const configs = await this.aiAgentConfigRepository.find();
+          for (const cfg of configs) {
+            if (cfg.context && cfg.context.includes('asesor humano')) {
+              cfg.context = cfg.context.replace(/asesor humano/g, 'ejecutivo especializado');
+              await this.aiAgentConfigRepository.save(cfg);
+            }
+          }
+        } catch (migErr) {
+          this.logger.error('Error durante la auto-migración de textos en subagentes:', migErr);
+        }
         return;
       }
 
@@ -187,7 +217,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
         {
           key: 'seguimiento',
           name: 'Sub-Agente de Seguimiento',
-          description: 'Se encarga de agendar citas, llamadas, demostraciones, consultar disponibilidad de asesores y crear recordatorios.',
+          description: 'Se encarga de agendar citas, llamadas, demostraciones, consultar disponibilidad de ejecutivos especializados y crear recordatorios.',
           context: `${baseCommonPrompt}\n\n${seguimientoInstructions}`,
           tools: ['registerContact', 'updateContact', 'checkAvailability', 'createActivity'],
           temperature: 0.5,
@@ -196,7 +226,7 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
         {
           key: 'soporte_atencion',
           name: 'Sub-Agente de Soporte',
-          description: 'Atiende incidencias de soporte, quejas, dudas técnicas y genera tickets de soporte en la mesa de ayuda (Helpdesk).',
+          description: 'Atiende incidencias de soporte, quejas, dudas técnicas, deriva con un ejecutivo especializado y genera tickets de soporte en la mesa de ayuda (Helpdesk).',
           context: `${baseCommonPrompt}\n\n${soporteInstructions}`,
           tools: ['registerContact', 'updateContact', 'createTicket'],
           temperature: 0.5,
@@ -287,10 +317,10 @@ Redirección: Deriva con un asesor humano si hay inconformidades, quejas o si lo
   /**
    * Procesa un mensaje entrante mediante el Grafo de Estados de LangGraph.
    */
-  async processIncomingMessage(conversation: Conversation, incomingContent: string): Promise<string> {
+  async processIncomingMessage(conversation: Conversation, incomingContent: string): Promise<{ reply: string; route: string; isHandedOff: boolean }> {
     const config = await this.getOrInitConfig();
     if (!config.isActive) {
-      return '';
+      return { reply: '', route: 'inactive', isHandedOff: false };
     }
 
     try {
@@ -565,7 +595,7 @@ Campos: id(UUID), nombreProyecto, descripcion, montoTotal, moneda, etapa. Omite 
 Campos opcionales: nombre(str), correo(str), telefono(str). Envía solo cambios.
 {"thought": "Actualizar correo.", "tool_name": "updateContact", "tool_input": {"correo": "cliente@correo.com"}}`,
 
-          checkAvailability: `4. checkAvailability: Valida disponibilidad de asesor.
+          checkAvailability: `4. checkAvailability: Valida disponibilidad de ejecutivo especializado.
 Campos: proposedDate(ISO 8601 UTC). Llama antes de crear actividad con horario.
 {"thought": "Validar horario.", "tool_name": "checkAvailability", "tool_input": {"proposedDate": "2026-07-05T21:00:00.000Z"}}`,
 
@@ -1040,10 +1070,22 @@ Asistente:`;
         this.logger.error(`Error al iniciar actualización de resumen conversacional: ${err.message}`);
       });
 
-      return agentReply;
+      const selectedRoute = finalState.route || 'general';
+      const replyLower = (agentReply || '').toLowerCase();
+      const isHandedOff = selectedRoute === 'soporte_atencion' || replyLower.includes('ejecutivo especializado') || replyLower.includes('deriv');
+
+      return {
+        reply: agentReply,
+        route: selectedRoute,
+        isHandedOff,
+      };
     } catch (err) {
       this.logger.error('Error en el motor conversacional LangGraph:', err);
-      return 'Lo siento, en este momento no puedo procesar tu solicitud de forma automática.';
+      return {
+        reply: 'Lo siento, en este momento no puedo procesar tu solicitud de forma automática.',
+        route: 'error',
+        isHandedOff: false,
+      };
     }
   }
 

@@ -1,13 +1,15 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { Client } from '../clients/entities/client.entity';
 import { User } from '../users/entities/user.entity';
+import { Role } from '../role.enum';
 import { ChannelConfig } from './entities/channel-config.entity';
 import { ConversationsGateway } from './conversations.gateway';
 import { AiAgentService } from './ai-agent.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class ConversationsService {
@@ -26,6 +28,8 @@ export class ConversationsService {
     private readonly channelConfigRepository: Repository<ChannelConfig>,
     private readonly gateway: ConversationsGateway,
     private readonly aiAgentService: AiAgentService,
+    @Inject(forwardRef(() => NotificationsService))
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -162,23 +166,78 @@ export class ConversationsService {
    */
   private async triggerAiReply(conversation: Conversation, text: string) {
     try {
-      const aiReply = await this.aiAgentService.processIncomingMessage(conversation, text);
-      if (aiReply && aiReply.trim() !== '') {
+      const { reply, route, isHandedOff } = await this.aiAgentService.processIncomingMessage(conversation, text);
+      
+      if (reply && reply.trim() !== '') {
         const botMessage = this.messageRepository.create({
           conversationId: conversation.id,
           sender: 'agent',
-          content: aiReply,
+          content: reply,
         });
         const savedBot = await this.messageRepository.save(botMessage);
         
         // Envío real o simulado inteligente
-        await this.sendOutboundMessage(conversation, aiReply);
+        await this.sendOutboundMessage(conversation, reply);
 
         this.gateway.emitMessage(savedBot);
 
         // Actualizar timestamp
         conversation.updatedAt = new Date();
         await this.conversationRepository.save(conversation);
+      }
+
+      // Si la IA identificó una derivación a ejecutivo especializado o soporte
+      if (isHandedOff) {
+        this.logger.log(`Derivación a ejecutivo especializado solicitada en chat ${conversation.id}. Deshabilitando Bot IA...`);
+
+        // 1. Deshabilitar bot en la conversación
+        conversation.botActive = false;
+        conversation.updatedAt = new Date();
+        await this.conversationRepository.save(conversation);
+
+        // 2. Emitir evento de cambio de estado del bot por WebSocket
+        this.gateway.emitBotStatusChanged(conversation.id, false);
+
+        // 3. Crear mensaje de auditoría de sistema
+        const systemMsg = this.messageRepository.create({
+          conversationId: conversation.id,
+          sender: 'system',
+          content: 'El bot de IA se deshabilitó automáticamente al derivar la conversación con un ejecutivo especializado.',
+        });
+        const savedSys = await this.messageRepository.save(systemMsg);
+        this.gateway.emitMessage(savedSys);
+
+        // 4. Notificar al ejecutivo asignado (o a los administradores si está sin asignar)
+        const clientName = conversation.client 
+          ? `${conversation.client.nombre || ''} ${conversation.client.apellido || ''}`.trim() 
+          : (conversation.clientName || conversation.externalId || 'Contacto');
+
+        const notificationTitle = '💬 Derivación de Chat: Ejecutivo Especializado';
+        const notificationMessage = `El cliente ${clientName} ha sido derivado en el chat para recibir atención de un ejecutivo especializado.`;
+
+        if (conversation.assignedUserId) {
+          await this.notificationsService.createAndSendNotification(
+            conversation.assignedUserId,
+            notificationTitle,
+            notificationMessage,
+            'conversation_escalated',
+            conversation.id,
+            true,
+          );
+        } else {
+          // Notificar a administradores si no hay un ejecutivo asignado
+          const adminUsers = await this.userRepository.find({ where: { role: Role.Admin, isActive: true } });
+          for (const admin of adminUsers) {
+            await this.notificationsService.createAndSendNotification(
+              admin.id,
+              notificationTitle,
+              notificationMessage,
+              'conversation_escalated',
+              conversation.id,
+              false,
+            );
+          }
+        }
       }
     } catch (err) {
       this.logger.error(`Error en respuesta automática de IA para chat ${conversation.id}:`, err);

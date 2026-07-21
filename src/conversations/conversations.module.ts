@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
@@ -19,6 +19,7 @@ import { RemindersModule } from '../reminders/reminders.module';
 import { ClientsModule } from '../clients/clients.module';
 import { TicketsModule } from '../tickets/tickets.module';
 import { RagModule } from '../rag/rag.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { RagModule } from '../rag/rag.module';
     ClientsModule,
     TicketsModule,
     RagModule,
+    forwardRef(() => NotificationsModule),
   ],
   providers: [ConversationsService, AiAgentService, ConversationsGateway],
   controllers: [ConversationsController],
