@@ -76,6 +76,13 @@ export class ConversationsService {
   }
 
   /**
+   * Obtiene una conversación por canal e ID externo (por ejemplo, visitorId de webchat).
+   */
+  async findByChannelAndExternalId(channel: string, externalId: string): Promise<Conversation | null> {
+    return this.conversationRepository.findOne({ where: { channel, externalId } });
+  }
+
+  /**
    * Registra y procesa un mensaje entrante (simulado o webhook real de Meta).
    */
   async receiveIncomingMessage(
@@ -154,8 +161,10 @@ export class ConversationsService {
 
     // 3. Si el bot está activo, disparar proceso de IA
     if (conversation.botActive) {
-      // Ejecución asíncrona para no bloquear el webhook de Meta y responder en tiempo real
-      this.triggerAiReply(conversation, text);
+      const aiPromise = this.triggerAiReply(conversation, text);
+      if (channel === 'webchat') {
+        await aiPromise;
+      }
     }
 
     return savedIncoming;
@@ -179,7 +188,12 @@ export class ConversationsService {
         // Envío real o simulado inteligente
         await this.sendOutboundMessage(conversation, reply);
 
-        this.gateway.emitMessage(savedBot);
+        const fullBotMessage = await this.messageRepository.findOne({
+          where: { id: savedBot.id },
+          relations: ['conversation'],
+        });
+
+        this.gateway.emitMessage(fullBotMessage || savedBot);
 
         // Actualizar timestamp
         conversation.updatedAt = new Date();
