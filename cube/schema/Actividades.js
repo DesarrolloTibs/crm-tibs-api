@@ -3,11 +3,15 @@ cube(`Actividades`, {
 
   joins: {
     Clientes: {
-      sql: `${CUBE}.clientId = ${Clientes}.id`,
+      sql: `${CUBE}."clientId" = ${Clientes}.id`,
       relationship: `belongsTo`
     },
     Oportunidades: {
-      sql: `${CUBE}.opportunityId = ${Oportunidades}.id`,
+      sql: `${CUBE}."opportunityId" = ${Oportunidades}.id`,
+      relationship: `belongsTo`
+    },
+    Usuarios: {
+      sql: `${CUBE}."userId" = ${Usuarios}.id`,
       relationship: `belongsTo`
     }
   },
@@ -37,17 +41,22 @@ cube(`Actividades`, {
     },
 
     typeActivityId: {
-      sql: `typeActivityId`,
+      sql: `"typeActivityId"`,
       type: `number`
     },
 
     opportunityId: {
-      sql: `opportunityId`,
+      sql: `"opportunityId"`,
       type: `string`
     },
 
     clientId: {
-      sql: `clientId`,
+      sql: `"clientId"`,
+      type: `string`
+    },
+
+    userId: {
+      sql: `"userId"`,
       type: `string`
     }
   },

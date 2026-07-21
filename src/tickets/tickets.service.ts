@@ -68,6 +68,19 @@ export class TicketsService {
     }
     ticket.stage_id = stage.id;
 
+    // Lógica especial si la etapa inicial es "Resuelto"
+    if (stage.strname === 'Resuelto') {
+      const notes = createTicketDto.notas_resolucion;
+      if (!notes || !notes.trim()) {
+        throw new BadRequestException('Las notas de resolución son obligatorias al resolver el ticket.');
+      }
+      ticket.fecha_cierre = new Date();
+    }
+
+    if (createTicketDto.notas_resolucion !== undefined) {
+      ticket.notas_resolucion = createTicketDto.notas_resolucion || null;
+    }
+
     // 3. Vincular o crear Cliente
     if (createTicketDto.cliente_id) {
       const existingClient = await this.clientRepository.findOne({ where: { id: createTicketDto.cliente_id } });

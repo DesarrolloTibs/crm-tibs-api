@@ -23,6 +23,7 @@ import { ReportsModule } from './reports/reports.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { DataSource } from 'typeorm';
 import { RagModule } from './rag/rag.module';
+import { WebchatModule } from './webchat/webchat.module';
 
 
 @Module({
@@ -64,6 +65,7 @@ import { RagModule } from './rag/rag.module';
     ReportsModule,
     ConversationsModule,
     RagModule,
+    WebchatModule,
   ],
   controllers: [AppController],
   providers: [AppService],

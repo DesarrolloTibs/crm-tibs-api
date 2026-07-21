@@ -5,6 +5,14 @@ cube(`Productos`, {
     count: {
       type: `count`,
       drillMembers: [id, nombre]
+    },
+    precioBaseMax: {
+      type: `max`,
+      sql: `COALESCE("precioBase", 0)`
+    },
+    precioBaseMin: {
+      type: `min`,
+      sql: `COALESCE("precioBase", 0)`
     }
   },
 
@@ -26,7 +34,7 @@ cube(`Productos`, {
     },
 
     precioBase: {
-      sql: `"precioBase"`,
+      sql: `COALESCE("precioBase", 0)`,
       type: `number`
     },
 

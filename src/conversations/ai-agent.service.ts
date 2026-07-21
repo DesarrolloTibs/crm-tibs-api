@@ -1559,6 +1559,27 @@ Asistente:`;
       : `https://${rawRegion}.ml.cloud.ibm.com`;
     const apiUrl = `${baseUrl}/ml/v1/text/generation?version=2023-05-29`;
     
+    const isGreedy = temperature < 0.15;
+    const parameters: Record<string, any> = {
+      max_new_tokens: maxNewTokens,
+      decoding_method: isGreedy ? 'greedy' : 'sample',
+    };
+    if (!isGreedy) {
+      parameters.temperature = temperature;
+    }
+
+    let formattedInput = prompt;
+    const modelLower = model.toLowerCase();
+    if (modelLower.includes('mistral')) {
+      if (!prompt.includes('[INST]')) {
+        formattedInput = `<s>[INST] ${prompt} [/INST]`;
+      }
+    } else if (modelLower.includes('llama-3') || modelLower.includes('llama3')) {
+      if (!prompt.includes('<|start_header_id|>')) {
+        formattedInput = `<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nResponde en formato JSON estructurado.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n${prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n`;
+      }
+    }
+
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
@@ -1567,13 +1588,9 @@ Asistente:`;
       },
       body: JSON.stringify({
         model_id: model,
-        input: prompt,
+        input: formattedInput,
         project_id: projectId,
-        parameters: {
-          max_new_tokens: maxNewTokens,
-          temperature: temperature,
-          decoding_method: 'sample',
-        },
+        parameters,
       }),
     });
 
@@ -1925,5 +1942,29 @@ NUEVO RESUMEN ACUMULADO:`;
     } catch (err) {
       this.logger.error(`Error al actualizar resumen conversacional incremental: ${err.message}`);
     }
+  }
+
+  // ─── PUBLIC WRAPPERS PARA USO POR OTROS MÓDULOS (WebchatService) ───
+
+  /**
+   * Wrapper público para invocar el LLM con la configuración activa.
+   */
+  async invokeLanguageModel(prompt: string, temperatureOverride?: number): Promise<string> {
+    const config = await this.getOrInitConfig();
+    return this.callLLM(config, prompt, temperatureOverride);
+  }
+
+  /**
+   * Wrapper público para generar un token JWT firmado para Cube.dev.
+   */
+  getCubeApiToken(): string {
+    return this.generateCubeToken();
+  }
+
+  /**
+   * Wrapper público para sanitizar salida JSON del LLM.
+   */
+  sanitizeJsonOutput(text: string): string {
+    return this.cleanJsonOutput(text);
   }
 }

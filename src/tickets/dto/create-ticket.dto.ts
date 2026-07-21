@@ -44,6 +44,11 @@ export class CreateTicketDto {
   @IsOptional()
   stage_id?: string;
 
+  @ApiPropertyOptional({ description: 'Notas de resolución' })
+  @IsString()
+  @IsOptional()
+  notas_resolucion?: string;
+
   // External contact fields
   @ApiPropertyOptional({ description: 'Nombre del contacto externo' })
   @IsString()
