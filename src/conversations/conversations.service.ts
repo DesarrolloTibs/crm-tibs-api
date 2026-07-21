@@ -14,6 +14,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 @Injectable()
 export class ConversationsService {
   private readonly logger = new Logger('ConversationsService');
+  private aiDebounceTimers: Map<string, NodeJS.Timeout> = new Map();
 
   constructor(
     @InjectRepository(Conversation)
@@ -159,15 +160,54 @@ export class ConversationsService {
     conversation.updatedAt = new Date();
     await this.conversationRepository.save(conversation);
 
-    // 3. Si el bot está activo, disparar proceso de IA
+    // 3. Si el bot está activo, programar el procesamiento de IA con Debounce de 7 segundos
     if (conversation.botActive) {
-      const aiPromise = this.triggerAiReply(conversation, text);
-      if (channel === 'webchat') {
-        await aiPromise;
-      }
+      this.scheduleAiReplyDebounce(conversation.id);
     }
 
     return savedIncoming;
+  }
+
+  /**
+   * Programa la respuesta de la IA con una ventana de espera (Debounce) de 7 segundos.
+   * Si el cliente envía otro mensaje dentro de los 7s, el temporizador se reinicia.
+   */
+  private scheduleAiReplyDebounce(conversationId: string) {
+    const existingTimer = this.aiDebounceTimers.get(conversationId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.logger.log(`[DEBOUNCE 7s] Mensaje consecutivo recibido en chat ${conversationId}. Reiniciando temporizador de 7s...`);
+    } else {
+      this.logger.log(`[DEBOUNCE 7s] Iniciando ventana de espera de 7s para chat ${conversationId}...`);
+    }
+
+    const timer = setTimeout(async () => {
+      this.aiDebounceTimers.delete(conversationId);
+      this.logger.log(`[DEBOUNCE 7s EXPIRED] Ejecutando IA para chat ${conversationId} tras 7s de inactividad.`);
+      await this.triggerAiReplyById(conversationId);
+    }, 7000);
+
+    this.aiDebounceTimers.set(conversationId, timer);
+  }
+
+  /**
+   * Ejecuta el procesamiento de respuesta de IA obteniendo la conversación e historial actualizado.
+   */
+  private async triggerAiReplyById(conversationId: string) {
+    const conversation = await this.conversationRepository.findOne({ where: { id: conversationId } });
+    if (!conversation || !conversation.botActive) {
+      this.logger.log(`[DEBOUNCE] Chat ${conversationId} deshabilitado o no encontrado. Cancelando respuesta.`);
+      return;
+    }
+
+    const lastContactMessage = await this.messageRepository.findOne({
+      where: { conversationId, sender: 'contact' },
+      order: { createdAt: 'DESC' },
+    });
+
+    if (!lastContactMessage) return;
+
+    await this.triggerAiReply(conversation, lastContactMessage.content);
   }
 
   /**
@@ -265,6 +305,13 @@ export class ConversationsService {
     const conversation = await this.conversationRepository.findOne({ where: { id: conversationId } });
     if (!conversation) {
       throw new NotFoundException('Conversación no encontrada.');
+    }
+
+    // Cancelar cualquier respuesta de IA pendiente por debounce si el ejecutivo interviene
+    if (this.aiDebounceTimers.has(conversationId)) {
+      clearTimeout(this.aiDebounceTimers.get(conversationId));
+      this.aiDebounceTimers.delete(conversationId);
+      this.logger.log(`[DEBOUNCE CANCELLED] Intervención humana manual en chat ${conversationId}. Temporizador cancelado.`);
     }
 
     // Guardar el mensaje manual
