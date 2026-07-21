@@ -1,5 +1,9 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { AiAgentService } from '../conversations/ai-agent.service';
+import { Stage } from '../stages/entities/stage.entity';
+import { TicketStage } from '../tickets/entities/ticket-stage.entity';
 
 /**
  * Mapeo de entidades Cube.dev y el campo de filtro por ejecutivo.
@@ -55,6 +59,10 @@ export class WebchatService {
 
   constructor(
     private readonly aiAgentService: AiAgentService,
+    @InjectRepository(Stage)
+    private readonly stageRepository: Repository<Stage>,
+    @InjectRepository(TicketStage)
+    private readonly ticketStageRepository: Repository<TicketStage>,
   ) {}
 
   /**
@@ -218,6 +226,8 @@ Genera tu respuesta JSON:`;
         }
       }
 
+      formattedAnswer = await this.resolveStageUuidsInText(formattedAnswer);
+
       return {
         answer: formattedAnswer,
         data: cubeData,
@@ -231,6 +241,31 @@ Genera tu respuesta JSON:`;
       }
       return { answer: 'Ocurrió un error al procesar tu consulta. Por favor intenta de nuevo.' };
     }
+  }
+
+  /**
+   * Reemplaza automáticamente cualquier UUID de etapa/stage presente en el texto
+   * por su nombre legible (ej. "ff4266df-..." -> "Negociación").
+   */
+  private async resolveStageUuidsInText(text: string): Promise<string> {
+    if (!text) return text;
+    const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+    const matches = text.match(uuidRegex);
+    if (!matches || matches.length === 0) return text;
+
+    let resolvedText = text;
+    for (const uuid of matches) {
+      const stage = await this.stageRepository.findOne({ where: { id: uuid } });
+      if (stage) {
+        resolvedText = resolvedText.replace(new RegExp(uuid, 'g'), `"${stage.strname}"`);
+        continue;
+      }
+      const ticketStage = await this.ticketStageRepository.findOne({ where: { id: uuid } });
+      if (ticketStage) {
+        resolvedText = resolvedText.replace(new RegExp(uuid, 'g'), `"${ticketStage.strname}"`);
+      }
+    }
+    return resolvedText;
   }
 
   /**
@@ -299,35 +334,49 @@ Fecha: ${fechaHoy} — Hora: ${horaActual} (Ciudad de México)
 1. **Oportunidades** (tabla: opportunities)
    - Measures: count, montoTotalSum, montoLicenciamientoSum, montoServiciosSum
    - Dimensions: id, nombreProyecto, descripcion, clienteId, ejecutivoId, pipelineId, stageId, montoTotal, moneda, archived, estimatedClosureDate, createdAt, priority
-   - Joins: Clientes (via clienteId), Usuarios (via ejecutivoId)
+   - Joins: Clientes (via clienteId), Usuarios (via ejecutivoId), Etapas (via stageId)
 
-2. **Actividades** (tabla: activities)
+2. **Etapas** (tabla: tblstagescatalog — Nombres legibles de etapas de Oportunidades)
+   - Measures: count
+   - Dimensions: id, nombre, pipelineId
+
+3. **Actividades** (tabla: activities)
    - Measures: count
    - Dimensions: id, actividad, fecha, typeActivityId, opportunityId, clientId, userId
    - Joins: Clientes (via clientId), Oportunidades (via opportunityId), Usuarios (via userId)
 
-3. **Clientes** (tabla: clients)
+4. **Clientes** (tabla: clients)
    - Measures: count
    - Dimensions: id, nombre, apellido, correo, telefono, category, estatus
 
-4. **Productos** (tabla: products)
+5. **Productos** (tabla: products)
    - Measures: count, precioBaseMax, precioBaseMin
    - Dimensions: id, nombre, descripcion, precioBase, requiereAnalisis, status
 
-5. **Gastos** (tabla: expenses)
+6. **Gastos** (tabla: expenses)
    - Measures: count, montoSum
    - Dimensions: id, concepto, monto, fecha, usuarioId, clientId, opportunityId, receiptUrl, createdAt
    - Joins: Clientes (via clientId), Oportunidades (via opportunityId), Usuarios (via usuarioId)
 
-6. **Tickets** (tabla: tickets — Mesa de Ayuda)
+7. **Tickets** (tabla: tickets — Mesa de Ayuda)
    - Measures: count
    - Dimensions: id, ticketNumber (representa el folio del ticket, ej: folio 1, ticket 1, folio 00001), titulo, tipoIncidencia, description, priority, fechaApertura, fechaCierre, notasResolucion, alertSent, archived, clienteId, responsableId, helpdeskId, stageId, stageEnteredAt, contactName, contactEmail
-   - Joins: Clientes (via clienteId), Usuarios (via responsableId)
+   - Joins: Clientes (via clienteId), Usuarios (via responsableId), EtapasTicket (via stageId)
    - Priority: 1=Bajo, 2=Medio, 3=Alto
 
-7. **Usuarios** (tabla: users) ${userRole === 'executive' ? '— ⛔ ACCESO RESTRINGIDO para tu rol' : ''}
+8. **EtapasTicket** (tabla: ticket_stages — Nombres legibles de etapas de Tickets/Mesa de Ayuda)
+   - Measures: count
+   - Dimensions: id, nombre
+
+9. **Usuarios** (tabla: users) ${userRole === 'executive' ? '— ⛔ ACCESO RESTRINGIDO para tu rol' : ''}
    - Measures: count
    - Dimensions: id, username, correo, role, status
+
+[INSTRUCCIÓN CRÍTICA DE JOINS PARA NOMBRES DE ETAPAS / STAGES]
+JAMÁS muestres un UUID técnico o identificador de base de datos como "stageId" (ejemplo: "ff4266df-fd36-43e2-bc5f-bc0b2fdc59ae") en tus respuestas. 
+Para obtener el NOMBRE de la etapa de una oportunidad, DEBES hacer join con el cubo Etapas e incluir "Etapas.nombre" en tus dimensions (ejemplo: dimensions: ["Oportunidades.nombreProyecto", "Etapas.nombre"]).
+Para obtener el NOMBRE de la etapa de un ticket, DEBES hacer join con el cubo EtapasTicket e incluir "EtapasTicket.nombre" en tus dimensions (ejemplo: dimensions: ["Tickets.ticketNumber", "EtapasTicket.nombre"]).
+En tu responseTemplate usa siempre "{Etapas.nombre}" o "{EtapasTicket.nombre}" en lugar de "{stageId}" o "{Oportunidades.stageId}".
 
 [INSTRUCCIÓN CRÍTICA DE JOINS PARA NOMBRES DE USUARIO]
 Para obtener el nombre de un ejecutivo (en oportunidades), responsable (en tickets) o creador (en actividades o gastos), debes hacer join con el cubo Usuarios y agregar "Usuarios.username" en tus dimensions. JAMÁS intentes usar campos ficticios como "Oportunidades.ejecutivoNombre" o "Tickets.responsableName" en tu cubeQuery, ya que causará errores fatales de compilación. Por ejemplo, para obtener el responsable del ticket 1 debes usar: dimensions: ["Usuarios.username", "Tickets.tipoIncidencia"].

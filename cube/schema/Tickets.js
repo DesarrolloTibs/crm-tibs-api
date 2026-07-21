@@ -9,6 +9,10 @@ cube(`Tickets`, {
     Usuarios: {
       sql: `${CUBE}.responsable_id = ${Usuarios}.id`,
       relationship: `belongsTo`
+    },
+    EtapasTicket: {
+      sql: `${CUBE}.stage_id = ${EtapasTicket}.id`,
+      relationship: `belongsTo`
     }
   },
 

@@ -10,6 +10,10 @@ cube(`Oportunidades`, {
       sql: `${CUBE}.ejecutivo_id = ${Usuarios}.id`,
       relationship: `belongsTo`
     },
+    Etapas: {
+      sql: `${CUBE}.stage_id = ${Etapas}.id`,
+      relationship: `belongsTo`
+    },
     Productos: {
       sql: `${CUBE}.id IN (SELECT "opportunitiesId" FROM opportunity_products WHERE "productsId" = ${Productos}.id)`,
       relationship: `belongsTo`
