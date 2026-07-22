@@ -134,9 +134,9 @@ Estructura del JSON:
       const baseCommonPrompt = `Eres el asistente conversacional de la empresa del CRM.
 Tono y estilo: Profesional, resolutivo y breve (mensajes cortos adaptados a chat). Nunca hables con lenguaje técnico de base de datos ni reveles IDs.
 Idioma: Responde siempre en el mismo idioma en que escribe el cliente (español o inglés).
-REGLA CRÍTICA DE CONFIDENCIALIDAD E IDENTIDAD: Está estrictamente PROHIBIDO decir que eres una IA, un bot, un modelo automatizado o una inteligencia artificial. Está estrictamente PROHIBIDO usar el término 'asesor humano' o hacer cualquier alusión a que el cliente está hablando con una IA. Si el cliente solicita hablar con alguien más, o expresa molestar, quejas, urgencia o derivación, refiérete SIEMPRE a un 'ejecutivo especializado'.
+REGLA CRÍTICA DE CONFIDENCIALIDAD E IDENTIDAD: Está estrictamente PROHIBIDO decir que eres una IA, un bot, un modelo automatizado o una inteligencia artificial. Está strictly PROHIBIDO usar el término 'asesor humano' o hacer cualquier alusión a que el cliente está hablando con una IA. Si el cliente solicita hablar con alguien más, o expresa molestar, quejas, urgencia o derivación, refiérete SIEMPRE a un 'ejecutivo especializado'.
 ANCLAJE ESTRICTO DE CONOCIMIENTO (CUBE.DEV Y RAG): Está strictly prohibido inventar o alucinar información de productos, características, compatibilidades, precios o disponibilidad. Limítate única y exclusivamente a los datos reales provistos por Cube.dev o el RAG. Si no aparecen allí, responde amigablemente que no dispones de ese producto en el catálogo.
-ACTUALIZACIÓN DE CONTACTO OBLIGATORIA: Si el cliente te proporciona su nombre, correo electrónico o teléfono durante la charla (por ejemplo, para agendar una demo o cotizar), debes llamar de forma PRIORITARIA a la herramienta updateContact para actualizar sus datos en el CRM de inmediato, antes de proceder a agendar o cotizar.
+SOLICITUD OBLIGATORIA DE TELÉFONO PARA IDENTIFICACIÓN: El número de teléfono es el identificador principal obligatorio del cliente en el CRM. Si la información del cliente provista no cuenta con un número de teléfono registrado (o si no se ha recibido el teléfono), DEBES solicitar forzosamente al cliente su número telefónico ANTES de continuar con cualquier proceso (cotizaciones, catálogo, agendamiento de demos o soporte). En cuanto el cliente te proporcione su número telefónico, debes llamar de inmediato a la herramienta updateContact o registerContact enviando el teléfono para identificarlo o registrarlo en el CRM.
 NO AUTOCOMPLETAR/SIMULAR HERRAMIENTAS: Tu respuesta debe finalizar inmediatamente al cerrar el JSON de tu turno (la llave de cierre }). Está estrictamente PROHIBIDO que simules la ejecución de la herramienta, que escribas '[Herramienta] ...' o que inventes el resultado del sistema.
 Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quejas, molestia o si el cliente lo solicita.`;
 
@@ -435,22 +435,23 @@ Genera la clasificación en formato JSON (iniciando con { y terminando con }):`;
         return { route: selectedRoute };
       };
 
-      // Nodo de Identificación Dinámica
+      // Nodo de Identificación Dinámica por Teléfono
       const identificationNode = async (state: AgentState): Promise<Partial<AgentState>> => {
-        this.logger.log('[LangGraph - Identificación] Lead no identificado. Solicitando información de contacto.');
+        this.logger.log('[LangGraph - Identificación] Cliente sin teléfono registrado. Solicitando número telefónico.');
         
         const identPrompt = `
-Eres el Sub-Agente de Registro del CRM. Tu único objetivo es obtener el nombre, correo y/o teléfono del cliente de forma cordial y natural para poder registrarlo en el CRM de la empresa antes de cotizar.
+Eres el Sub-Agente de Registro del CRM. Tu objetivo único u obligatorio es obtener el NÚMERO DE TELÉFONO del cliente como identificador principal en el CRM de la empresa antes de procesar cotizaciones, agendamientos o consultas del catálogo.
 
-[INSTRUCCIÓN DE FLUJO]
-- Si en el historial o último mensaje el cliente ya te proporcionó su nombre (y opcionalmente correo/teléfono), llama a la herramienta registerContact.
-- Si te falta información básica (como el nombre), no llames a la herramienta. Escríbele un mensaje amable solicitando sus datos para poder dar de alta su cuenta y cotizar.
+[REGLA DE IDENTIFICACIÓN OBLIGATORIA POR TELÉFONO]
+- El número de teléfono es el identificador único obligatorio del cliente en el CRM.
+- Si en el historial o último mensaje el cliente ya te proporcionó su número telefónico (y opcionalmente su nombre o correo), llama a la herramienta registerContact enviando el teléfono.
+- Si el cliente aún NO te ha proporcionado su número de teléfono, NO llames a la herramienta. Escríbele un mensaje cordial solicitándole forzosamente su número de teléfono para poder identificar su cuenta en nuestro CRM.
 
 [HERRAMIENTA DISPONIBLE]
-1. registerContact — Registra el contacto en el CRM.
-{"thought": "...", "tool_name": "registerContact", "tool_input": {"nombre": "Juan Pérez", "correo": "juan@correo.com", "telefono": "5512345678"}}
-2. final_answer — Responde al cliente de forma natural para pedirle los datos.
-{"thought": "...", "tool_name": "final_answer", "tool_input": {"answer": "Mensaje para pedir datos"}}
+1. registerContact — Registra e identifica el contacto en el CRM con su número de teléfono.
+{"thought": "...", "tool_name": "registerContact", "tool_input": {"nombre": "Nombre si lo dio o Visitante", "telefono": "5512345678"}}
+2. final_answer — Responde al cliente de forma natural para pedirle obligatoriamente su teléfono.
+{"thought": "...", "tool_name": "final_answer", "tool_input": {"answer": "Para darte atención personalizada y cotizar, ¿me podrías proporcionar tu número de teléfono?"}}
 
 Responde SIEMPRE con un único JSON.
 
@@ -468,22 +469,22 @@ Genera el JSON de salida:
 
         try {
           const action = JSON.parse(identResponse);
-          if (action.tool_name === 'registerContact') {
+          if (action.tool_name === 'registerContact' || action.tool_name === 'updateContact') {
             return {
               nextAction: 'call_tool',
-              toolCallName: 'registerContact',
+              toolCallName: action.tool_name,
               toolCallInput: action.tool_input,
             };
           } else {
             return {
               nextAction: 'respond',
-              response: action.tool_input?.answer || 'Para darte una cotización formal, ¿me podrías proporcionar tu nombre completo, correo y teléfono?',
+              response: action.tool_input?.answer || 'Para darte atención personalizada y continuar con tu solicitud, ¿me podrías proporcionar tu número de teléfono?',
             };
           }
         } catch (e) {
           return {
             nextAction: 'respond',
-            response: '¿Me podrías proporcionar tu nombre completo y correo para iniciar tu cotización en nuestro CRM?',
+            response: 'Para poder atenderte y dar seguimiento a tu consulta, ¿me podrías indicar tu número de teléfono?',
           };
         }
       };
@@ -534,9 +535,11 @@ Genera el JSON de salida:
 
         // Obtener la información del cliente del CRM (compacta para optimizar tokens)
         let clientInfo: Record<string, any> = {};
-        if (state.clientId) {
-          const client = await this.clientsService.findOne(state.clientId);
+        const activeClientId = state.clientId || conversation.clientId;
+        if (activeClientId) {
+          const client = await this.clientsService.findOne(activeClientId);
           if (client) {
+            conversation.client = client;
             // Solo campos esenciales para ahorrar tokens
             clientInfo = {
               id: client.id,
@@ -964,10 +967,19 @@ Asistente:`;
             config
           );
 
-          // Si registramos contacto, asociar de inmediato el clientId al estado
+          // Si registramos o actualizamos contacto, asociar de inmediato el clientId al estado y recargar la relación en memoria
           let nextState: Partial<AgentState> = { toolCallResult: executionResult };
-          if (state.toolCallName === 'registerContact' && executionResult.status === 'SUCCESS') {
-            nextState.clientId = executionResult.clientId;
+          if ((state.toolCallName === 'registerContact' || state.toolCallName === 'updateContact') && executionResult.status === 'SUCCESS') {
+            const targetClientId = executionResult.clientId || executionResult.client?.id || conversation.clientId;
+            if (targetClientId) {
+              nextState.clientId = targetClientId;
+              conversation.clientId = targetClientId;
+              const reloadedClient = await this.clientRepository.findOne({ where: { id: targetClientId } });
+              if (reloadedClient) {
+                conversation.client = reloadedClient;
+                conversation.clientName = `${reloadedClient.nombre} ${reloadedClient.apellido || ''}`.trim();
+              }
+            }
           }
 
           return nextState;
@@ -990,11 +1002,28 @@ Asistente:`;
       // Conexiones de flujo
       workflow.addEdge(START, 'routerNode');
 
+      const checkPhoneExists = async (cId?: string | null): Promise<boolean> => {
+        const targetId = cId || conversation.clientId;
+        if (targetId) {
+          const c = await this.clientRepository.findOne({ where: { id: targetId } });
+          if (c && c.telefono && c.telefono.trim() !== '') {
+            conversation.client = c;
+            conversation.clientName = `${c.nombre} ${c.apellido || ''}`.trim();
+            return true;
+          }
+        }
+        if (conversation.client && conversation.client.telefono && conversation.client.telefono.trim() !== '') {
+          return true;
+        }
+        return false;
+      };
+
       workflow.addConditionalEdges(
         'routerNode',
-        (state: AgentState) => {
-          // Identificación dinámica: Si no está registrado en el CRM, obligar a identificación
-          if (!state.clientId && state.route !== 'general') {
+        async (state: AgentState) => {
+          // Identificación dinámica por teléfono: Si el cliente no posee número de teléfono registrado, obligar a identificación
+          const hasPhone = await checkPhoneExists(state.clientId);
+          if (!hasPhone && state.route !== 'general') {
             return 'identificationNode';
           }
           return 'subAgentNode';
@@ -1007,9 +1036,10 @@ Asistente:`;
 
       workflow.addConditionalEdges(
         'identificationNode',
-        (state: AgentState) => {
-          if (state.clientId) {
-            return 'subAgentNode'; // Ya registrado, pasa al subagente
+        async (state: AgentState) => {
+          const hasPhoneNow = await checkPhoneExists(state.clientId);
+          if (hasPhoneNow) {
+            return 'subAgentNode'; // Ya cuenta con teléfono registrado, pasa al subagente
           }
           if (state.nextAction === 'call_tool') {
             return 'executeToolNode'; // Llamó a registrar contacto, va a ejecución
@@ -1238,28 +1268,77 @@ Asistente:`;
 
         case 'registerContact': {
           let email = input.correo || null;
-          let phone = input.telefono || null;
-          
-          const names = this.splitFullName(input.nombre);
-          
-          const client = await this.clientsService.create({
-            nombre: names.nombre,
-            apellido: names.apellido,
-            correo: email,
-            telefono: phone,
-            ejecutivo_id: conversation.assignedUserId || undefined,
-          } as any);
+          let phone = input.telefono ? String(input.telefono).trim() : null;
+
+          // Búsqueda previa por teléfono para unificar cliente existente si ya fue registrado previamente en el CRM
+          let client: Client | null = null;
+          if (phone) {
+            client = await this.clientRepository.findOne({ where: { telefono: phone } });
+          }
+
+          if (client) {
+            // Cliente existente encontrado por teléfono
+            if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
+              const names = this.splitFullName(input.nombre);
+              client.nombre = names.nombre;
+              if (names.apellido) client.apellido = names.apellido;
+              if (email) client.correo = email;
+              await this.clientRepository.save(client);
+            }
+          } else {
+            // Crear nuevo cliente en el CRM
+            const names = this.splitFullName(input.nombre || 'Visitante Webchat');
+            client = await this.clientsService.create({
+              nombre: names.nombre,
+              apellido: names.apellido,
+              correo: email,
+              telefono: phone,
+              ejecutivo_id: conversation.assignedUserId || undefined,
+            } as any);
+          }
 
           conversation.clientId = client.id;
           conversation.clientName = `${client.nombre} ${client.apellido || ''}`.trim();
           await this.clientRepository.manager.save(Conversation, conversation);
 
-          return { status: 'SUCCESS', message: 'Contacto registrado y vinculado', clientId: client.id };
+          return { status: 'SUCCESS', message: 'Contacto identificado por teléfono y vinculado', clientId: client.id, clientName: conversation.clientName };
         }
 
         case 'updateContact': {
+          let phone = input.telefono ? String(input.telefono).trim() : null;
+
+          // Si nos dan un teléfono y existe otro cliente con ese teléfono en la BD, unificamos a ese cliente
+          if (phone) {
+            const existingClient = await this.clientRepository.findOne({ where: { telefono: phone } });
+            if (existingClient) {
+              conversation.clientId = existingClient.id;
+              if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
+                const names = this.splitFullName(input.nombre);
+                existingClient.nombre = names.nombre;
+                if (names.apellido) existingClient.apellido = names.apellido;
+                if (input.correo) existingClient.correo = input.correo;
+                await this.clientRepository.save(existingClient);
+              }
+              conversation.clientName = `${existingClient.nombre} ${existingClient.apellido || ''}`.trim();
+              await this.clientRepository.manager.save(Conversation, conversation);
+
+              return { status: 'SUCCESS', message: 'Contacto unificado por número de teléfono en el CRM', client: { id: existingClient.id, nombre: existingClient.nombre, apellido: existingClient.apellido, correo: existingClient.correo, telefono: existingClient.telefono } };
+            }
+          }
+
           if (!conversation.clientId) {
-            return { status: 'ERROR', message: 'No hay ningún contacto vinculado a esta conversación para actualizar. Regístralo primero.' };
+            const names = this.splitFullName(input.nombre || 'Visitante');
+            const created = await this.clientsService.create({
+              nombre: names.nombre,
+              apellido: names.apellido,
+              correo: input.correo || null,
+              telefono: phone,
+              ejecutivo_id: conversation.assignedUserId || undefined,
+            } as any);
+            conversation.clientId = created.id;
+            conversation.clientName = `${created.nombre} ${created.apellido || ''}`.trim();
+            await this.clientRepository.manager.save(Conversation, conversation);
+            return { status: 'SUCCESS', message: 'Contacto registrado en el CRM', client: created };
           }
           
           const updateData: any = {};
@@ -1269,7 +1348,7 @@ Asistente:`;
             updateData.apellido = names.apellido;
           }
           if (input.correo !== undefined) updateData.correo = input.correo;
-          if (input.telefono !== undefined) updateData.telefono = input.telefono;
+          if (input.telefono !== undefined) updateData.telefono = phone;
 
           const updated = await this.clientsService.update(conversation.clientId, updateData);
 

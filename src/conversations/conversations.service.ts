@@ -80,7 +80,7 @@ export class ConversationsService {
    * Obtiene una conversación por canal e ID externo (por ejemplo, visitorId de webchat).
    */
   async findByChannelAndExternalId(channel: string, externalId: string): Promise<Conversation | null> {
-    return this.conversationRepository.findOne({ where: { channel, externalId } });
+    return this.conversationRepository.findOne({ where: { channel, externalId }, relations: ['client'] });
   }
 
   /**

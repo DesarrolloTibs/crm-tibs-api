@@ -61,8 +61,40 @@ export class WebchatController {
   async getPublicMessages(@Param('visitorId') visitorId: string) {
     const conversation = await this.conversationsService.findByChannelAndExternalId('webchat', visitorId);
     if (!conversation) {
-      return [];
+      return { messages: [], clientName: null, conversationId: null };
     }
-    return this.conversationsService.findMessages(conversation.id);
+    const messages = await this.conversationsService.findMessages(conversation.id);
+
+    const isGenericName = (name?: string | null) => {
+      if (!name) return true;
+      const lower = name.trim().toLowerCase();
+      return (
+        lower === '' ||
+        lower === 'visitante webchat' ||
+        lower === 'visitante web' ||
+        lower === 'visitante' ||
+        lower === 'contacto' ||
+        lower.startsWith('webchat_')
+      );
+    };
+
+    let clientName: string | null = null;
+    let clientPhone: string | null = conversation.client?.telefono || null;
+
+    if (conversation.clientName && !isGenericName(conversation.clientName)) {
+      clientName = conversation.clientName;
+    } else if (conversation.client && conversation.client.nombre) {
+      const full = `${conversation.client.nombre} ${conversation.client.apellido || ''}`.trim();
+      if (!isGenericName(full)) {
+        clientName = full;
+      }
+    }
+
+    return {
+      messages,
+      clientName,
+      clientPhone,
+      conversationId: conversation.id,
+    };
   }
 }
