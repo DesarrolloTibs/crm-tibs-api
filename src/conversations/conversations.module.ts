@@ -20,6 +20,7 @@ import { ClientsModule } from '../clients/clients.module';
 import { TicketsModule } from '../tickets/tickets.module';
 import { RagModule } from '../rag/rag.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -40,8 +41,10 @@ import { NotificationsModule } from '../notifications/notifications.module';
     ClientsModule,
     TicketsModule,
     RagModule,
+    SubscriptionsModule,
     forwardRef(() => NotificationsModule),
   ],
+
   providers: [ConversationsService, AiAgentService, ConversationsGateway],
   controllers: [ConversationsController],
   exports: [ConversationsService, AiAgentService, ConversationsGateway],

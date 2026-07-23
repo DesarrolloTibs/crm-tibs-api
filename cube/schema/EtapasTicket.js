@@ -1,7 +1,13 @@
 cube(`EtapasTicket`, {
-  sql: `SELECT * FROM ticket_stages`,
+  sql: `SELECT * FROM "${COMPILE_CONTEXT.securityContext && COMPILE_CONTEXT.securityContext.tenantSchema ? COMPILE_CONTEXT.securityContext.tenantSchema : 'public'}".ticket_stages`,
 
   joins: {},
+
+
+
+
+
+
 
   measures: {
     count: {

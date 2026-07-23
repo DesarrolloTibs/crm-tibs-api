@@ -1,7 +1,13 @@
 cube(`Tickets`, {
-  sql: `SELECT * FROM tickets`,
+  sql: `SELECT * FROM "${COMPILE_CONTEXT.securityContext && COMPILE_CONTEXT.securityContext.tenantSchema ? COMPILE_CONTEXT.securityContext.tenantSchema : 'public'}".tickets`,
 
   joins: {
+
+
+
+
+
+
     Clientes: {
       sql: `${CUBE}.cliente_id = ${Clientes}.id`,
       relationship: `belongsTo`

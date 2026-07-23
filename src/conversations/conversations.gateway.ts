@@ -50,4 +50,12 @@ export class ConversationsGateway implements OnGatewayInit, OnGatewayConnection,
       this.logger.log(`Emitted conversation_assigned for conversation ${conversationId}`);
     }
   }
+
+  emitTenantConsumptionUpdated(schemaName: string) {
+    if (this.server) {
+      this.server.emit('tenant_consumption_updated', { schemaName });
+      this.logger.log(`Emitted tenant_consumption_updated for schema ${schemaName}`);
+    }
+  }
 }
+

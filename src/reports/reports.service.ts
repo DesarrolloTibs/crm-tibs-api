@@ -192,7 +192,8 @@ export class ReportsService implements OnModuleInit {
     }
 
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
-    const isAdmin = fullCurrentUser.role === Role.Admin;
+    const isAdmin = fullCurrentUser.role === Role.Admin || fullCurrentUser.role === Role.SuperAdmin || (fullCurrentUser.role as any) === 'superadmin';
+
 
     // 1. Fetch Indicators
     const indicators = await this.findAllIndicators();

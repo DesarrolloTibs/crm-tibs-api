@@ -2,7 +2,9 @@ import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AiAgentService } from '../conversations/ai-agent.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 import { Stage } from '../stages/entities/stage.entity';
+
 import { TicketStage } from '../tickets/entities/ticket-stage.entity';
 
 /**
@@ -553,9 +555,8 @@ En el sistema, los tickets se identifican y buscan por su "folio" o "número de 
    */
   private async executeCubeQuery(cubeQuery: CubeQueryPlan['cubeQuery']): Promise<any[]> {
     try {
-      const token = this.aiAgentService.getCubeApiToken();
-
       // Convertir order de objeto a array de arrays si es necesario (formato Cube.dev)
+
       let orderFormatted = cubeQuery.order;
       if (orderFormatted && !Array.isArray(orderFormatted)) {
         orderFormatted = Object.entries(orderFormatted);
@@ -571,14 +572,24 @@ En el sistema, los tickets se identifican y buscan por su "folio" o "número de 
 
       this.logger.log(`[WebChat - Cube Query] ${JSON.stringify(queryPayload)}`);
 
+      const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+      const token = this.aiAgentService.getCubeApiToken(tenantSchema);
+
       const response = await fetch('http://localhost:4000/cubejs-api/v1/load', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: token,
+          'x-tenant-schema': tenantSchema,
+          'x-tenant-id': tenantSchema,
         },
-        body: JSON.stringify({ query: queryPayload }),
+        body: JSON.stringify({
+          query: queryPayload,
+          securityContext: { tenantSchema },
+        }),
       });
+
+
 
       if (!response.ok) {
         const errText = await response.text();

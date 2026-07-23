@@ -266,9 +266,10 @@ export class OpportunitiesService {
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
     const where: FindOptionsWhere<Opportunity> = {};
 
-    if (fullCurrentUser.role !== Role.Admin) {
+    if (fullCurrentUser.role !== Role.Admin && fullCurrentUser.role !== Role.SuperAdmin && (fullCurrentUser.role as string) !== 'superadmin') {
       where.ejecutivo_id = fullCurrentUser.id;
     }
+
 
     const findOptions: FindManyOptions<Opportunity> = {
       relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage', 'products'],

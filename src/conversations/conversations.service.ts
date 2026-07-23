@@ -48,22 +48,32 @@ export class ConversationsService {
 
     const conversations = await query.orderBy('c.updatedAt', 'DESC').getMany();
 
-    // Adjuntar el último mensaje a cada conversación
-    const results = await Promise.all(
-      conversations.map(async (conv) => {
-        const lastMessage = await this.messageRepository.findOne({
-          where: { conversationId: conv.id },
-          order: { createdAt: 'DESC' },
-        });
-        return {
-          ...conv,
-          lastMessage,
-        };
-      })
-    );
+    if (conversations.length === 0) {
+      return [];
+    }
 
-    return results;
+    const conversationIds = conversations.map((c) => c.id);
+
+    // Obtener el último mensaje de todas las conversaciones en una sola consulta para evitar N+1 queries y deadlocks
+    const lastMessages = await this.messageRepository.createQueryBuilder('m')
+      .leftJoinAndSelect('m.senderUser', 'senderUser')
+      .where('m.conversationId IN (:...conversationIds)', { conversationIds })
+      .orderBy('m.createdAt', 'DESC')
+      .getMany();
+
+    const lastMessageMap = new Map<string, Message>();
+    for (const msg of lastMessages) {
+      if (!lastMessageMap.has(msg.conversationId)) {
+        lastMessageMap.set(msg.conversationId, msg);
+      }
+    }
+
+    return conversations.map((conv) => ({
+      ...conv,
+      lastMessage: lastMessageMap.get(conv.id) || null,
+    }));
   }
+
 
   /**
    * Obtiene los mensajes de una conversación específica.
@@ -314,11 +324,18 @@ export class ConversationsService {
       this.logger.log(`[DEBOUNCE CANCELLED] Intervención humana manual en chat ${conversationId}. Temporizador cancelado.`);
     }
 
+    // Validar si el senderUserId existe en el esquema del tenant
+    let validSenderUserId: string | null = null;
+    if (senderUserId) {
+      const userExists = await this.userRepository.findOne({ where: { id: senderUserId } });
+      if (userExists) validSenderUserId = senderUserId;
+    }
+
     // Guardar el mensaje manual
     const manualMessage = this.messageRepository.create({
       conversationId,
       sender: 'user', // Identifica intervención humana del ejecutivo
-      senderUserId,
+      senderUserId: validSenderUserId,
       content,
     });
     const saved = await this.messageRepository.save(manualMessage);
@@ -353,15 +370,23 @@ export class ConversationsService {
     conversation.botActive = botActive;
     const updated = await this.conversationRepository.save(conversation);
 
-    // Obtener detalles del usuario que lo cambió
-    const user = await this.userRepository.findOne({ where: { id: triggerUserId } });
-    const userName = user ? `${user.username}` : 'Sistema';
+    // Obtener detalles del usuario que lo cambió en el esquema del tenant
+    let validSenderUserId: string | null = null;
+    let userName = 'Sistema';
+
+    if (triggerUserId) {
+      const user = await this.userRepository.findOne({ where: { id: triggerUserId } });
+      if (user) {
+        validSenderUserId = triggerUserId;
+        userName = `${user.username}`;
+      }
+    }
 
     // Registrar mensaje de auditoría de sistema
     const auditMessage = this.messageRepository.create({
       conversationId,
       sender: 'system',
-      senderUserId: triggerUserId,
+      senderUserId: validSenderUserId,
       content: `El bot ha sido ${botActive ? 'activado' : 'desactivado'} por el ejecutivo ${userName}.`,
     });
     const savedAudit = await this.messageRepository.save(auditMessage);
@@ -376,6 +401,7 @@ export class ConversationsService {
 
     return updated;
   }
+
 
   /**
    * Reasigna la conversación a otro ejecutivo.
@@ -410,9 +436,10 @@ export class ConversationsService {
     const auditMessage = this.messageRepository.create({
       conversationId,
       sender: 'system',
-      senderUserId: triggerUserId,
+      senderUserId: triggerUser ? triggerUserId : null,
       content: auditContent,
     });
+
     const savedAudit = await this.messageRepository.save(auditMessage);
     const fullAudit = await this.messageRepository.findOne({
       where: { id: savedAudit.id },

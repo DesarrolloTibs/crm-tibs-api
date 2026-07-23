@@ -1,4 +1,4 @@
-import { Module, OnApplicationBootstrap } from '@nestjs/common';
+import { Module, OnApplicationBootstrap, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -24,7 +24,11 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { DataSource } from 'typeorm';
 import { RagModule } from './rag/rag.module';
 import { WebchatModule } from './webchat/webchat.module';
-
+import { TenancyModule } from './tenancy/tenancy.module';
+import { PlansModule } from './plans/plans.module';
+import { TenantsModule } from './tenants/tenants.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { TenantMiddleware } from './tenancy/tenant.middleware';
 
 @Module({
   imports: [
@@ -47,6 +51,10 @@ import { WebchatModule } from './webchat/webchat.module';
       }),
       inject: [ConfigService],
     }),
+    TenancyModule,
+    PlansModule,
+    TenantsModule,
+    SubscriptionsModule,
     AuthModule,
     ClientsModule,
     InteractionsModule,
@@ -70,8 +78,13 @@ import { WebchatModule } from './webchat/webchat.module';
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule implements OnApplicationBootstrap {
+export class AppModule implements OnApplicationBootstrap, NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(TenantMiddleware).forRoutes('*');
+  }
+
   constructor(private readonly dataSource: DataSource) { }
+
 
   async onApplicationBootstrap() {
     console.log('Running automatic data migration...');

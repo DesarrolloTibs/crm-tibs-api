@@ -35,9 +35,10 @@ export class ConversationsController {
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener todas las conversaciones de los canales' })
   async getConversations(@GetUser() user: User) {
-    const isAdmin = user.role === Role.Admin;
+    const isAdmin = user.role === Role.Admin || user.role === Role.SuperAdmin || (user.role as any) === 'superadmin';
     return this.conversationsService.findAll(user.id, isAdmin);
   }
+
 
   @Get('ai-config')
   @UseGuards(AuthGuard('jwt'))

@@ -17,3 +17,5 @@ services:
       - CUBEJS_API_SECRET=crmtibs_secret_key_2026_xyz
     volumes:
       - ./cube/schema:/cube/conf/model
+      - ./cube/cube.js:/cube/conf/cube.js
+

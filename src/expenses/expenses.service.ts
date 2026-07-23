@@ -51,9 +51,10 @@ export class ExpensesService {
             .leftJoinAndSelect('expense.usuario', 'usuario')
             .orderBy('expense.fecha', 'DESC');
 
-        if (fullUser.role !== Role.Admin) {
+        if (fullUser.role !== Role.Admin && fullUser.role !== Role.SuperAdmin && (fullUser.role as string) !== 'superadmin') {
             query.where('expense.usuario_id = :userId', { userId: fullUser.id });
         }
+
 
         return query.getMany();
     }

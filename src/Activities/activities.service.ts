@@ -76,7 +76,7 @@ export class ActivitiesService {
       throw new InternalServerErrorException('No se pudo identificar al usuario.');
     }
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
-    if (fullCurrentUser.role !== Role.Admin) {
+    if (fullCurrentUser.role !== Role.Admin && fullCurrentUser.role !== Role.SuperAdmin && (fullCurrentUser.role as string) !== 'superadmin') {
       throw new ForbiddenException('Solo los administradores pueden crear tipos de actividad.');
     }
 
@@ -101,7 +101,7 @@ export class ActivitiesService {
       throw new InternalServerErrorException('No se pudo identificar al usuario.');
     }
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
-    if (fullCurrentUser.role !== Role.Admin) {
+    if (fullCurrentUser.role !== Role.Admin && fullCurrentUser.role !== Role.SuperAdmin && (fullCurrentUser.role as string) !== 'superadmin') {
       throw new ForbiddenException('Solo los administradores pueden actualizar tipos de actividad.');
     }
 
@@ -137,9 +137,10 @@ export class ActivitiesService {
       throw new InternalServerErrorException('No se pudo identificar al usuario.');
     }
     const fullCurrentUser = await this.usersService.findOneById(currentUserId);
-    if (fullCurrentUser.role !== Role.Admin) {
+    if (fullCurrentUser.role !== Role.Admin && fullCurrentUser.role !== Role.SuperAdmin && (fullCurrentUser.role as string) !== 'superadmin') {
       throw new ForbiddenException('Solo los administradores pueden eliminar tipos de actividad.');
     }
+
 
     const typeToDelete = await this.typeActivityRepository.findOne({ where: { id } });
     if (!typeToDelete) {
@@ -270,7 +271,7 @@ export class ActivitiesService {
       order: { date: 'DESC' },
     };
 
-    if (fullCurrentUser.role !== Role.Admin) {
+    if (fullCurrentUser.role !== Role.Admin && fullCurrentUser.role !== Role.SuperAdmin) {
       // Un ejecutivo puede ver:
       // 1. Actividades que él creó (userId === fullCurrentUser.id)
       // 2. Actividades de oportunidades que tiene asignadas (opportunity.ejecutivo_id === fullCurrentUser.id)
@@ -293,6 +294,7 @@ export class ActivitiesService {
     } else {
       const whereClause: any = {};
       if (userId) {
+
         whereClause.userId = userId;
       }
       if (opportunityId) {

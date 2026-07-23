@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import { JwtService } from '@nestjs/jwt';
+import { DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { MailService } from '../mail/mail.service';
@@ -11,28 +12,63 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private mailService: MailService,
+    private dataSource: DataSource,
   ) {}
 
   async validateUser(email: string, pass: string): Promise<any> {
     console.log('Validating user with email:', email);
-    const user = await this.usersService.findOneByEmail(email);
-    // Compara la contraseña proporcionada con el hash almacenado en la BD
-    const isMatch = user && (await bcrypt.compare(pass, user.password));
 
-    if (isMatch) {
-      const { password, ...result } = user;
-      return result;
+    // 1. Verificar primero en el esquema public (public.super_users) para cuentas de SuperAdmin
+    try {
+      const superUsers = await this.dataSource.query(
+        `SELECT id, username, email, password FROM public.super_users WHERE LOWER(email) = LOWER($1)`,
+        [email]
+      );
+      if (superUsers.length > 0) {
+        const su = superUsers[0];
+        if (await bcrypt.compare(pass, su.password)) {
+          return {
+            id: su.id,
+            username: su.username,
+            email: su.email,
+            role: 'superadmin',
+            tenant: 'public',
+          };
+        }
+      }
+    } catch (err) {
+      // Ignorar si la tabla no se ha creado aún
     }
+
+    // 2. Si no es SuperAdmin, validar en esquemas locales de tenant (roles: admin y executive)
+    try {
+      const user = await this.usersService.findOneByEmail(email);
+      const isMatch = user && (await bcrypt.compare(pass, user.password));
+
+      if (isMatch) {
+        const { password, ...result } = user;
+        return result;
+      }
+    } catch (err) {
+      // Usuario local no encontrado
+    }
+
     return null;
   }
 
   async login(user: any) {
-    const payload = { username: user.username, sub: user.id, role: user.role };
+    const payload = { 
+      username: user.username, 
+      sub: user.id, 
+      role: user.role,
+      tenant: user.tenant || undefined,
+    };
     return {
       access_token: this.jwtService.sign(payload),
       role: user.role,
     };
   }
+
 
   async forgotPassword(email: string): Promise<void> {
     try {

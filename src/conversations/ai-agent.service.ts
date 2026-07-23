@@ -20,7 +20,9 @@ import { BusinessLineOption } from '../opportunities/entities/business-line-opti
 import { DeliveryTypeOption } from '../opportunities/entities/delivery-type-option.entity';
 import { LicensingOption } from '../opportunities/entities/licensing-option.entity';
 import { RagService } from '../rag/rag.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 import { StateGraph, Annotation, START, END } from '@langchain/langgraph';
+
 import { 
   RegisterContactSchema, 
   UpdateContactSchema, 
@@ -48,6 +50,9 @@ export const AgentStateAnnotation = Annotation.Root({
   response: Annotation<string | null>(),
 });
 
+import { ConversationsGateway } from './conversations.gateway';
+import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
+
 export type AgentState = typeof AgentStateAnnotation.State;
 
 @Injectable()
@@ -71,7 +76,12 @@ export class AiAgentService implements OnModuleInit {
     private readonly clientsService: ClientsService,
     private readonly ticketsService: TicketsService,
     private readonly ragService: RagService,
+    private readonly subscriptionValidator: SubscriptionValidatorService,
+    @Inject(forwardRef(() => ConversationsGateway))
+    private readonly gateway: ConversationsGateway,
   ) {}
+
+
 
   /**
    * Se ejecuta al inicializar el módulo.
@@ -255,7 +265,24 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
   }
 
   /**
-   * Obtiene la configuración activa del Agente de IA. Si no existe, crea una por defecto.
+   * Obtiene credenciales globales de IA desde el esquema public.ai_agent_configs.
+   */
+  private async getGlobalAiCredentials(): Promise<any> {
+    try {
+      const rows = await this.aiAgentConfigRepository.manager.query(
+        `SELECT "modelProvider", "modelName", "openaiApiKey", "openaiEndpoint", "openaiApiVersion", "openaiEmbeddingModel", "geminiApiKey", "watsonxApiKey", "watsonxProjectId", "watsonxRegion", "watsonxEmbeddingModel", "maxNewTokens" FROM public.ai_agent_configs LIMIT 1`
+      );
+      if (rows && rows.length > 0) {
+        return rows[0];
+      }
+    } catch (err: any) {
+      this.logger.warn(`No se pudieron cargar credenciales globales desde public.ai_agent_configs: ${err.message}`);
+    }
+    return {};
+  }
+
+  /**
+   * Obtiene la configuración activa del Agente de IA para el tenant. Si no existe, crea una por defecto.
    */
   async getOrInitConfig(): Promise<AiAgentConfig> {
     let config = await this.aiAgentConfigRepository.findOne({ where: {} });
@@ -264,12 +291,26 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
         isActive: true,
         context: `Configura aquí el contexto y las instrucciones de comportamiento de tu agente. Define su identidad, los productos o servicios que ofrece, el tono de comunicación y los criterios para gestionar contactos, oportunidades y actividades en el CRM.`,
         temperature: 0.7,
-        modelProvider: 'gemini',
-        modelName: 'gemini-1.5-flash',
         reminderOffsetMinutes: 60,
       });
       config = await this.aiAgentConfigRepository.save(config);
     }
+
+    // Cargar y fusionar credenciales globales desde public.ai_agent_configs (SuperAdmin)
+    const globalCreds = await this.getGlobalAiCredentials();
+    if (globalCreds.modelProvider) config.modelProvider = globalCreds.modelProvider;
+    if (globalCreds.modelName) config.modelName = globalCreds.modelName;
+    if (globalCreds.openaiApiKey !== undefined) config.openaiApiKey = globalCreds.openaiApiKey;
+    if (globalCreds.openaiEndpoint !== undefined) config.openaiEndpoint = globalCreds.openaiEndpoint;
+    if (globalCreds.openaiApiVersion !== undefined) config.openaiApiVersion = globalCreds.openaiApiVersion;
+    if (globalCreds.openaiEmbeddingModel !== undefined) config.openaiEmbeddingModel = globalCreds.openaiEmbeddingModel;
+    if (globalCreds.geminiApiKey !== undefined) config.geminiApiKey = globalCreds.geminiApiKey;
+    if (globalCreds.watsonxApiKey !== undefined) config.watsonxApiKey = globalCreds.watsonxApiKey;
+    if (globalCreds.watsonxProjectId !== undefined) config.watsonxProjectId = globalCreds.watsonxProjectId;
+    if (globalCreds.watsonxRegion !== undefined) config.watsonxRegion = globalCreds.watsonxRegion;
+    if (globalCreds.watsonxEmbeddingModel !== undefined) config.watsonxEmbeddingModel = globalCreds.watsonxEmbeddingModel;
+    if (globalCreds.maxNewTokens !== undefined) config.maxNewTokens = globalCreds.maxNewTokens;
+
     return config;
   }
 
@@ -277,17 +318,118 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
    * Guarda o actualiza la configuración del Agente de IA.
    */
   async saveConfig(data: Partial<AiAgentConfig>): Promise<AiAgentConfig> {
-    const existing = await this.getOrInitConfig();
-    const updated = this.aiAgentConfigRepository.merge(existing, data);
-    return this.aiAgentConfigRepository.save(updated);
+    // 1. Guardar/Actualizar credenciales globales en public.ai_agent_configs si la solicitud las incluye
+    const hasGlobalFields =
+      'modelProvider' in data ||
+      'openaiApiKey' in data ||
+      'geminiApiKey' in data ||
+      'watsonxApiKey' in data ||
+      'maxNewTokens' in data;
+
+    if (hasGlobalFields) {
+      try {
+        const publicRows = await this.aiAgentConfigRepository.manager.query(
+          `SELECT id FROM public.ai_agent_configs LIMIT 1`
+        );
+        if (publicRows && publicRows.length > 0) {
+          const globalId = publicRows[0].id;
+          await this.aiAgentConfigRepository.manager.query(
+            `UPDATE public.ai_agent_configs SET 
+              "modelProvider" = COALESCE($1, "modelProvider"),
+              "modelName" = COALESCE($2, "modelName"),
+              "openaiApiKey" = COALESCE($3, "openaiApiKey"),
+              "openaiEndpoint" = COALESCE($4, "openaiEndpoint"),
+              "openaiApiVersion" = COALESCE($5, "openaiApiVersion"),
+              "openaiEmbeddingModel" = COALESCE($6, "openaiEmbeddingModel"),
+              "geminiApiKey" = COALESCE($7, "geminiApiKey"),
+              "watsonxApiKey" = COALESCE($8, "watsonxApiKey"),
+              "watsonxProjectId" = COALESCE($9, "watsonxProjectId"),
+              "watsonxRegion" = COALESCE($10, "watsonxRegion"),
+              "watsonxEmbeddingModel" = COALESCE($11, "watsonxEmbeddingModel"),
+              "maxNewTokens" = COALESCE($12, "maxNewTokens")
+             WHERE id = $13`,
+            [
+              data.modelProvider ?? null,
+              data.modelName ?? null,
+              data.openaiApiKey ?? null,
+              data.openaiEndpoint ?? null,
+              data.openaiApiVersion ?? null,
+              data.openaiEmbeddingModel ?? null,
+              data.geminiApiKey ?? null,
+              data.watsonxApiKey ?? null,
+              data.watsonxProjectId ?? null,
+              data.watsonxRegion ?? null,
+              data.watsonxEmbeddingModel ?? null,
+              data.maxNewTokens ?? null,
+              globalId,
+            ]
+          );
+        } else {
+          await this.aiAgentConfigRepository.manager.query(
+            `INSERT INTO public.ai_agent_configs (
+              "modelProvider", "modelName", "openaiApiKey", "openaiEndpoint", "openaiApiVersion",
+              "openaiEmbeddingModel", "geminiApiKey", "watsonxApiKey", "watsonxProjectId",
+              "watsonxRegion", "watsonxEmbeddingModel", "maxNewTokens"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            [
+              data.modelProvider || 'gemini',
+              data.modelName || 'gemini-1.5-flash',
+              data.openaiApiKey || null,
+              data.openaiEndpoint || null,
+              data.openaiApiVersion || null,
+              data.openaiEmbeddingModel || 'text-embedding-ada-002',
+              data.geminiApiKey || null,
+              data.watsonxApiKey || null,
+              data.watsonxProjectId || null,
+              data.watsonxRegion || 'us-south',
+              data.watsonxEmbeddingModel || 'ibm/slate-125m-english-rtrvr',
+              data.maxNewTokens || 2048,
+            ]
+          );
+        }
+      } catch (err: any) {
+        this.logger.error(`Error al guardar credenciales globales de IA en public.ai_agent_configs: ${err.message}`);
+      }
+    }
+
+    // 2. Guardar configuraciones propias del tenant en el esquema activo
+    let existing = await this.aiAgentConfigRepository.findOne({ where: {} });
+    if (!existing) {
+      existing = this.aiAgentConfigRepository.create({
+        isActive: data.isActive ?? true,
+        context: data.context ?? '',
+        temperature: data.temperature ?? 0.7,
+        reminderOffsetMinutes: data.reminderOffsetMinutes ?? 60,
+        defaultUserId: data.defaultUserId ?? null,
+      });
+    } else {
+      this.aiAgentConfigRepository.merge(existing, {
+        isActive: data.isActive,
+        context: data.context,
+        defaultReplies: data.defaultReplies,
+        temperature: data.temperature,
+        reminderOffsetMinutes: data.reminderOffsetMinutes,
+        defaultUserId: data.defaultUserId,
+      });
+    }
+    await this.aiAgentConfigRepository.save(existing);
+
+    return this.getOrInitConfig();
   }
 
+
   /**
-   * Obtiene todos los sub-agentes configurados.
+   * Obtiene todos los sub-agentes configurados. Se auto-siembran si la tabla está vacía para el tenant.
    */
   async getSubAgents(): Promise<AiSubAgent[]> {
-    return this.aiSubAgentRepository.find({ order: { key: 'ASC' } });
+    let agents = await this.aiSubAgentRepository.find({ order: { key: 'ASC' } });
+    if (!agents || agents.length === 0) {
+      await this.runOneTimeSubAgentMigration();
+      agents = await this.aiSubAgentRepository.find({ order: { key: 'ASC' } });
+    }
+    return agents;
   }
+
 
   /**
    * Crea o actualiza la configuración de un sub-agente.
@@ -1125,7 +1267,24 @@ Asistente:`;
   private async executeTool(name: string, input: any, conversation: Conversation, config: AiAgentConfig): Promise<any> {
     try {
       switch (name) {
+        case 'consult_product_catalog':
+        case 'consultProductCatalog': {
+          const queryText = input.query || input.search || input.productName || '';
+          this.logger.log(`[executeTool] Ejecutando búsqueda RAG y catálogo de productos para: '${queryText}'`);
+          
+          const ragResults = await this.ragService.searchSimilar(queryText, 3);
+          const cubeResults = await this.queryCubeProducts(queryText);
+
+          return {
+            status: 'SUCCESS',
+            query: queryText,
+            ragDocs: ragResults,
+            catalogProducts: cubeResults,
+          };
+        }
+
         case 'createOpportunity': {
+
           const userEntity = conversation.assignedUserId ? { id: conversation.assignedUserId } as User : undefined;
           
           let cleanMonto = 0;
@@ -1569,15 +1728,17 @@ Asistente:`;
    */
   private async callGemini(model: string, apiKey: string, prompt: string, temperature: number, maxNewTokens = 2048): Promise<string> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    
+    const numericTemp = typeof temperature === 'number' ? temperature : parseFloat(String(temperature || 0.7));
+    const numericMaxTokens = Number(maxNewTokens) || 2048;
+
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          temperature: temperature,
-          maxOutputTokens: maxNewTokens,
+          temperature: numericTemp,
+          maxOutputTokens: numericMaxTokens,
         },
       }),
     });
@@ -1590,11 +1751,12 @@ Asistente:`;
     const data: any = await response.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     
-    // Log token usage
+    // Log token usage and record in transaction_history
     const inputTokens = data.usageMetadata?.promptTokenCount || 0;
     const outputTokens = data.usageMetadata?.candidatesTokenCount || 0;
     const totalTokens = data.usageMetadata?.totalTokenCount || 0;
     this.logger.log(`[Token Usage] Gemini - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
+    this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, 'gemini_execution');
 
     return text.trim();
   }
@@ -1616,6 +1778,9 @@ Asistente:`;
       ? `${endpoint.replace(/\/$/, '')}/openai/deployments/${model}/chat/completions?api-version=${apiVersion || '2024-12-01-preview'}`
       : 'https://api.openai.com/v1/chat/completions';
 
+    const numericTemp = typeof temperature === 'number' ? temperature : parseFloat(String(temperature || 0.7));
+    const numericMaxTokens = Number(maxNewTokens) || 2048;
+
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (isAzure) {
       headers['api-key'] = apiKey;
@@ -1629,8 +1794,8 @@ Asistente:`;
       body: JSON.stringify({
         ...(isAzure ? {} : { model }),
         messages: [{ role: 'user', content: prompt }],
-        temperature: temperature,
-        max_tokens: maxNewTokens,
+        temperature: numericTemp,
+        max_tokens: numericMaxTokens,
       }),
     });
 
@@ -1642,11 +1807,12 @@ Asistente:`;
     const data: any = await response.json();
     const text = data.choices?.[0]?.message?.content || '';
 
-    // Log token usage
+    // Log token usage and record in transaction_history
     const inputTokens = data.usage?.prompt_tokens || 0;
     const outputTokens = data.usage?.completion_tokens || 0;
     const totalTokens = data.usage?.total_tokens || 0;
     this.logger.log(`[Token Usage] ${isAzure ? 'Azure ' : ''}OpenAI - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
+    this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, isAzure ? 'azure_openai_execution' : 'openai_execution');
 
     return text.trim();
   }
@@ -1680,13 +1846,16 @@ Asistente:`;
       : `https://${rawRegion}.ml.cloud.ibm.com`;
     const apiUrl = `${baseUrl}/ml/v1/text/generation?version=2023-05-29`;
     
-    const isGreedy = temperature < 0.15;
+    const numericTemp = typeof temperature === 'number' ? temperature : parseFloat(String(temperature || 0.7));
+    const numericMaxTokens = Number(maxNewTokens) || 2048;
+    const isGreedy = numericTemp < 0.15;
+
     const parameters: Record<string, any> = {
-      max_new_tokens: maxNewTokens,
+      max_new_tokens: numericMaxTokens,
       decoding_method: isGreedy ? 'greedy' : 'sample',
     };
     if (!isGreedy) {
-      parameters.temperature = temperature;
+      parameters.temperature = numericTemp;
     }
 
     let formattedInput = prompt;
@@ -1715,6 +1884,7 @@ Asistente:`;
       }),
     });
 
+
     if (!response.ok) {
       const errText = await response.text();
       throw new Error(`Error en API de WatsonX: status ${response.status} - ${errText}`);
@@ -1723,14 +1893,40 @@ Asistente:`;
     const data: any = await response.json();
     const rawText = data.results?.[0]?.generated_text || '';
 
-    // Log token usage
+    // Log token usage and record in transaction_history
     const inputTokens = data.results?.[0]?.input_token_count || 0;
     const outputTokens = data.results?.[0]?.generated_token_count || 0;
     const totalTokens = inputTokens + outputTokens;
     this.logger.log(`[Token Usage] WatsonX - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
+    this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, 'watsonx_execution');
 
     return rawText.trim();
   }
+
+  /**
+   * Registra el consumo de tokens en transaction_history del tenant activo y notifica vía WebSocket
+   */
+  private recordTokenConsumption(promptTokens: number, completionTokens: number, totalTokens: number, actionName = 'ai_execution') {
+    const activeSchema = TenantContextService.getTenantSchema() || 'public';
+    if (activeSchema !== 'public' && totalTokens > 0) {
+      this.subscriptionValidator.recordConsumption(
+        activeSchema,
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        false,
+        actionName
+      ).then(() => {
+        if (this.gateway) {
+          this.gateway.emitTenantConsumptionUpdated(activeSchema);
+        }
+      }).catch(err => {
+        this.logger.error(`Error al registrar consumo de tokens para tenant ${activeSchema}: ${err.message}`);
+      });
+    }
+  }
+
+
 
   /**
    * Sanitiza la salida para garantizar que inicie con `{"thought"` y termine con `}` cerrando el JSON.
@@ -1814,12 +2010,20 @@ Asistente:`;
   }
 
   /**
-   * Genera un token JWT de HS256 firmado con la secret de Cube.dev para conectarse con la REST API.
+   * Genera un token JWT de HS256 firmado con la secret de Cube.dev incluyendo el tenantSchema.
    */
-  private generateCubeToken(): string {
+  getCubeApiToken(tenantSchemaOverride?: string): string {
+    return this.generateCubeToken(tenantSchemaOverride);
+  }
+
+  private generateCubeToken(tenantSchemaOverride?: string): string {
     const secret = 'crmtibs_secret_key_2026_xyz';
     const header = { alg: 'HS256', typ: 'JWT' };
-    const payload = { exp: Math.floor(Date.now() / 1000) + (10 * 365 * 24 * 60 * 60) };
+    const schema = tenantSchemaOverride || TenantContextService.getTenantSchema() || 'public';
+    const payload = { 
+      exp: Math.floor(Date.now() / 1000) + (10 * 365 * 24 * 60 * 60),
+      tenantSchema: schema,
+    };
     
     const base64url = (str: string) => Buffer.from(str)
       .toString('base64')
@@ -1842,13 +2046,14 @@ Asistente:`;
     return `${signatureInput}.${signature}`;
   }
 
+
   /**
    * Realiza una búsqueda semántica de productos mediante la REST API de Cube.dev.
    */
   private async queryCubeProducts(queryText: string): Promise<any[]> {
     try {
-      const token = this.generateCubeToken();
       // Extraer términos claves para la búsqueda (ignorar palabras comunes no sustantivas)
+
       const cleanKeyword = queryText
         .toLowerCase()
         .normalize('NFD')
@@ -1900,11 +2105,16 @@ Asistente:`;
         }
       }
 
+      const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+      const token = this.generateCubeToken(tenantSchema);
+
       const response = await fetch('http://localhost:4000/cubejs-api/v1/load', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: token,
+          'x-tenant-schema': tenantSchema,
+          'x-tenant-id': tenantSchema,
         },
         body: JSON.stringify({
           query: {
@@ -1918,9 +2128,11 @@ Asistente:`;
               'Productos.status'
             ],
             filters
-          }
+          },
+          securityContext: { tenantSchema }
         })
       });
+
 
       if (!response.ok) {
         const errText = await response.text();
@@ -2075,12 +2287,7 @@ NUEVO RESUMEN ACUMULADO:`;
     return this.callLLM(config, prompt, temperatureOverride);
   }
 
-  /**
-   * Wrapper público para generar un token JWT firmado para Cube.dev.
-   */
-  getCubeApiToken(): string {
-    return this.generateCubeToken();
-  }
+
 
   /**
    * Wrapper público para sanitizar salida JSON del LLM.

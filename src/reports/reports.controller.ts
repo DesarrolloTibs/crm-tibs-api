@@ -56,8 +56,9 @@ export class ReportsController {
   }
 
   private checkAdmin(user: User) {
-    if (user.role !== Role.Admin) {
+    if (user.role !== Role.Admin && user.role !== Role.SuperAdmin && (user.role as any) !== 'superadmin') {
       throw new ForbiddenException('Solo los administradores pueden realizar esta operación.');
     }
   }
+
 }

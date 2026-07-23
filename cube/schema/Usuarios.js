@@ -1,7 +1,13 @@
 cube(`Usuarios`, {
-  sql: `SELECT * FROM users`,
+  sql: `SELECT * FROM "${COMPILE_CONTEXT.securityContext && COMPILE_CONTEXT.securityContext.tenantSchema ? COMPILE_CONTEXT.securityContext.tenantSchema : 'public'}".users`,
 
   measures: {
+
+
+
+
+
+
     count: {
       type: `count`,
       drillMembers: [id, username]

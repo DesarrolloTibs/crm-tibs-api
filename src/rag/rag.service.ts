@@ -3,7 +3,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AiAgentConfig } from '../conversations/entities/ai-agent-config.entity';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
+
 import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { Embeddings } from '@langchain/core/embeddings';
@@ -93,7 +95,7 @@ export class CustomWatsonxEmbeddings extends Embeddings {
 @Injectable()
 export class RagService implements OnModuleInit {
   private readonly logger = new Logger('RagService');
-  private vectorStore: PGVectorStore | null = null;
+  private readonly vectorStoresByTenant = new Map<string, PGVectorStore>();
   private currentApiKey: string | null = null;
   private currentProvider: string | null = null;
   private currentEmbeddingModel: string | null = null;
@@ -113,12 +115,10 @@ export class RagService implements OnModuleInit {
   }
 
   /**
-   * Inicializa la base de datos vectorial de pgvector en Supabase.
+   * Inicializa la base de datos vectorial de pgvector aislada por tenantSchema en Supabase.
    */
   private async initializeVectorStore(): Promise<PGVectorStore> {
-    if (this.vectorStore) {
-      return this.vectorStore;
-    }
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
 
     const config = await this.getAgentConfig();
     const provider = config.modelProvider || 'gemini';
@@ -169,18 +169,31 @@ export class RagService implements OnModuleInit {
       this.currentApiKey = apiKey;
     }
 
+    if (
+      this.currentProvider !== provider ||
+      (provider === 'gemini' && config.geminiApiKey !== this.currentApiKey) ||
+      (provider === 'openai' && (config.openaiApiKey !== this.currentApiKey || config.openaiEmbeddingModel !== this.currentEmbeddingModel)) ||
+      (provider === 'watsonx' && (config.watsonxApiKey !== this.currentApiKey || config.watsonxEmbeddingModel !== this.currentEmbeddingModel))
+    ) {
+      this.vectorStoresByTenant.clear();
+    }
+
     this.currentProvider = provider;
 
-    // Configuración de la conexión usando el Pooler IPv4 de Supabase mapeado en .env
+    if (this.vectorStoresByTenant.has(tenantSchema)) {
+      return this.vectorStoresByTenant.get(tenantSchema)!;
+    }
+
+    // Configuración de la conexión usando el Pooler IPv4 de Supabase mapeado en .env y search_path por tenant
     const dbHost = this.configService.get<string>('DB_HOST');
     const dbPort = this.configService.get<number>('DB_PORT', 5432);
     const dbUser = this.configService.get<string>('DB_USERNAME');
     const dbPass = this.configService.get<string>('DB_PASSWORD');
     const dbName = this.configService.get<string>('DB_DATABASE');
 
-    const connectionString = `postgresql://${dbUser}:${dbPass}@${dbHost}:${dbPort}/${dbName}`;
+    const connectionString = `postgresql://${dbUser}:${dbPass}@${dbHost}:${dbPort}/${dbName}?options=-c%20search_path%3D${tenantSchema}%2Cpublic`;
 
-    this.vectorStore = await PGVectorStore.initialize(embeddings, {
+    const store = await PGVectorStore.initialize(embeddings, {
       postgresConnectionOptions: {
         connectionString,
       },
@@ -193,9 +206,11 @@ export class RagService implements OnModuleInit {
       },
     });
 
-    this.logger.log('Base de datos vectorial pgvector inicializada con éxito.');
-    return this.vectorStore;
+    this.vectorStoresByTenant.set(tenantSchema, store);
+    this.logger.log(`Base de datos vectorial pgvector inicializada con éxito para el esquema ${tenantSchema}.`);
+    return store;
   }
+
 
   /**
    * Recibe el buffer de un archivo PDF, extrae su texto, lo segmenta y genera embeddings.
@@ -262,9 +277,10 @@ export class RagService implements OnModuleInit {
         (config.modelProvider === 'gemini' && config.geminiApiKey !== this.currentApiKey) ||
         (config.modelProvider === 'openai' && (config.openaiApiKey !== this.currentApiKey || config.openaiEmbeddingModel !== this.currentEmbeddingModel)) ||
         (config.modelProvider === 'watsonx' && (config.watsonxApiKey !== this.currentApiKey || config.watsonxEmbeddingModel !== this.currentEmbeddingModel))) {
-      this.vectorStore = null;
+      this.vectorStoresByTenant.clear();
       await this.initializeVectorStore();
     }
+
 
     // Ejecutar búsqueda por similitud con filtro por metadata si aplica
     const results = await store.similaritySearch(

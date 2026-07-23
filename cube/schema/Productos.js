@@ -1,7 +1,13 @@
 cube(`Productos`, {
-  sql: `SELECT * FROM products`,
+  sql: `SELECT * FROM "${COMPILE_CONTEXT.securityContext && COMPILE_CONTEXT.securityContext.tenantSchema ? COMPILE_CONTEXT.securityContext.tenantSchema : 'public'}".products`,
 
   measures: {
+
+
+
+
+
+
     count: {
       type: `count`,
       drillMembers: [id, nombre]
