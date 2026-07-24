@@ -88,11 +88,8 @@ export class AiAgentService implements OnModuleInit {
    */
   async onModuleInit() {
     await this.runOneTimeSubAgentMigration();
-    // Iniciar sincronización retrospectiva en segundo plano
-    this.syncExistingProductFilesToRag().catch(err => {
-      this.logger.error(`Error al iniciar sincronización de archivos retrospectivos: ${err.message}`);
-    });
   }
+
 
   /**
    * Realiza la migración y desglose inicial del contexto general hacia los sub-agentes si la tabla está vacía.

@@ -3,19 +3,29 @@ version: '3'
 services:
   cube:
     image: cubejs/cube:v0.35
+    env_file:
+      - .env
     ports:
       - "4000:4000"
       - "3000:3000"
     environment:
+      - PORT=4000
+      - CUBEJS_PORT=4000
       - CUBEJS_DB_TYPE=postgres
-      - CUBEJS_DB_HOST=aws-0-us-east-1.pooler.supabase.com
-      - CUBEJS_DB_PORT=5432
-      - CUBEJS_DB_NAME=postgres
-      - CUBEJS_DB_USER=postgres.mtmmzylgtyipvcdkpimf
-      - CUBEJS_DB_PASS=Tibs2026!!!
+      - CUBEJS_DB_HOST=${DB_HOST}
+      - CUBEJS_DB_PORT=${DB_PORT:-5432}
+      - CUBEJS_DB_NAME=${DB_DATABASE:-postgres}
+      - CUBEJS_DB_USER=${DB_USERNAME}
+      - CUBEJS_DB_PASS=${DB_PASSWORD}
+      - CUBEJS_DB_SSL=true
+      - CUBEJS_DB_SSL_REJECT_UNAUTHORIZED=false
       - CUBEJS_DEV_MODE=true
       - CUBEJS_API_SECRET=crmtibs_secret_key_2026_xyz
+
+
+
     volumes:
       - ./cube/schema:/cube/conf/model
       - ./cube/cube.js:/cube/conf/cube.js
+
 

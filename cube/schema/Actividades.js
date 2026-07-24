@@ -19,6 +19,10 @@ cube(`Actividades`, {
     Usuarios: {
       sql: `${CUBE}."userId" = ${Usuarios}.id`,
       relationship: `belongsTo`
+    },
+    TiposActividad: {
+      sql: `${CUBE}."typeActivityId" = ${TiposActividad}.id`,
+      relationship: `belongsTo`
     }
   },
 
@@ -50,6 +54,7 @@ cube(`Actividades`, {
       sql: `"typeActivityId"`,
       type: `number`
     },
+
 
     opportunityId: {
       sql: `"opportunityId"`,

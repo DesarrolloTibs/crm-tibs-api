@@ -6,6 +6,7 @@ import { Notification } from './entities/notification.entity';
 import { User } from '../users/entities/user.entity';
 import { NotificationsGateway } from './notifications.gateway';
 import { MailService } from '../mail/mail.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class NotificationsService {
@@ -20,6 +21,27 @@ export class NotificationsService {
     private readonly mailService: MailService,
     private readonly configService: ConfigService,
   ) {}
+
+  private async ensureTableExists() {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    try {
+      await this.notificationRepository.query(`
+        CREATE TABLE IF NOT EXISTS "${tenantSchema}".notifications (
+          id uuid NOT NULL DEFAULT gen_random_uuid(),
+          user_id uuid NOT NULL,
+          title varchar(255) NOT NULL,
+          message text NOT NULL,
+          type varchar(50) NOT NULL,
+          related_id varchar(255) NULL,
+          read boolean NOT NULL DEFAULT false,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          CONSTRAINT pk_notifications PRIMARY KEY (id)
+        );
+
+        ALTER TABLE "${tenantSchema}".notifications DROP CONSTRAINT IF EXISTS notifications_user_id_fkey;
+      `);
+    } catch (e) {}
+  }
 
   /**
    * Crea una notificación in-app, la emite vía WebSocket en tiempo real y opcionalmente envía correo.
@@ -37,6 +59,8 @@ export class NotificationsService {
       this.logger.debug(`Omitiendo notificación "${title}": No hay ejecutivo asignado.`);
       return null;
     }
+
+    await this.ensureTableExists();
 
     // Quitar tags HTML para la notificación en base de datos e in-app
     const plainMessage = message
@@ -62,16 +86,26 @@ export class NotificationsService {
       this.logger.error(`Error emitiendo websocket para ejecutivo ${userId}:`, wsError);
     }
 
-    // Envío por correo al ejecutivo asignado
+    // Envío por correo al ejecutivo asignado o SuperAdmin
     if (sendEmail) {
       try {
-        const user = await this.userRepository.findOne({ where: { id: userId } });
-        if (user && user.email && user.isActive) {
+        let user = await this.userRepository.findOne({ where: { id: userId } }).catch(() => null);
+        if (!user) {
+          try {
+            const pubUsers = await this.notificationRepository.manager.query(
+              `SELECT id, username, email, "isActive" FROM public.users WHERE id::text = $1 OR LOWER(username) = LOWER($1)`,
+              [userId]
+            );
+            if (pubUsers && pubUsers.length > 0) user = pubUsers[0] as User;
+          } catch (e) {}
+        }
+
+        if (user && user.email && (user.isActive ?? true)) {
           const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
           let actionUrl: string | undefined = undefined;
 
           if (saved.relatedId && saved.type) {
-            if (saved.type.includes('opportunity') || saved.type.includes('activity')) {
+            if (saved.type.includes('opportunity') || saved.type.includes('activity') || saved.type.includes('semaphore')) {
               actionUrl = `${frontendUrl}/pipeline?opportunityId=${saved.relatedId}`;
             } else if (saved.type.includes('ticket')) {
               actionUrl = `${frontendUrl}/helpdesk?ticketId=${saved.relatedId}`;
@@ -95,33 +129,88 @@ export class NotificationsService {
     return saved;
   }
 
-  /**
-   * Obtiene las notificaciones recientes del usuario.
-   */
   async getUserNotifications(userId: string, limit: number = 30): Promise<Notification[]> {
-    return this.notificationRepository.find({
-      where: { userId },
-      order: { createdAt: 'DESC' },
-      take: limit,
-    });
+    await this.ensureTableExists();
+
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const isSuper = await this.notificationRepository.manager.query(
+      `SELECT id, username FROM public.users WHERE (id::text = $1 OR LOWER(username) = LOWER($1)) AND LOWER(role::text) = 'superadmin'`,
+      [userId]
+    ).catch(() => []);
+
+    const isSuperAdminUser = isSuper && isSuper.length > 0;
+
+    // Regla de Negocio: Si es SuperUsuario interactuando en un tenant diferente de public, el ícono de notificaciones no opera
+    if (isSuperAdminUser && tenantSchema !== 'public') {
+      return [];
+    }
+
+    const username = isSuper.length > 0 ? isSuper[0].username : userId;
+
+    const rows = await this.notificationRepository.manager.query(
+      `SELECT id, user_id AS "userId", title, message, type, related_id AS "relatedId", read, created_at AS "createdAt"
+       FROM "${tenantSchema}".notifications
+       WHERE user_id::text = $1 OR LOWER(user_id::text) = LOWER($2)
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [userId, username, limit]
+    ).catch(() => []);
+
+    return rows as Notification[];
   }
 
   /**
    * Marca una notificación como leída.
    */
   async markAsRead(id: string, userId: string): Promise<Notification | null> {
-    const notification = await this.notificationRepository.findOne({ where: { id, userId } });
-    if (notification) {
-      notification.read = true;
-      return this.notificationRepository.save(notification);
+    await this.ensureTableExists();
+
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const isSuper = await this.notificationRepository.manager.query(
+      `SELECT id, username FROM public.users WHERE (id::text = $1 OR LOWER(username) = LOWER($1)) AND LOWER(role::text) = 'superadmin'`,
+      [userId]
+    ).catch(() => []);
+
+    if (isSuper && isSuper.length > 0 && tenantSchema !== 'public') {
+      return null;
     }
-    return null;
+
+    const username = isSuper.length > 0 ? isSuper[0].username : userId;
+
+    await this.notificationRepository.manager.query(
+      `UPDATE "${tenantSchema}".notifications SET read = true WHERE id::text = $1 AND (user_id::text = $2 OR LOWER(user_id::text) = LOWER($3))`,
+      [id, userId, username]
+    ).catch(() => null);
+
+    const notification = await this.notificationRepository.findOne({ where: { id } }).catch(() => null);
+    return notification;
   }
 
   /**
    * Marca todas las notificaciones de un usuario como leídas.
    */
   async markAllAsRead(userId: string): Promise<void> {
-    await this.notificationRepository.update({ userId, read: false }, { read: true });
+    await this.ensureTableExists();
+
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const isSuper = await this.notificationRepository.manager.query(
+      `SELECT id, username FROM public.users WHERE (id::text = $1 OR LOWER(username) = LOWER($1)) AND LOWER(role::text) = 'superadmin'`,
+      [userId]
+    ).catch(() => []);
+
+    if (isSuper && isSuper.length > 0 && tenantSchema !== 'public') {
+      return;
+    }
+
+    const username = isSuper.length > 0 ? isSuper[0].username : userId;
+
+    await this.notificationRepository.manager.query(
+      `UPDATE "${tenantSchema}".notifications SET read = true WHERE (user_id::text = $1 OR LOWER(user_id::text) = LOWER($2)) AND read = false`,
+      [userId, username]
+    ).catch(() => null);
   }
 }
+
+
+
+

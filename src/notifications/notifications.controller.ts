@@ -21,14 +21,16 @@ export class NotificationsController {
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener las notificaciones del usuario autenticado' })
   async getMyNotifications(@GetUser() user: User) {
-    return this.notificationsService.getUserNotifications(user.id);
+    const userId = user?.id || (user as any)?.userId;
+    return this.notificationsService.getUserNotifications(userId);
   }
 
   @Patch('read-all')
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Marcar todas las notificaciones del usuario como leídas' })
   async markAllAsRead(@GetUser() user: User) {
-    await this.notificationsService.markAllAsRead(user.id);
+    const userId = user?.id || (user as any)?.userId;
+    await this.notificationsService.markAllAsRead(userId);
     return { success: true, message: 'Todas las notificaciones han sido marcadas como leídas.' };
   }
 
@@ -36,9 +38,11 @@ export class NotificationsController {
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Marcar una notificación específica como leída' })
   async markAsRead(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
-    const notification = await this.notificationsService.markAsRead(id, user.id);
+    const userId = user?.id || (user as any)?.userId;
+    const notification = await this.notificationsService.markAsRead(id, userId);
     return { success: true, data: notification };
   }
+
 
   @Get('trigger-test')
   @ApiOperation({ summary: 'Dispara manualmente el envío de notificaciones diarias y verificación de semáforos vencidos para pruebas' })

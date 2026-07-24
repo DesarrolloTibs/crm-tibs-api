@@ -60,6 +60,14 @@ export class CustomWatsonxEmbeddings extends Embeddings {
       : `https://${rawRegion}.ml.cloud.ibm.com`;
     const url = `${baseUrl}/ml/v1/text/embeddings?version=2024-05-31`;
 
+    const cleanDocs = documents
+      .map(d => (d && d.trim().length > 0 ? d.trim() : ''))
+      .filter(d => d.length > 0);
+
+    if (cleanDocs.length === 0) {
+      return [];
+    }
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -70,7 +78,7 @@ export class CustomWatsonxEmbeddings extends Embeddings {
       body: JSON.stringify({
         model_id: this.modelId,
         project_id: this.projectId,
-        inputs: documents,
+        inputs: cleanDocs,
       }),
     });
 
@@ -80,11 +88,16 @@ export class CustomWatsonxEmbeddings extends Embeddings {
     }
 
     const data: any = await response.json();
-    if (!data.results) {
+    const results = data.results || data.embeddings || [];
+    if (!results || results.length === 0) {
       throw new Error(`Respuesta inválida de IBM Watsonx Embeddings: ${JSON.stringify(data)}`);
     }
-    return data.results.map((r: any) => r.embedding);
+
+    return results.map((r: any) => r.embedding || r.results?.[0]?.embedding || r);
   }
+
+
+
 
   async embedQuery(document: string): Promise<number[]> {
     const embeddings = await this.embedDocuments([document]);
@@ -121,53 +134,73 @@ export class RagService implements OnModuleInit {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
 
     const config = await this.getAgentConfig();
-    const provider = config.modelProvider || 'gemini';
+
+    const watsonKey = config.watsonxApiKey || process.env.WATSONX_API_KEY;
+    const watsonProject = config.watsonxProjectId || process.env.WATSONX_PROJECT_ID;
+    const openAiKey = config.openaiApiKey || process.env.OPENAI_API_KEY;
+    const geminiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
+
+    let provider = config.modelProvider;
+
+    // Si el proveedor no fue definido en la BD o el seleccionado carece de credenciales,
+    // seleccionar automáticamente el proveedor que SÍ tiene credenciales guardadas en la BD:
+    if (
+      !provider ||
+      (provider === 'gemini' && !geminiKey) ||
+      (provider === 'openai' && !openAiKey) ||
+      (provider === 'watsonx' && (!watsonKey || !watsonProject))
+    ) {
+      if (watsonKey && watsonProject) {
+        provider = 'watsonx';
+      } else if (openAiKey) {
+        provider = 'openai';
+      } else if (geminiKey) {
+        provider = 'gemini';
+      } else {
+        provider = 'watsonx';
+      }
+    }
+
     let embeddings: any;
 
-    if (provider === 'openai') {
-      const apiKey = config.openaiApiKey || process.env.OPENAI_API_KEY;
-      if (!apiKey) throw new Error('API Key de OpenAI no configurada.');
-
-      const endpoint = config.openaiEndpoint || null;
+    if (provider === 'openai' && openAiKey) {
+      const endpoint = config.openaiEndpoint || process.env.OPENAI_ENDPOINT || null;
       if (endpoint) {
-        const deploymentName = config.openaiEmbeddingModel || 'text-embedding-ada-002';
+        const deploymentName = config.openaiEmbeddingModel || process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-ada-002';
         this.currentEmbeddingModel = deploymentName;
         embeddings = new OpenAIEmbeddings({
           modelName: deploymentName,
-          openAIApiKey: apiKey,
+          openAIApiKey: openAiKey,
           configuration: {
             baseURL: `${endpoint.replace(/\/$/, '')}/openai/deployments/${deploymentName}`,
             defaultQuery: { 'api-version': config.openaiApiVersion || '2023-05-15' },
-            defaultHeaders: { 'api-key': apiKey },
+            defaultHeaders: { 'api-key': openAiKey },
           }
         });
       } else {
-        const standardModel = 'text-embedding-ada-002';
+        const standardModel = config.openaiEmbeddingModel || process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-ada-002';
         this.currentEmbeddingModel = standardModel;
-        embeddings = new OpenAIEmbeddings({ openAIApiKey: apiKey, modelName: standardModel });
+        embeddings = new OpenAIEmbeddings({ openAIApiKey: openAiKey, modelName: standardModel });
       }
-      this.currentApiKey = apiKey;
-    } else if (provider === 'watsonx') {
-      const apiKey = config.watsonxApiKey || process.env.WATSONX_API_KEY;
-      const projectId = config.watsonxProjectId || process.env.WATSONX_PROJECT_ID;
+      this.currentApiKey = openAiKey;
+    } else if (provider === 'watsonx' && watsonKey && watsonProject) {
       const region = config.watsonxRegion || process.env.WATSONX_REGION || 'us-south';
-      if (!apiKey || !projectId) throw new Error('Credenciales de IBM WatsonX no configuradas.');
-
-      const embeddingModel = config.watsonxEmbeddingModel || 'ibm/slate-125m-english-rtrvr';
+      const embeddingModel = config.watsonxEmbeddingModel || process.env.WATSONX_EMBEDDING_MODEL || 'ibm/slate-125m-english-rtrvr';
       this.currentEmbeddingModel = embeddingModel;
-      embeddings = new CustomWatsonxEmbeddings(apiKey, projectId, region, embeddingModel);
-      this.currentApiKey = apiKey;
-    } else {
-      const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error('API Key de Gemini no configurada.');
+      embeddings = new CustomWatsonxEmbeddings(watsonKey, watsonProject, region, embeddingModel);
+      this.currentApiKey = watsonKey;
+    } else if (geminiKey) {
       const standardModel = 'text-embedding-004';
       this.currentEmbeddingModel = standardModel;
       embeddings = new GoogleGenerativeAIEmbeddings({
-        apiKey: apiKey,
+        apiKey: geminiKey,
         modelName: standardModel,
       });
-      this.currentApiKey = apiKey;
+      this.currentApiKey = geminiKey;
+    } else {
+      throw new Error('No se encontraron credenciales de IA configuradas en la base de datos para ninguno de los proveedores (IBM WatsonX, OpenAI o Gemini).');
     }
+
 
     if (
       this.currentProvider !== provider ||
@@ -191,9 +224,21 @@ export class RagService implements OnModuleInit {
     const dbPass = this.configService.get<string>('DB_PASSWORD');
     const dbName = this.configService.get<string>('DB_DATABASE');
 
+    // Asegurar que la extensión pgvector esté activada en el esquema public de Supabase antes de inicializar la tabla
+    try {
+      await this.aiAgentConfigRepository.manager.query(`CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;`);
+      await this.aiAgentConfigRepository.manager.query(`GRANT USAGE ON SCHEMA public TO PUBLIC;`);
+    } catch (err) {
+      this.logger.warn(`No se pudo verificar la extensión vector: ${err.message}`);
+    }
+
+
+
     const connectionString = `postgresql://${dbUser}:${dbPass}@${dbHost}:${dbPort}/${dbName}?options=-c%20search_path%3D${tenantSchema}%2Cpublic`;
 
+
     const store = await PGVectorStore.initialize(embeddings, {
+
       postgresConnectionOptions: {
         connectionString,
       },
@@ -205,6 +250,7 @@ export class RagService implements OnModuleInit {
         metadataColumnName: 'metadata',
       },
     });
+
 
     this.vectorStoresByTenant.set(tenantSchema, store);
     this.logger.log(`Base de datos vectorial pgvector inicializada con éxito para el esquema ${tenantSchema}.`);
@@ -298,13 +344,42 @@ export class RagService implements OnModuleInit {
   /**
    * Obtiene la configuración del Agente.
    */
-  private async getAgentConfig(): Promise<AiAgentConfig> {
-    let config = await this.aiAgentConfigRepository.findOne({ where: {} });
-    if (!config) {
-      throw new Error('Configuración de agente de IA no encontrada.');
+  private async getAgentConfig(): Promise<Partial<AiAgentConfig>> {
+    // 1. Cargar credenciales globales desde el esquema public (public.ai_agent_configs)
+    try {
+      const publicConfigs = await this.aiAgentConfigRepository.manager.query(
+        `SELECT id, "modelProvider", "geminiApiKey", "openaiApiKey", "openaiEndpoint", "openaiApiVersion", "openaiEmbeddingModel", "watsonxApiKey", "watsonxProjectId", "watsonxRegion", "watsonxEmbeddingModel" FROM public.ai_agent_configs LIMIT 1`
+      );
+      if (publicConfigs && publicConfigs.length > 0) {
+        const c = publicConfigs[0];
+        if (c.watsonxApiKey || c.openaiApiKey || c.geminiApiKey) {
+          return c;
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`No se pudieron cargar credenciales de public.ai_agent_configs: ${e.message}`);
     }
-    return config;
+
+    // 2. Buscar en la tabla del esquema local
+    try {
+      let config = await this.aiAgentConfigRepository.findOne({ where: {} });
+      if (config && (config.watsonxApiKey || config.openaiApiKey || config.geminiApiKey)) {
+        return config;
+      }
+    } catch (e) {}
+
+    // 3. Fallback de variables de entorno
+    return {
+      modelProvider: (process.env.MODEL_PROVIDER as any) || 'watsonx',
+      geminiApiKey: process.env.GEMINI_API_KEY,
+      openaiApiKey: process.env.OPENAI_API_KEY,
+      watsonxApiKey: process.env.WATSONX_API_KEY,
+      watsonxProjectId: process.env.WATSONX_PROJECT_ID,
+      watsonxRegion: process.env.WATSONX_REGION || 'us-south',
+    };
   }
+
+
 
   /**
    * Genera un embedding para un producto del catálogo (nombre y descripción) e indexa su metadata

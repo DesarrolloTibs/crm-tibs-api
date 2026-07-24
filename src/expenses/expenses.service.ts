@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -10,14 +10,29 @@ import { Opportunity } from '../opportunities/entities/opportunity.entity';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
 import { UsersService } from '../users/users.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
-export class ExpensesService {
+export class ExpensesService implements OnModuleInit {
     constructor(
         @InjectRepository(Expense)
         private expensesRepository: Repository<Expense>,
         private readonly usersService: UsersService,
     ) { }
+
+    async onModuleInit() {
+        try {
+            const tenants = await this.expensesRepository.query(`SELECT schema_name FROM public.tenants WHERE is_active = true`).catch(() => []);
+            for (const t of tenants) {
+                await this.expensesRepository.query(
+                    `ALTER TABLE "${t.schema_name}".expenses DROP CONSTRAINT IF EXISTS expenses_usuario_id_fkey;`
+                ).catch(() => null);
+            }
+            await this.expensesRepository.query(
+                `ALTER TABLE public.expenses DROP CONSTRAINT IF EXISTS expenses_usuario_id_fkey;`
+            ).catch(() => null);
+        } catch (e) {}
+    }
 
     async create(createExpenseDto: CreateExpenseDto, user: any): Promise<Expense> {
         console.log('ExpensesService.create - User:', user);
@@ -31,19 +46,56 @@ export class ExpensesService {
             );
         }
 
+        const userId = user ? (user.id || user.userId) : null;
+        const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+
+        // Asegurarse de quitar la restricción FK en el esquema actual si existe
+        await this.expensesRepository.query(
+            `ALTER TABLE "${tenantSchema}".expenses DROP CONSTRAINT IF EXISTS expenses_usuario_id_fkey;`
+        ).catch(() => null);
+
+        if (userId && tenantSchema !== 'public') {
+            try {
+                await this.expensesRepository.query(`
+                    INSERT INTO "${tenantSchema}".users (id, username, email, password, role, "isActive")
+                    SELECT id, username, email, password, role, "isActive"
+                    FROM public.users
+                    WHERE id::text = $1
+                    ON CONFLICT (id) DO UPDATE SET
+                        username = EXCLUDED.username,
+                        email = EXCLUDED.email,
+                        role = EXCLUDED.role,
+                        "isActive" = EXCLUDED."isActive";
+                `, [userId]).catch(() => null);
+            } catch (e) {
+                // Silenciosamente capturar
+            }
+        }
+
+
         const newExpense = this.expensesRepository.create({
             ...expenseData,
             client_id,
             opportunity_id,
-            usuario_id: user ? user.userId : null,
+            usuario_id: userId,
         });
 
         return this.expensesRepository.save(newExpense);
     }
 
+
     async findAll(user: any): Promise<Expense[]> {
-        // Fetch full user to get the role, as JwtStrategy only returns userId
-        const fullUser = await this.usersService.findOneById(user.userId);
+        const userId = user ? (user.id || user.userId) : null;
+        let userRole = user ? user.role : null;
+
+        if (!userRole && userId) {
+            try {
+                const fullUser = await this.usersService.findOneById(userId);
+                userRole = fullUser ? fullUser.role : null;
+            } catch (e) {
+                // Silenciosamente capturar si el usuario no se encuentra en el esquema local
+            }
+        }
 
         const query = this.expensesRepository.createQueryBuilder('expense')
             .leftJoinAndSelect('expense.client', 'client')
@@ -51,13 +103,15 @@ export class ExpensesService {
             .leftJoinAndSelect('expense.usuario', 'usuario')
             .orderBy('expense.fecha', 'DESC');
 
-        if (fullUser.role !== Role.Admin && fullUser.role !== Role.SuperAdmin && (fullUser.role as string) !== 'superadmin') {
-            query.where('expense.usuario_id = :userId', { userId: fullUser.id });
-        }
+        const isAdminOrSuper = userRole === Role.Admin || userRole === Role.SuperAdmin || (userRole as string) === 'superadmin';
 
+        if (!isAdminOrSuper && userId) {
+            query.where('expense.usuario_id = :userId', { userId });
+        }
 
         return query.getMany();
     }
+
 
     async findOne(id: string): Promise<Expense> {
         const expense = await this.expensesRepository.findOne({

@@ -1,6 +1,6 @@
 import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { AiAgentService } from '../conversations/ai-agent.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { Stage } from '../stages/entities/stage.entity';
@@ -65,7 +65,9 @@ export class WebchatService {
     private readonly stageRepository: Repository<Stage>,
     @InjectRepository(TicketStage)
     private readonly ticketStageRepository: Repository<TicketStage>,
+    private readonly dataSource: DataSource,
   ) {}
+
 
   /**
    * Procesa una consulta de lenguaje natural del usuario autenticado del CRM.
@@ -129,10 +131,12 @@ Genera tu respuesta JSON:`;
 
       // 7. Detectar entidades usadas en la query y aplicar filtros de seguridad
       const cubeQuery = queryPlan.cubeQuery;
-      if (userRole === 'executive') {
+      if (userRole === 'executive' || userRole === 'Ejecutivo') {
         this.applySecurityFilters(cubeQuery, userId);
       }
       this.sanitizeFilters(cubeQuery, userId, userRole);
+
+
 
       // 8. Ejecutar query contra Cube.dev
       const cubeData = await this.executeCubeQuery(cubeQuery);
@@ -345,7 +349,7 @@ Fecha: ${fechaHoy} — Hora: ${horaActual} (Ciudad de México)
 3. **Actividades** (tabla: activities)
    - Measures: count
    - Dimensions: id, actividad, fecha, typeActivityId, opportunityId, clientId, userId
-   - Joins: Clientes (via clientId), Oportunidades (via opportunityId), Usuarios (via userId)
+   - Joins: Clientes (via clientId), Oportunidades (via opportunityId), Usuarios (via userId), TiposActividad (via typeActivityId)
 
 4. **Clientes** (tabla: clients)
    - Measures: count
@@ -374,6 +378,10 @@ Fecha: ${fechaHoy} — Hora: ${horaActual} (Ciudad de México)
    - Measures: count
    - Dimensions: id, username, correo, role, status
 
+10. **TiposActividad** (tabla: tbltypeactivities — Catálogo de tipos de actividad)
+    - Measures: count
+    - Dimensions: id, nombre, status
+
 [INSTRUCCIÓN CRÍTICA DE JOINS PARA NOMBRES DE ETAPAS / STAGES]
 JAMÁS muestres un UUID técnico o identificador de base de datos como "stageId" (ejemplo: "ff4266df-fd36-43e2-bc5f-bc0b2fdc59ae") en tus respuestas. 
 Para obtener el NOMBRE de la etapa de una oportunidad, DEBES hacer join con el cubo Etapas e incluir "Etapas.nombre" en tus dimensions (ejemplo: dimensions: ["Oportunidades.nombreProyecto", "Etapas.nombre"]).
@@ -385,6 +393,9 @@ Para obtener el nombre de un ejecutivo (en oportunidades), responsable (en ticke
 
 [INSTRUCCIÓN CRÍTICA PARA FOLIOS DE TICKETS]
 En el sistema, los tickets se identifican y buscan por su "folio" o "número de ticket" (representado por la dimensión Tickets.ticketNumber). Si el usuario pregunta por un "folio" (ej: "folio 5" o "folio 00005"), debes mapearlo a la dimensión "Tickets.ticketNumber" utilizando únicamente el valor numérico (ej: "5").
+
+[INSTRUCCIÓN CRÍTICA DE JOINS PARA TIPOS DE ACTIVIDAD]
+JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas ni en la tabla. Para obtener el NOMBRE del tipo de actividad, DEBES hacer join con el cubo TiposActividad e incluir "TiposActividad.nombre" en tus dimensions en lugar de "Actividades.typeActivityId". Ejemplo: dimensions: ["Actividades.actividad", "Actividades.fecha", "TiposActividad.nombre"].
 
 
 [FORMATO DE RESPUESTA JSON]
@@ -551,12 +562,11 @@ En el sistema, los tickets se identifican y buscan por su "folio" o "número de 
   }
 
   /**
-   * Ejecuta una query contra la REST API de Cube.dev.
+   * Ejecuta una query contra la REST API de la Capa Semántica (Cube.dev).
    */
   private async executeCubeQuery(cubeQuery: CubeQueryPlan['cubeQuery']): Promise<any[]> {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     try {
-      // Convertir order de objeto a array de arrays si es necesario (formato Cube.dev)
-
       let orderFormatted = cubeQuery.order;
       if (orderFormatted && !Array.isArray(orderFormatted)) {
         orderFormatted = Object.entries(orderFormatted);
@@ -568,14 +578,17 @@ En el sistema, los tickets se identifican y buscan por su "folio" o "número de 
       if (cubeQuery.filters && cubeQuery.filters.length > 0) queryPayload.filters = cubeQuery.filters;
       if (orderFormatted) queryPayload.order = orderFormatted;
       if (cubeQuery.limit) queryPayload.limit = cubeQuery.limit;
+      if (cubeQuery.timeDimensions && cubeQuery.timeDimensions.length > 0) {
+        cubeQuery.timeDimensions = this.sanitizeTimeDimensions(cubeQuery.timeDimensions);
+      }
       if (cubeQuery.timeDimensions && cubeQuery.timeDimensions.length > 0) queryPayload.timeDimensions = cubeQuery.timeDimensions;
 
       this.logger.log(`[WebChat - Cube Query] ${JSON.stringify(queryPayload)}`);
 
-      const tenantSchema = TenantContextService.getTenantSchema() || 'public';
       const token = this.aiAgentService.getCubeApiToken(tenantSchema);
 
-      const response = await fetch('http://localhost:4000/cubejs-api/v1/load', {
+      const response = await fetch('http://127.0.0.1:4000/cubejs-api/v1/load', {
+
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -589,20 +602,112 @@ En el sistema, los tickets se identifican y buscan por su "folio" o "número de 
         }),
       });
 
-
-
-      if (!response.ok) {
+      if (response.ok) {
+        const data: any = await response.json();
+        return data?.data || [];
+      } else {
         const errText = await response.text();
-        this.logger.error(`[WebChat - Cube Error] ${errText}`);
-        return [];
+        this.logger.error(`[WebChat - Capa Semántica Error] ${errText}`);
       }
-
-      const data: any = await response.json();
-      return data?.data || [];
     } catch (error: any) {
-      this.logger.error(`[WebChat - Cube Connection Error] ${error.message}`);
-      return [];
+      this.logger.error(`[WebChat - Capa Semántica conexión fallida] ${error.message}`);
     }
+
+    return [];
+  }
+
+  /**
+   * Sanitiza los timeDimensions generados por el LLM para evitar fechas inválidas
+   * que causan errores de PostgreSQL ("invalid input syntax for type timestamp").
+   */
+  private sanitizeTimeDimensions(timeDimensions: any[]): any[] {
+    // Rangos predefinidos válidos que acepta Cube.js
+    const validPredefinedRanges = new Set([
+      'today', 'yesterday', 'this week', 'last week', 'this month', 'last month',
+      'this quarter', 'last quarter', 'this year', 'last year',
+      'last 7 days', 'last 30 days', 'last 90 days', 'last 365 days',
+    ]);
+
+    const isValidDateString = (val: string): boolean => {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+        const d = new Date(val + 'T00:00:00Z');
+        return !isNaN(d.getTime());
+      }
+      if (/^\d{4}-\d{2}-\d{2}T/.test(val)) {
+        const d = new Date(val);
+        return !isNaN(d.getTime());
+      }
+      return false;
+    };
+
+    return timeDimensions
+      .map((td: any) => {
+        if (!td.dimension) return null;
+
+        // Si no hay dateRange, es válido (solo granularity)
+        if (!td.dateRange) return td;
+
+        // dateRange como string predefinido (ej: "This month")
+        if (typeof td.dateRange === 'string') {
+          const normalized = td.dateRange.toLowerCase().trim();
+          if (validPredefinedRanges.has(normalized)) {
+            return { ...td, dateRange: td.dateRange };
+          }
+          // Intentar detectar rangos en español u otros patrones comunes
+          if (normalized.includes('este mes') || normalized.includes('mes actual')) {
+            return { ...td, dateRange: 'This month' };
+          }
+          if (normalized.includes('mes pasado') || normalized.includes('último mes') || normalized.includes('ultimo mes')) {
+            return { ...td, dateRange: 'Last month' };
+          }
+          if (normalized.includes('este año') || normalized.includes('año actual') || normalized.includes('este ano')) {
+            return { ...td, dateRange: 'This year' };
+          }
+          if (normalized.includes('año pasado') || normalized.includes('último año') || normalized.includes('ano pasado')) {
+            return { ...td, dateRange: 'Last year' };
+          }
+          if (normalized.includes('esta semana') || normalized.includes('semana actual')) {
+            return { ...td, dateRange: 'This week' };
+          }
+          if (normalized.includes('semana pasada') || normalized.includes('última semana')) {
+            return { ...td, dateRange: 'Last week' };
+          }
+          if (normalized === 'hoy' || normalized === 'today') {
+            return { ...td, dateRange: 'Today' };
+          }
+          if (normalized === 'ayer' || normalized === 'yesterday') {
+            return { ...td, dateRange: 'Yesterday' };
+          }
+          // Si es una fecha válida sola, convertirla a array de un día
+          if (isValidDateString(td.dateRange)) {
+            return { ...td, dateRange: [td.dateRange, td.dateRange] };
+          }
+          // Valor no reconocido: eliminar dateRange para evitar crash
+          this.logger.warn(`[WebChat - Sanitize] dateRange inválido removido: "${td.dateRange}"`);
+          const { dateRange, ...rest } = td;
+          return Object.keys(rest).length > 1 ? rest : null;
+        }
+
+        // dateRange como array [start, end]
+        if (Array.isArray(td.dateRange)) {
+          const validDates = td.dateRange.filter((v: any) => typeof v === 'string' && isValidDateString(v));
+          if (validDates.length === 2) {
+            return { ...td, dateRange: validDates };
+          }
+          if (validDates.length === 1) {
+            return { ...td, dateRange: [validDates[0], validDates[0]] };
+          }
+          this.logger.warn(`[WebChat - Sanitize] dateRange array inválido removido: ${JSON.stringify(td.dateRange)}`);
+          const { dateRange, ...rest } = td;
+          return Object.keys(rest).length > 1 ? rest : null;
+        }
+
+        // Cualquier otro tipo: eliminar
+        this.logger.warn(`[WebChat - Sanitize] dateRange tipo desconocido removido: ${JSON.stringify(td.dateRange)}`);
+        const { dateRange, ...rest } = td;
+        return Object.keys(rest).length > 1 ? rest : null;
+      })
+      .filter(Boolean);
   }
 
   /**
@@ -613,30 +718,30 @@ En el sistema, los tickets se identifican y buscan por su "folio" o "número de 
     cubeData: any[],
     queryPlan: CubeQueryPlan,
   ): Promise<string> {
-    // Si hay pocos resultados, formateamos directamente sin LLM
-    if (cubeData.length <= 3 && queryPlan.responseTemplate) {
+    // Si hay exactamente 1 resultado y un template, usamos formato directo
+    if (cubeData.length === 1 && queryPlan.responseTemplate) {
       return this.simpleFormat(cubeData, queryPlan.responseTemplate);
     }
 
-    // Para resultados más complejos, usamos el LLM para formatear
-    const truncatedData = cubeData.slice(0, 20); // Limitar a 20 filas para el prompt
-    const formatPrompt = `Eres un asistente del CRM. El usuario preguntó: "${originalQuestion}".
+    // Para cualquier otro caso, usamos el LLM para generar solo un resumen breve
+    // (la tabla ya muestra los detalles completos al usuario)
+    const truncatedData = cubeData.slice(0, 20);
+    const formatPrompt = `Eres un asistente amigable del CRM. El usuario preguntó: "${originalQuestion}".
 
 [DATOS REALES DE LA BASE DE DATOS]
 Número de registros devueltos: ${truncatedData.length}
 Datos:
 ${JSON.stringify(truncatedData, null, 2)}
 
-${queryPlan.responseTemplate ? `Template sugerido: ${queryPlan.responseTemplate}` : ''}
+${queryPlan.responseTemplate ? `Sugerencia de estructura: ${queryPlan.responseTemplate}` : ''}
 
 [INSTRUCCIONES DE FORMATO]
-- Genera una respuesta en español, amigable, breve y bien formateada para chat.
-- Si hay datos numéricos monetarios, formatea con $ y separadores de miles.
-- No uses JSON ni markdown excesivo.
-- Si hay una lista, usa formato con viñetas o numeración.
-- CRÍTICO: Tu respuesta debe listar EXACTAMENTE la misma cantidad de elementos que registros devueltos por la base de datos (es decir, exactamente ${truncatedData.length} elementos en la lista).
-- Si la base de datos tiene ${truncatedData.length} registro(s), tu lista debe contener exactamente ${truncatedData.length} elemento(s). Bajo ninguna circunstancia debes duplicar, repetir o inventar registros para cumplir con el número que el usuario pidió (ej: si pidió "top 5" pero solo hay ${truncatedData.length} registros, muestra únicamente esos ${truncatedData.length} registros).
-- Responde SOLO con el texto de la respuesta final, sin prefijos.`;
+- Los datos detallados ya se muestran al usuario en una tabla aparte, así que TÚ SOLO debes generar un BREVE RESUMEN de 1 o 2 oraciones.
+- Ejemplo: "Se encontraron 3 tickets abiertos." o "Tienes 5 oportunidades activas este mes con un monto total de $120,000."
+- NUNCA listes los registros uno por uno. La tabla ya lo hace.
+- NUNCA muestres nombres técnicos de campos ni placeholders como {Tickets.count}.
+- Si hay datos monetarios, incluye el total formateado con $ y separadores de miles.
+- Responde SOLO con el resumen breve, sin prefijos ni explicaciones adicionales.`;
 
     try {
       const formatted = await this.aiAgentService.invokeLanguageModel(formatPrompt, 0.3);

@@ -18,14 +18,14 @@ export class AuthService {
   async validateUser(email: string, pass: string): Promise<any> {
     console.log('Validating user with email:', email);
 
-    // 1. Verificar primero en el esquema public (public.super_users) para cuentas de SuperAdmin
+    // 1. Verificar primero en el esquema public (public.users) para cuentas de SuperAdmin
     try {
-      const superUsers = await this.dataSource.query(
-        `SELECT id, username, email, password FROM public.super_users WHERE LOWER(email) = LOWER($1)`,
+      const publicUsers = await this.dataSource.query(
+        `SELECT id, username, email, password, role FROM public.users WHERE LOWER(email) = LOWER($1) AND role = 'superadmin'`,
         [email]
       );
-      if (superUsers.length > 0) {
-        const su = superUsers[0];
+      if (publicUsers.length > 0) {
+        const su = publicUsers[0];
         if (await bcrypt.compare(pass, su.password)) {
           return {
             id: su.id,
@@ -39,6 +39,7 @@ export class AuthService {
     } catch (err) {
       // Ignorar si la tabla no se ha creado aún
     }
+
 
     // 2. Si no es SuperAdmin, validar en esquemas locales de tenant (roles: admin y executive)
     try {

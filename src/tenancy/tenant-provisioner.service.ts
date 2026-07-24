@@ -126,12 +126,18 @@ export class TenantProvisionerService {
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".tbloportunitylabels (
           id uuid NOT NULL DEFAULT gen_random_uuid(),
-          strname varchar(255) NOT NULL,
+          strname varchar(255) NULL,
           field_key varchar(50) NULL,
           blnstatus boolean NOT NULL DEFAULT true,
-          dtmlastmodified timestamptz NOT NULL DEFAULT now(),
+          dtmlastmodified timestamptz NULL DEFAULT now(),
+          uuidlastmodifiedby uuid NULL,
           CONSTRAINT pk_tbloportunitylabels PRIMARY KEY (id)
         );
+
+        ALTER TABLE "${schemaName}".tbloportunitylabels ADD COLUMN IF NOT EXISTS uuidlastmodifiedby uuid NULL;
+        ALTER TABLE "${schemaName}".tbloportunitylabels ADD COLUMN IF NOT EXISTS dtmlastmodified timestamptz NULL DEFAULT now();
+        ALTER TABLE "${schemaName}".tbloportunitylabels ADD COLUMN IF NOT EXISTS field_key varchar(50) NULL;
+
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".companies (
           id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -239,13 +245,16 @@ export class TenantProvisionerService {
           CONSTRAINT pk_product_files PRIMARY KEY (id)
         );
 
-        CREATE EXTENSION IF NOT EXISTS vector;
+        CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
+        GRANT USAGE ON SCHEMA public TO PUBLIC;
+
         CREATE TABLE IF NOT EXISTS "${schemaName}".product_knowledge_base (
           id uuid NOT NULL DEFAULT gen_random_uuid(),
           content text NULL,
           metadata jsonb NULL,
-          embedding vector NULL
+          embedding public.vector NULL
         );
+
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".ai_agent_configs (
 
@@ -384,11 +393,27 @@ export class TenantProvisionerService {
           id uuid NOT NULL DEFAULT gen_random_uuid(),
           ticket_id uuid NOT NULL REFERENCES "${schemaName}".tickets(id) ON DELETE CASCADE,
           user_id uuid NULL REFERENCES "${schemaName}".users(id) ON DELETE SET NULL,
-          content text NOT NULL,
+          comment text NULL,
+          content text NULL,
           is_internal boolean NOT NULL DEFAULT false,
           created_at timestamptz NOT NULL DEFAULT now(),
           CONSTRAINT pk_ticket_interactions PRIMARY KEY (id)
         );
+
+        ALTER TABLE "${schemaName}".ticket_interactions ADD COLUMN IF NOT EXISTS "comment" text;
+
+        CREATE TABLE IF NOT EXISTS "${schemaName}".reminders (
+          id uuid NOT NULL DEFAULT gen_random_uuid(),
+          title varchar(255) NULL,
+          date timestamptz NULL,
+          notified boolean NOT NULL DEFAULT false,
+          activity_id uuid NULL REFERENCES "${schemaName}".activities(id) ON DELETE CASCADE,
+          CONSTRAINT pk_reminders PRIMARY KEY (id)
+        );
+
+        ALTER TABLE "${schemaName}".reminders ADD COLUMN IF NOT EXISTS "title" varchar(255);
+
+
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".tbloportunitylabels (
           id uuid NOT NULL DEFAULT gen_random_uuid(),

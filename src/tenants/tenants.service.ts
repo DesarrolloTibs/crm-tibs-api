@@ -4,7 +4,8 @@ import { Repository, DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { Tenant } from './entities/tenant.entity';
 import { TenantRenewalQueue } from './entities/tenant-renewal-queue.entity';
-import { SuperUser } from './entities/super-user.entity';
+import { User } from '../users/entities/user.entity';
+import { Role } from '../role.enum';
 import { TenantProvisionerService, ProvisionTenantDto } from '../tenancy/tenant-provisioner.service';
 
 import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
@@ -17,8 +18,8 @@ export class TenantsService implements OnModuleInit {
     private readonly tenantRepository: Repository<Tenant>,
     @InjectRepository(TenantRenewalQueue)
     private readonly queueRepository: Repository<TenantRenewalQueue>,
-    @InjectRepository(SuperUser)
-    private readonly superUserRepository: Repository<SuperUser>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
     private readonly tenantProvisioner: TenantProvisionerService,
     private readonly subscriptionValidator: SubscriptionValidatorService,
     private readonly dataSource: DataSource
@@ -83,19 +84,24 @@ export class TenantsService implements OnModuleInit {
   async onModuleInit() {
     try {
       const email = 'jonathan.amadorz@tibs.com.mx';
-      const existing = await this.superUserRepository.findOne({ where: { email } });
-      if (!existing) {
+      const existing = await this.dataSource.query(
+        `SELECT id FROM public.users WHERE LOWER(email) = LOWER($1)`,
+        [email]
+      );
+      if (!existing || existing.length === 0) {
         const hashedPassword = await bcrypt.hash('12345678', 10);
-        await this.superUserRepository.save({
-          username: 'jonathan.amadorz',
-          email,
-          password: hashedPassword,
-        });
+        await this.dataSource.query(
+          `INSERT INTO public.users (username, email, password, role, "isActive")
+           VALUES ($1, $2, $3, 'superadmin', true)
+           ON CONFLICT (id) DO NOTHING`,
+          ['jonathan.amadorz', email, hashedPassword]
+        );
       }
     } catch (err) {
       // Ignorar si la tabla no se ha sincronizado aún durante el inicio
     }
   }
+
 
   async provision(dto: ProvisionTenantDto) {
 

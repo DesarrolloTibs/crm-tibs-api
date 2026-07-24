@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Conversation } from './entities/conversation.entity';
@@ -10,6 +11,8 @@ import { ChannelConfig } from './entities/channel-config.entity';
 import { ConversationsGateway } from './conversations.gateway';
 import { AiAgentService } from './ai-agent.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
+
 
 @Injectable()
 export class ConversationsService {
@@ -52,6 +55,31 @@ export class ConversationsService {
       return [];
     }
 
+    // Cargar usuarios asignados desde public.users si no están en el esquema local del tenant
+    const missingUserIds = conversations
+      .filter((c) => c.assignedUserId && !c.assignedUser)
+      .map((c) => c.assignedUserId);
+
+    if (missingUserIds.length > 0) {
+      try {
+        const publicUsers: any[] = await this.conversationRepository.manager.query(
+          `SELECT id, username, email, role, "isActive" FROM public.users WHERE id::text IN (${missingUserIds.map((_, i) => `$${i + 1}`).join(',')})`,
+          missingUserIds
+        );
+        const publicUserMap = new Map(publicUsers.map((u) => [u.id, u]));
+
+        for (const conv of conversations) {
+          if (conv.assignedUserId && !conv.assignedUser && publicUserMap.has(conv.assignedUserId)) {
+            conv.assignedUser = publicUserMap.get(conv.assignedUserId);
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`No se pudieron cargar usuarios de public.users: ${err.message}`);
+      }
+    }
+
+
+
     const conversationIds = conversations.map((c) => c.id);
 
     // Obtener el último mensaje de todas las conversaciones en una sola consulta para evitar N+1 queries y deadlocks
@@ -73,6 +101,7 @@ export class ConversationsService {
       lastMessage: lastMessageMap.get(conv.id) || null,
     }));
   }
+
 
 
   /**
@@ -406,51 +435,147 @@ export class ConversationsService {
   /**
    * Reasigna la conversación a otro ejecutivo.
    */
-  async assignUser(conversationId: string, assignedUserId: string, triggerUserId: string): Promise<Conversation> {
+  async assignUser(conversationId: string, assignedUserId: string | null, triggerUserId: string): Promise<Conversation> {
+
     const conversation = await this.conversationRepository.findOne({ where: { id: conversationId } });
     if (!conversation) {
       throw new NotFoundException('Conversación no encontrada.');
     }
 
-    const previousUser = conversation.assignedUserId 
-      ? await this.userRepository.findOne({ where: { id: conversation.assignedUserId } })
-      : null;
-    
-    const newUser = await this.userRepository.findOne({ where: { id: assignedUserId } });
-    if (!newUser) {
-      throw new NotFoundException('El usuario asignado no existe.');
+    const cleanTargetId = (assignedUserId && assignedUserId.trim().length > 0) ? assignedUserId.trim() : null;
+
+    // Regla de Negocio: Una conversación asignada previa no puede volver a quedar sin asignación
+    if (conversation.assignedUserId && !cleanTargetId) {
+      throw new BadRequestException('Una conversación asignada previamente no puede quedar sin ejecutivo asignado.');
     }
 
-    conversation.assignedUserId = assignedUserId;
+    let previousUser: any = conversation.assignedUserId 
+      ? await this.userRepository.findOne({ where: { id: conversation.assignedUserId } })
+      : null;
+    if (conversation.assignedUserId && !previousUser) {
+      try {
+        const pUsers = await this.conversationRepository.manager.query(
+          `SELECT id, username, email, role, "isActive" FROM public.users WHERE id::text = $1 OR LOWER(username) = LOWER($1)`,
+          [conversation.assignedUserId]
+        );
+        if (pUsers && pUsers.length > 0) previousUser = pUsers[0];
+      } catch (err) {}
+    }
+
+    let newUser: any = null;
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+
+    if (cleanTargetId) {
+      newUser = await this.userRepository.findOne({ where: { id: cleanTargetId } });
+      if (!newUser) {
+        newUser = await this.userRepository.createQueryBuilder('u')
+          .where('u.id::text = :id OR LOWER(u.username) = LOWER(:id)', { id: cleanTargetId })
+          .getOne();
+      }
+
+      if (tenantSchema !== 'public') {
+        const isSuper = newUser && (newUser.role === 'superadmin' || (newUser as any).role === 'SuperAdmin');
+        if (isSuper) {
+          throw new BadRequestException('Los usuarios SuperAdmin solo se pueden asignar en la Organización Global (public).');
+        }
+      } else if (!newUser) {
+        try {
+          const publicUsers = await this.conversationRepository.manager.query(
+            `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE id::text = $1 OR LOWER(username) = LOWER($1)`,
+            [cleanTargetId]
+          );
+          if (publicUsers && publicUsers.length > 0) {
+            const pubUser = publicUsers[0];
+            await this.conversationRepository.manager.query(
+              `INSERT INTO users (id, username, email, password, role, "isActive") 
+               VALUES ($1, $2, $3, $4, $5, $6) 
+               ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, email = EXCLUDED.email, role = EXCLUDED.role, "isActive" = EXCLUDED."isActive"`,
+              [pubUser.id, pubUser.username, pubUser.email, pubUser.password || 'system_synced', pubUser.role || 'superadmin', pubUser.isActive ?? true]
+            );
+            newUser = await this.userRepository.findOne({ where: { id: pubUser.id } }) || pubUser;
+          }
+        } catch (err) {
+          this.logger.warn(`No se pudo sincronizar usuario global de public.users a la tabla local: ${err.message}`);
+        }
+      }
+    }
+
+
+    if (cleanTargetId && !newUser) {
+      this.logger.error(`[assignUser] No se encontró usuario en ningún esquema para target: '${cleanTargetId}'`);
+      throw new NotFoundException(`El usuario con ID o nombre '${cleanTargetId}' no existe en el sistema.`);
+    }
+
+    const finalTargetId = newUser ? newUser.id : cleanTargetId;
+
+    // Sincronizar triggerUser a la tabla de usuarios local si es SuperAdmin global
+    if (triggerUserId) {
+      const localTrigger = await this.userRepository.findOne({ where: { id: triggerUserId } });
+      if (!localTrigger) {
+        try {
+          const pubTriggers = await this.conversationRepository.manager.query(
+            `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE id::text = $1 OR LOWER(username) = LOWER($1)`,
+            [triggerUserId]
+          );
+          if (pubTriggers && pubTriggers.length > 0) {
+            const pubT = pubTriggers[0];
+            await this.conversationRepository.manager.query(
+              `INSERT INTO users (id, username, email, password, role, "isActive") 
+               VALUES ($1, $2, $3, $4, $5, $6) 
+               ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, email = EXCLUDED.email, role = EXCLUDED.role, "isActive" = EXCLUDED."isActive"`,
+              [pubT.id, pubT.username, pubT.email, pubT.password || 'system_synced', pubT.role || 'superadmin', pubT.isActive ?? true]
+            );
+          }
+        } catch (err) {}
+      }
+    }
+
+
+
+    const triggerUser = triggerUserId
+      ? await this.userRepository.findOne({ where: { id: triggerUserId } })
+      : null;
+    const triggerUserName = triggerUser ? triggerUser.username : 'Sistema';
+
+    conversation.assignedUserId = finalTargetId;
     conversation.assignedUser = newUser;
     const updated = await this.conversationRepository.save(conversation);
 
-    const triggerUser = await this.userRepository.findOne({ where: { id: triggerUserId } });
-    const triggerUserName = triggerUser ? triggerUser.username : 'Sistema';
 
-    // Registrar mensaje de auditoría de sistema
-    const auditContent = previousUser
-      ? `Conversación reasignada de ${previousUser.username} a ${newUser.username} por ${triggerUserName}.`
-      : `Conversación asignada a ${newUser.username} por ${triggerUserName}.`;
 
-    const auditMessage = this.messageRepository.create({
-      conversationId,
-      sender: 'system',
-      senderUserId: triggerUser ? triggerUserId : null,
-      content: auditContent,
-    });
 
-    const savedAudit = await this.messageRepository.save(auditMessage);
-    const fullAudit = await this.messageRepository.findOne({
-      where: { id: savedAudit.id },
-      relations: ['senderUser'],
-    });
+    // Registrar mensaje de auditoría de sistema si hubo cambio de estado real
+    let auditContent: string | null = null;
+    if (newUser) {
+      auditContent = previousUser
+        ? `Conversación reasignada de ${previousUser.username} a ${newUser.username} por ${triggerUserName}.`
+        : `Conversación asignada a ${newUser.username} por ${triggerUserName}.`;
+    } else if (previousUser) {
+      auditContent = `Conversación desasignada de ${previousUser.username} por ${triggerUserName}.`;
+    }
 
-    // Notificar en tiempo real
-    this.gateway.emitConversationAssigned(conversationId, assignedUserId);
-    this.gateway.emitMessage(fullAudit!);
+    if (auditContent) {
+      const auditMessage = this.messageRepository.create({
+        conversationId,
+        sender: 'system',
+        senderUserId: triggerUser ? triggerUser.id : null,
+        content: auditContent,
+      });
+
+      const savedAudit = await this.messageRepository.save(auditMessage);
+      const fullAudit = await this.messageRepository.findOne({
+        where: { id: savedAudit.id },
+        relations: ['senderUser'],
+      });
+
+      this.gateway.emitMessage(fullAudit!);
+    }
+
+    // Notificar en tiempo real cambio de asignación
+    this.gateway.emitConversationAssigned(conversationId, conversation.assignedUserId);
 
     return updated;
+
   }
 
   // ── MÉTODOS CRUD DE CONFIGURACIÓN DE CANALES ───────────────────────────────

@@ -59,11 +59,25 @@ export class TenantMiddleware implements NestMiddleware {
         if (!tenants[0].is_active) {
           throw new ForbiddenException(`La organización '${tenantSchema}' se encuentra INACTIVA o su suscripción ha expirado.`);
         }
+
+        // Sincronizar usuarios SuperAdmin globales en la tabla de usuarios del tenant para evitar violaciones de Foreign Key
+        await this.dataSource.query(`
+          INSERT INTO "${tenantSchema}".users (id, username, email, password, role, "isActive")
+          SELECT id, username, email, password, role, "isActive"
+          FROM public.users
+          WHERE role = 'superadmin'
+          ON CONFLICT (id) DO UPDATE SET
+            username = EXCLUDED.username,
+            email = EXCLUDED.email,
+            role = EXCLUDED.role,
+            "isActive" = EXCLUDED."isActive";
+        `).catch(() => null);
       } catch (err) {
         if (err instanceof ForbiddenException) throw err;
         // Si las tablas de public.tenants no existen aún durante inicio inicial, se omite
       }
     }
+
 
     // Ejecutar la petición en el contexto aislado de AsyncLocalStorage
     TenantContextService.run(

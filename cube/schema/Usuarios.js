@@ -1,13 +1,7 @@
 cube(`Usuarios`, {
-  sql: `SELECT * FROM "${COMPILE_CONTEXT.securityContext && COMPILE_CONTEXT.securityContext.tenantSchema ? COMPILE_CONTEXT.securityContext.tenantSchema : 'public'}".users`,
+  sql: `SELECT * FROM "${COMPILE_CONTEXT.securityContext && COMPILE_CONTEXT.securityContext.tenantSchema ? COMPILE_CONTEXT.securityContext.tenantSchema : 'public'}".users WHERE LOWER(role::text) ${COMPILE_CONTEXT.securityContext && COMPILE_CONTEXT.securityContext.tenantSchema && COMPILE_CONTEXT.securityContext.tenantSchema !== 'public' ? "!= 'superadmin'" : "= 'superadmin'"}`,
 
   measures: {
-
-
-
-
-
-
     count: {
       type: `count`,
       drillMembers: [id, username]

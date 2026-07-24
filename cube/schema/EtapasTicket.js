@@ -27,5 +27,7 @@ cube(`EtapasTicket`, {
       sql: `strname`,
       type: `string`
     }
-  }
+  },
+
+  dataSource: `default`
 });

@@ -32,5 +32,7 @@ cube(`Etapas`, {
       sql: `pipeline_id`,
       type: `string`
     }
-  }
+  },
+
+  dataSource: `default`
 });

@@ -258,17 +258,18 @@ export class OpportunitiesService {
   }
 
   async findAllUnfiltered(currentUser: User): Promise<Opportunity[]> {
-    const currentUserId = currentUser.id || (currentUser as any).userId;
-    if (!currentUserId) {
-      throw new InternalServerErrorException('No se pudo identificar al usuario actual.');
-    }
+    const currentUserId = currentUser?.id || (currentUser as any)?.userId;
+    const userRole = currentUser?.role || (currentUser as any)?.userRole || (currentUser as any)?.role;
 
-    const fullCurrentUser = await this.usersService.findOneById(currentUserId);
+    const roleStr = String(userRole || '').toLowerCase();
     const where: FindOptionsWhere<Opportunity> = {};
 
-    if (fullCurrentUser.role !== Role.Admin && fullCurrentUser.role !== Role.SuperAdmin && (fullCurrentUser.role as string) !== 'superadmin') {
-      where.ejecutivo_id = fullCurrentUser.id;
+    if (roleStr !== 'admin' && roleStr !== 'superadmin') {
+      if (currentUserId) {
+        where.ejecutivo_id = currentUserId;
+      }
     }
+
 
 
     const findOptions: FindManyOptions<Opportunity> = {
@@ -277,6 +278,7 @@ export class OpportunitiesService {
     };
     return this.opportunityRepository.find(findOptions);
   }
+
 
   async findOne(id: string): Promise<Opportunity> {
     if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {

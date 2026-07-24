@@ -18,16 +18,46 @@ export class UsersService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      const adminExists = await this.userRepository.findOne({ where: { email: 'ivonne.cabriales@tibs.com.mx' } });
-      if (!adminExists) {
+      // 0. Asegurar extensión pgvector en esquema public de Supabase y otorgar accesos globales
+      try {
+        await this.dataSource.query(`CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;`);
+        await this.dataSource.query(`GRANT USAGE ON SCHEMA public TO PUBLIC;`);
+      } catch (e) {}
+
+
+      // 1. Migrar datos de public.super_users a public.users si aún existe la tabla
+
+      await this.dataSource.query(`
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'super_users') THEN
+            INSERT INTO public.users (id, username, email, password, role, "isActive")
+            SELECT id, username, email, password, 'superadmin', true
+            FROM public.super_users
+            ON CONFLICT (id) DO UPDATE
+            SET username = EXCLUDED.username,
+                email = EXCLUDED.email,
+                password = EXCLUDED.password,
+                role = 'superadmin';
+            
+            DROP TABLE IF EXISTS public.super_users CASCADE;
+          END IF;
+        END $$;
+      `);
+
+      // 2. Asegurar que en public.users exista el usuario SuperAdmin por defecto
+      const adminExists = await this.dataSource.query(
+        `SELECT id FROM public.users WHERE LOWER(email) = LOWER($1) OR role = 'superadmin'`,
+        ['ivonne.cabriales@tibs.com.mx']
+      );
+      if (!adminExists || adminExists.length === 0) {
         const hashedPassword = await bcrypt.hash('Admin2026!', 10);
-        await this.userRepository.save({
-          username: 'Ivonne Cabriales',
-          password: hashedPassword,
-          email: 'ivonne.cabriales@tibs.com.mx',
-          isActive: true,
-          role: Role.Admin,
-        });
+        await this.dataSource.query(
+          `INSERT INTO public.users (username, email, password, role, "isActive")
+           VALUES ('Ivonne Cabriales', 'ivonne.cabriales@tibs.com.mx', $1, 'superadmin', true)
+           ON CONFLICT (id) DO NOTHING`,
+          [hashedPassword]
+        );
       }
     } catch (err) {
       // Ignorar si la BD no está lista en inicio
@@ -47,10 +77,10 @@ export class UsersService implements OnModuleInit {
   }
 
   async findOneByEmail(email: string): Promise<User> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema === 'public') {
       const rows = await this.dataSource.query(
-        `SELECT id, username, email, password, 'superadmin' as role, true as "isActive" FROM public.super_users WHERE LOWER(email) = LOWER($1)`,
+        `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE LOWER(email) = LOWER($1) AND role = 'superadmin'`,
         [email]
       );
       if (rows.length > 0) return rows[0] as User;
@@ -63,7 +93,7 @@ export class UsersService implements OnModuleInit {
       if (rows.length > 0) return rows[0] as User;
 
       const suRows = await this.dataSource.query(
-        `SELECT id, username, email, password, 'superadmin' as role, true as "isActive" FROM public.super_users WHERE LOWER(email) = LOWER($1)`,
+        `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE LOWER(email) = LOWER($1) AND role = 'superadmin'`,
         [email]
       );
       if (suRows.length > 0) return suRows[0] as User;
@@ -72,10 +102,10 @@ export class UsersService implements OnModuleInit {
   }
 
   async findOneById(id: string): Promise<User> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema === 'public') {
       const rows = await this.dataSource.query(
-        `SELECT id, username, email, 'superadmin' as role, true as "isActive", created_at as "createdAt" FROM public.super_users WHERE id::text = $1`,
+        `SELECT id, username, email, role, "isActive" FROM public.users WHERE id::text = $1 AND role = 'superadmin'`,
         [id]
       );
       if (rows.length > 0) return rows[0] as User;
@@ -88,7 +118,7 @@ export class UsersService implements OnModuleInit {
       if (rows.length > 0) return rows[0] as User;
 
       const suRows = await this.dataSource.query(
-        `SELECT id, username, email, 'superadmin' as role, true as "isActive", created_at as "createdAt" FROM public.super_users WHERE id::text = $1`,
+        `SELECT id, username, email, role, "isActive" FROM public.users WHERE id::text = $1 AND role = 'superadmin'`,
         [id]
       );
       if (suRows.length > 0) return suRows[0] as User;
@@ -96,18 +126,16 @@ export class UsersService implements OnModuleInit {
     throw new NotFoundException('Usuario no encontrado');
   }
 
-
   async create(userData: CreateUserDto): Promise<User> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     const hashedPassword = await bcrypt.hash(userData.password, 10);
 
-    if (tenantSchema === 'public' || userData.role === Role.SuperAdmin) {
+    if (tenantSchema === 'public' || userData.role === Role.SuperAdmin || (userData.role as any) === 'superadmin') {
       const rows = await this.dataSource.query(
-        `INSERT INTO public.super_users (username, email, password) VALUES ($1, $2, $3) RETURNING id, username, email, created_at as "createdAt"`,
+        `INSERT INTO public.users (username, email, password, role, "isActive") VALUES ($1, $2, $3, 'superadmin', true) RETURNING id, username, email, role, "isActive"`,
         [userData.username, userData.email, hashedPassword]
       );
-      const su = rows[0];
-      return { ...su, role: Role.SuperAdmin, isActive: true } as User;
+      return rows[0] as User;
     }
 
     await this.ensureTenantUserColumns(tenantSchema);
@@ -120,7 +148,7 @@ export class UsersService implements OnModuleInit {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (updateUserDto.password) {
       updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
     }
@@ -128,12 +156,12 @@ export class UsersService implements OnModuleInit {
     if (tenantSchema === 'public') {
       if (updateUserDto.password) {
         await this.dataSource.query(
-          `UPDATE public.super_users SET username = $1, email = $2, password = $3 WHERE id::text = $4`,
+          `UPDATE public.users SET username = $1, email = $2, password = $3, role = 'superadmin' WHERE id::text = $4`,
           [updateUserDto.username, updateUserDto.email, updateUserDto.password, id]
         );
       } else {
         await this.dataSource.query(
-          `UPDATE public.super_users SET username = $1, email = $2 WHERE id::text = $3`,
+          `UPDATE public.users SET username = $1, email = $2, role = 'superadmin' WHERE id::text = $3`,
           [updateUserDto.username, updateUserDto.email, id]
         );
       }
@@ -156,7 +184,7 @@ export class UsersService implements OnModuleInit {
   }
 
   async updateStatus(id: string, updateUserStatusDto: UpdateUserStatusDto): Promise<User> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema === 'public') {
       return this.findOneById(id);
     }
@@ -169,35 +197,51 @@ export class UsersService implements OnModuleInit {
   }
 
   async findAll(): Promise<User[]> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema === 'public') {
       const rows = await this.dataSource.query(
-        `SELECT id, username, email, 'superadmin' as role, true as "isActive", created_at as "createdAt" FROM public.super_users ORDER BY created_at DESC`
+        `SELECT id, username, email, role, "isActive" FROM public.users WHERE LOWER(role::text) = 'superadmin' ORDER BY id DESC`
       );
       return rows as User[];
     }
     await this.ensureTenantUserColumns(tenantSchema);
     const rows = await this.dataSource.query(
-      `SELECT id, username, email, role, "isActive", "profileImageUrl" FROM "${tenantSchema}".users ORDER BY "createdAt" DESC`
+      `SELECT id, username, email, role, "isActive", "profileImageUrl" FROM "${tenantSchema}".users WHERE LOWER(role::text) != 'superadmin' ORDER BY id DESC`
     );
     return rows as User[];
   }
 
   async findAllActive(): Promise<User[]> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema === 'public') {
       return this.findAll();
     }
     await this.ensureTenantUserColumns(tenantSchema);
     const rows = await this.dataSource.query(
-      `SELECT id, username, email, role, "isActive", "profileImageUrl" FROM "${tenantSchema}".users WHERE "isActive" = true ORDER BY "createdAt" DESC`
+      `SELECT id, username, email, role, "isActive", "profileImageUrl" FROM "${tenantSchema}".users WHERE "isActive" = true AND LOWER(role::text) != 'superadmin' ORDER BY id DESC`
     );
     return rows as User[];
   }
 
 
+
+  async remove(id: string): Promise<void> {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    if (tenantSchema === 'public') {
+      await this.dataSource.query(
+        `DELETE FROM public.users WHERE id::text = $1 AND role = 'superadmin'`,
+        [id]
+      );
+    } else {
+      await this.dataSource.query(
+        `DELETE FROM "${tenantSchema}".users WHERE id::text = $1`,
+        [id]
+      );
+    }
+  }
+
   async updateProfileImage(userId: string, imageUrl: string): Promise<User> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema !== 'public') {
       await this.dataSource.query(
         `UPDATE "${tenantSchema}".users SET "profileImageUrl" = $1 WHERE id::text = $2`,
@@ -208,7 +252,7 @@ export class UsersService implements OnModuleInit {
   }
 
   async findOneByResetToken(token: string): Promise<User | null> {
-    const tenantSchema = TenantContextService.getTenantSchema();
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     const rows = await this.dataSource.query(
       `SELECT id, username, email, role, "isActive" FROM "${tenantSchema}".users WHERE reset_password_token = $1`,
       [token]
@@ -220,4 +264,5 @@ export class UsersService implements OnModuleInit {
     return user;
   }
 }
+
 

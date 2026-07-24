@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { CreateReminderDto } from './dto/create-reminder.dto';
 import { UpdateReminderDto } from './dto/update-reminder.dto';
 import { Reminder } from './entities/reminder.entity';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class RemindersService {
@@ -12,12 +13,45 @@ export class RemindersService {
     private readonly reminderRepository: Repository<Reminder>,
   ) {}
 
-  create(createReminderDto: CreateReminderDto): Promise<Reminder> {
+  private async ensureTableExists() {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    try {
+      await this.reminderRepository.query(`
+        CREATE TABLE IF NOT EXISTS "${tenantSchema}".reminders (
+          id uuid NOT NULL DEFAULT gen_random_uuid(),
+          title varchar(255) NULL,
+          date timestamptz NULL,
+          notified boolean NOT NULL DEFAULT false,
+          activity_id uuid NULL,
+          CONSTRAINT pk_reminders PRIMARY KEY (id)
+        );
+
+        ALTER TABLE "${tenantSchema}".reminders ADD COLUMN IF NOT EXISTS "title" varchar(255);
+        ALTER TABLE "${tenantSchema}".reminders ADD COLUMN IF NOT EXISTS "date" timestamptz;
+        ALTER TABLE "${tenantSchema}".reminders ADD COLUMN IF NOT EXISTS "notified" boolean DEFAULT false;
+        ALTER TABLE "${tenantSchema}".reminders ADD COLUMN IF NOT EXISTS "activity_id" uuid;
+        DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_schema = '${tenantSchema}' AND table_name = 'reminders' AND column_name = 'reminder_date'
+          ) THEN
+            ALTER TABLE "${tenantSchema}".reminders ALTER COLUMN "reminder_date" DROP NOT NULL;
+          END IF;
+        END $$;
+      `);
+    } catch (e) {}
+  }
+
+
+  async create(createReminderDto: CreateReminderDto): Promise<Reminder> {
+    await this.ensureTableExists();
     const reminder = this.reminderRepository.create(createReminderDto);
     return this.reminderRepository.save(reminder);
   }
 
   async findByActivity(activityId: string): Promise<Reminder | null> {
+    await this.ensureTableExists();
     return this.reminderRepository.findOne({ where: { activityId } });
   }
 
@@ -25,6 +59,7 @@ export class RemindersService {
     activityId: string,
     data: { title: string; date: string },
   ): Promise<Reminder> {
+    await this.ensureTableExists();
     const existing = await this.reminderRepository.findOne({
       where: { activityId },
     });
@@ -46,6 +81,7 @@ export class RemindersService {
     });
     return this.reminderRepository.save(reminder);
   }
+
 
   async deleteByActivity(activityId: string): Promise<void> {
     const existing = await this.reminderRepository.findOne({ where: { activityId } });

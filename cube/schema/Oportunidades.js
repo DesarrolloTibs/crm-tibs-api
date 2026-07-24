@@ -21,7 +21,7 @@ cube(`Oportunidades`, {
       relationship: `belongsTo`
     },
     Productos: {
-      sql: `${CUBE}.id IN (SELECT "opportunitiesId" FROM opportunity_products WHERE "productsId" = ${Productos}.id)`,
+      sql: `${CUBE}.id IN (SELECT "opportunitiesId" FROM "${COMPILE_CONTEXT.securityContext && COMPILE_CONTEXT.securityContext.tenantSchema ? COMPILE_CONTEXT.securityContext.tenantSchema : 'public'}".opportunity_products WHERE "productsId" = ${Productos}.id)`,
       relationship: `belongsTo`
     }
   },

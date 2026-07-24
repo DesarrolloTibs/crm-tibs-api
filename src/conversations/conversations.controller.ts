@@ -17,9 +17,11 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { ConversationsService } from './conversations.service';
 import { AiAgentService } from './ai-agent.service';
+import { AssignUserDto, ToggleBotStatusDto, SendManualMessageDto } from './dto/conversations.dto';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
+
 
 @ApiTags('conversations')
 @ApiBearerAuth()
@@ -39,7 +41,6 @@ export class ConversationsController {
     return this.conversationsService.findAll(user.id, isAdmin);
   }
 
-
   @Get('ai-config')
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener la configuración global del Agente de IA' })
@@ -52,46 +53,6 @@ export class ConversationsController {
   @ApiOperation({ summary: 'Guardar/Actualizar la configuración global del Agente de IA' })
   async updateAiConfig(@Body() body: any) {
     return this.aiAgentService.saveConfig(body);
-  }
-
-  @Get(':id/messages')
-  @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Obtener los mensajes de una conversación específica' })
-  async getMessages(@Param('id', ParseUUIDPipe) id: string) {
-    return this.conversationsService.findMessages(id);
-  }
-
-  @Post(':id/messages')
-  @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Enviar un mensaje manual (intervención humana)' })
-  async sendManualMessage(
-    @Param('id', ParseUUIDPipe) id: string,
-    @GetUser() user: User,
-    @Body('content') content: string,
-  ) {
-    return this.conversationsService.sendManualMessage(id, user.id, content);
-  }
-
-  @Patch(':id/bot-status')
-  @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Activar o desactivar el bot en una conversación' })
-  async toggleBotStatus(
-    @Param('id', ParseUUIDPipe) id: string,
-    @GetUser() user: User,
-    @Body('botActive') botActive: boolean,
-  ) {
-    return this.conversationsService.toggleBotStatus(id, botActive, user.id);
-  }
-
-  @Patch(':id/assign')
-  @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Reasignar la conversación a otro ejecutivo' })
-  async assignUser(
-    @Param('id', ParseUUIDPipe) id: string,
-    @GetUser() user: User,
-    @Body('assignedUserId') assignedUserId: string,
-  ) {
-    return this.conversationsService.assignUser(id, assignedUserId, user.id);
   }
 
   @Get('sub-agents')
@@ -170,4 +131,45 @@ export class ConversationsController {
   ) {
     return this.conversationsService.receiveIncomingMessage(channel, externalId, clientNickname, text);
   }
+
+  @Get(':id/messages')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Obtener los mensajes de una conversación específica' })
+  async getMessages(@Param('id', ParseUUIDPipe) id: string) {
+    return this.conversationsService.findMessages(id);
+  }
+
+  @Post(':id/messages')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Enviar un mensaje manual (intervención humana)' })
+  async sendManualMessage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @GetUser() user: User,
+    @Body() body: SendManualMessageDto,
+  ) {
+    return this.conversationsService.sendManualMessage(id, user.id, body.content);
+  }
+
+  @Patch(':id/bot-status')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Activar o desactivar el bot en una conversación' })
+  async toggleBotStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @GetUser() user: User,
+    @Body() body: ToggleBotStatusDto,
+  ) {
+    return this.conversationsService.toggleBotStatus(id, body.botActive, user.id);
+  }
+
+  @Patch(':id/assign')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Reasignar la conversación a otro ejecutivo' })
+  async assignUser(
+    @Param('id', ParseUUIDPipe) id: string,
+    @GetUser() user: User,
+    @Body() body: AssignUserDto,
+  ) {
+    return this.conversationsService.assignUser(id, body.assignedUserId || null, user.id);
+  }
 }
+

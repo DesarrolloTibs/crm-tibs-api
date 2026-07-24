@@ -25,14 +25,26 @@ export class ProductsService {
 
   async create(createProductDto: CreateProductDto, currentUser: User): Promise<Product> {
     const userId = currentUser.id || (currentUser as any).userId;
+
+    let validUserId: string | null = null;
+    if (userId) {
+      const userExists = await this.productRepository.manager
+        .getRepository(User)
+        .findOne({ where: { id: userId } });
+      if (userExists) {
+        validUserId = userId;
+      }
+    }
+
     const product = this.productRepository.create({
       ...createProductDto,
-      createdById: userId || null,
+      createdById: validUserId,
     });
     const saved = await this.productRepository.save(product);
     await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.requiere_analisis);
     return saved;
   }
+
 
   findAll(): Promise<Product[]> {
     return this.productRepository.find({
