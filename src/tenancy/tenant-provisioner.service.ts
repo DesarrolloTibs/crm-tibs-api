@@ -276,9 +276,12 @@ export class TenantProvisionerService {
           "watsonxEmbeddingModel" varchar(100) NOT NULL DEFAULT 'ibm/slate-125m-english-rtrvr',
           "reminderOffsetMinutes" integer NOT NULL DEFAULT 60,
           "maxNewTokens" integer NOT NULL DEFAULT 2048,
+          "historyMessageLimit" integer NOT NULL DEFAULT 10,
           "defaultUserId" uuid NULL REFERENCES "${schemaName}".users(id) ON DELETE SET NULL,
           CONSTRAINT pk_ai_agent_configs PRIMARY KEY (id)
         );
+
+        ALTER TABLE "${schemaName}".ai_agent_configs ADD COLUMN IF NOT EXISTS "historyMessageLimit" integer DEFAULT 10;
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".ai_sub_agents (
           id uuid NOT NULL DEFAULT gen_random_uuid(),

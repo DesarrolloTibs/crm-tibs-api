@@ -278,10 +278,37 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
     return {};
   }
 
+  private async ensureHistoryMessageLimitColumnExists(): Promise<void> {
+    try {
+      const tenants: any[] = await this.aiAgentConfigRepository.manager.query(
+        `SELECT schema_name FROM public.tenants WHERE is_active = true`
+      );
+      for (const t of tenants) {
+        try {
+          await this.aiAgentConfigRepository.manager.query(
+            `ALTER TABLE "${t.schema_name}".ai_agent_configs ADD COLUMN IF NOT EXISTS "historyMessageLimit" integer DEFAULT 10;`
+          );
+        } catch (err: any) {}
+      }
+      try {
+        await this.aiAgentConfigRepository.manager.query(
+          `ALTER TABLE public.ai_agent_configs ADD COLUMN IF NOT EXISTS "historyMessageLimit" integer DEFAULT 10;`
+        );
+      } catch (err: any) {}
+    } catch (e: any) {
+      try {
+        await this.aiAgentConfigRepository.manager.query(
+          `ALTER TABLE ai_agent_configs ADD COLUMN IF NOT EXISTS "historyMessageLimit" integer DEFAULT 10;`
+        );
+      } catch (err: any) {}
+    }
+  }
+
   /**
    * Obtiene la configuración activa del Agente de IA para el tenant. Si no existe, crea una por defecto.
    */
   async getOrInitConfig(): Promise<AiAgentConfig> {
+    await this.ensureHistoryMessageLimitColumnExists();
     let config = await this.aiAgentConfigRepository.findOne({ where: {} });
     if (!config) {
       config = this.aiAgentConfigRepository.create({
@@ -397,6 +424,7 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
         context: data.context ?? '',
         temperature: data.temperature ?? 0.7,
         reminderOffsetMinutes: data.reminderOffsetMinutes ?? 60,
+        historyMessageLimit: data.historyMessageLimit ?? 10,
         defaultUserId: data.defaultUserId ?? null,
       });
     } else {
@@ -406,6 +434,7 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
         defaultReplies: data.defaultReplies,
         temperature: data.temperature,
         reminderOffsetMinutes: data.reminderOffsetMinutes,
+        historyMessageLimit: data.historyMessageLimit,
         defaultUserId: data.defaultUserId,
       });
     }
@@ -463,29 +492,33 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
     }
 
     try {
-      // 1. Obtener el historial reciente (excluyendo logs de sistema)
-      const messages = await this.messageRepository.find({
-        where: { conversationId: conversation.id },
-        order: { createdAt: 'DESC' },
-        take: 6,
-      });
+      // 1. Obtener el historial reciente omnicanal (excluyendo logs de sistema) según límite configurado
+      const historyLimit = config.historyMessageLimit && config.historyMessageLimit > 0 ? config.historyMessageLimit : 10;
+      let messages: Message[] = [];
+
+      if (conversation.clientId) {
+        messages = await this.messageRepository.createQueryBuilder('m')
+          .leftJoinAndSelect('m.conversation', 'c')
+          .where('c.clientId = :clientId', { clientId: conversation.clientId })
+          .orderBy('m.createdAt', 'DESC')
+          .take(historyLimit)
+          .getMany();
+      } else {
+        messages = await this.messageRepository.find({
+          where: { conversationId: conversation.id },
+          order: { createdAt: 'DESC' },
+          take: historyLimit,
+          relations: ['conversation'],
+        });
+      }
       messages.reverse();
+
       const historyText = messages
         .filter(m => m.sender !== 'system')
-        .map(m => `${m.sender === 'contact' ? 'Cliente' : 'Agente'}: ${m.content}`)
+        .map(m => `[${(m.conversation?.channel || conversation.channel).toUpperCase()}] ${m.sender === 'contact' ? 'Cliente' : 'Agente'}: ${m.content}`)
         .join('\n');
 
-      // Historial extendido para el enrutador (8 mensajes para no perder el contexto del hilo)
-      const routerMessages = await this.messageRepository.find({
-        where: { conversationId: conversation.id },
-        order: { createdAt: 'DESC' },
-        take: 8,
-      });
-      routerMessages.reverse();
-      const routerHistoryText = routerMessages
-        .filter(m => m.sender !== 'system')
-        .map(m => `${m.sender === 'contact' ? 'Cliente' : 'Agente'}: ${m.content}`)
-        .join('\n');
+      const routerHistoryText = historyText;
 
       // 2. Obtener lista de tipos de actividad disponibles
       const activityTypes = await this.activitiesService.findAllTypes();
@@ -531,9 +564,10 @@ ${subAgentsDescriptionText}
 - Clave: "general" - Descripción: "Úsala si el mensaje del cliente es un saludo, despedida, agradecimiento, charla informal (small talk), preguntas generales cortas que no requieran herramientas, o si ninguna de las otras claves es aplicable."
 
 [REGLAS DE CONTINUIDAD Y CONTEXTO GENERAL]
+- PREGUNTAS SOBRE PRODUCTOS, CATÁLOGO O COTIZACIONES: Si el mensaje del cliente contiene cualquier consulta sobre productos, servicios, catálogo, modelos, existencias o precios (por ejemplo: "Hola, qué productos tienen?", "Buenas tardes, vendes laptops?", "qué licencias manejan"), DEBES clasificarlo INMEDIATAMENTE en la ruta "comercial", sin importar que el mensaje comience con un saludo como "Hola" o "Buenos días".
 - Analiza la conversación histórica en [HISTORIAL DE CONVERSACIÓN RECIENTE] y el [RESUMEN DE LAS CONVERSACIONES PASADAS] como el hilo conductor de la conversación.
 - Si el cliente está dando una respuesta breve, una continuación, o confirmaciones simples (ej: 'sí', 'no', 'está bien', 'de acuerdo', 'agenda la demo', 'laptops'), NO lo derives a 'general'. Mantén el diálogo en la ruta del sub-agente activo con el que ya venía interactuando (ej: 'comercial' si hablaban de productos/precios, o 'seguimiento' si hablaban de agendar).
-- Solo cambia la ruta a 'general' si el cliente de verdad cambia de tema por completo a algo irrelevante (saludos o plática libre) o si la plática recién empieza y es un saludo.
+- Solo usa la ruta 'general' si el cliente únicamente saluda ("Hola", "Buenos días"), se despide, da las gracias o plática libre sin preguntar por productos, agendamientos ni soporte técnico.
 
 [REGLA DE RESPUESTA OBLIGATORIA]
 Responde ÚNICAMENTE con un objeto JSON por turno. Sin texto antes o después.
@@ -912,6 +946,19 @@ Asistente:`;
         try {
           const action = JSON.parse(agentResponse);
           
+          // Mapeo / Normalización de nombres de herramientas alucinadas
+          const toolAliases: Record<string, string> = {
+            getProductCatalog: 'consult_product_catalog',
+            consultCatalog: 'consult_product_catalog',
+            catalogSearch: 'consult_product_catalog',
+            searchCatalog: 'consult_product_catalog',
+            getProducts: 'consult_product_catalog',
+            queryCatalog: 'consult_product_catalog',
+          };
+          if (action.tool_name && toolAliases[action.tool_name]) {
+            action.tool_name = toolAliases[action.tool_name];
+          }
+
           if (!action.tool_name || action.tool_name === 'undefined') {
             // Detectar si el modelo devolvió el resultado de la tool en lugar de un final_answer
             // (el modelo a veces repite el JSON de la tool en vez de generar una respuesta)
@@ -966,9 +1013,19 @@ Asistente:`;
           } else {
             // Seguridad: Validar que el sub-agente tenga permitido ejecutar esta herramienta
             if (!allowedTools.includes(action.tool_name)) {
-              this.logger.warn(`Sub-Agente '${state.route}' intentó usar una tool no permitida: '${action.tool_name}'`);
-              // Si la tool no está permitida, cortamos el bucle respondiendo directamente lo que el agente pensaba decirle al cliente
-              const fallback = action.tool_input?.answer || action.answer || `La herramienta '${action.tool_name}' no está disponible actualmente.`;
+              this.logger.warn(`Sub-Agente '${state.route}' intentó usar una tool no permitida o no configurada: '${action.tool_name}'`);
+              
+              // Si la tool es de consulta de catálogo, permitimos su ejecución para obtener productos y responder adecuadamente
+              if (action.tool_name === 'consult_product_catalog') {
+                return {
+                  nextAction: 'call_tool',
+                  toolCallName: 'consult_product_catalog',
+                  toolCallInput: action.tool_input || { query: incomingContent }
+                };
+              }
+
+              // Si la tool no está permitida, cortamos el bucle respondiendo de forma conversacional en lugar de mostrar errores técnicos al cliente
+              const fallback = action.tool_input?.answer || action.answer || 'Con gusto le doy seguimiento a tu consulta. ¿Me podrías indicar más detalles sobre lo que necesitas?';
               return {
                 nextAction: 'respond',
                 response: fallback

@@ -57,6 +57,9 @@ export class AiAgentConfig {
   @Column({ type: 'integer', default: 2048 })
   maxNewTokens: number;
 
+  @Column({ type: 'integer', default: 10 })
+  historyMessageLimit: number;
+
   @Column({ type: 'uuid', nullable: true })
   defaultUserId: string | null;
 

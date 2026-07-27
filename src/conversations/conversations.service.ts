@@ -116,6 +116,26 @@ export class ConversationsService {
   }
 
   /**
+   * Enlaza automáticamente conversaciones huérfanas de un cliente por su número telefónico o correo.
+   */
+  async autoLinkClientConversations(clientId: string, phone?: string | null): Promise<void> {
+    if (!clientId || !phone) return;
+    try {
+      const cleanPhone = phone.trim().replace(/^\+/, '');
+      await this.conversationRepository.createQueryBuilder()
+        .update(Conversation)
+        .set({ clientId })
+        .where('clientId IS NULL AND (externalId = :phone OR externalId = :cleanPhone)', {
+          phone: phone.trim(),
+          cleanPhone,
+        })
+        .execute();
+    } catch (err: any) {
+      this.logger.warn(`No se pudieron auto-vincular conversaciones para cliente ${clientId}: ${err.message}`);
+    }
+  }
+
+  /**
    * Obtiene una conversación por canal e ID externo (por ejemplo, visitorId de webchat).
    */
   async findByChannelAndExternalId(channel: string, externalId: string): Promise<Conversation | null> {
