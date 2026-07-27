@@ -4,11 +4,13 @@ import { ConfigModule } from '@nestjs/config';
 import { RagService } from './rag.service';
 import { RagController } from './rag.controller';
 import { AiAgentConfig } from '../conversations/entities/ai-agent-config.entity';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([AiAgentConfig]),
     ConfigModule,
+    SubscriptionsModule,
   ],
   providers: [RagService],
   controllers: [RagController],

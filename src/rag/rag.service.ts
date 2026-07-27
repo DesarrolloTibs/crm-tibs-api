@@ -1,9 +1,10 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, HttpException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AiAgentConfig } from '../conversations/entities/ai-agent-config.entity';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 
 import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
@@ -117,6 +118,7 @@ export class RagService implements OnModuleInit {
     @InjectRepository(AiAgentConfig)
     private readonly aiAgentConfigRepository: Repository<AiAgentConfig>,
     private readonly configService: ConfigService,
+    private readonly subscriptionValidator: SubscriptionValidatorService,
   ) {}
 
   async onModuleInit() {
@@ -262,6 +264,12 @@ export class RagService implements OnModuleInit {
    * Recibe el buffer de un archivo PDF, extrae su texto, lo segmenta y genera embeddings.
    */
   async ingestPdf(fileBuffer: Buffer, fileName: string, productKey: string): Promise<number> {
+    // ── Pre-validación de suscripción (solo esquemas tenant) ──
+    const activeSchema = TenantContextService.getTenantSchema();
+    if (activeSchema && activeSchema !== 'public') {
+      await this.subscriptionValidator.checkSubscriptionLimits(activeSchema);
+    }
+
     const store = await this.initializeVectorStore();
 
     // 1. Extraer texto del PDF utilizando la clase PDFParse (pdf-parse v2)
@@ -315,6 +323,12 @@ export class RagService implements OnModuleInit {
    * Busca fragmentos similares a la query utilizando filtros por metadata de producto.
    */
   async searchSimilar(query: string, limit: number = 3, productKey?: string): Promise<any[]> {
+    // ── Pre-validación de suscripción (solo esquemas tenant) ──
+    const activeSchema = TenantContextService.getTenantSchema();
+    if (activeSchema && activeSchema !== 'public') {
+      await this.subscriptionValidator.checkSubscriptionLimits(activeSchema);
+    }
+
     const store = await this.initializeVectorStore();
     
     // Si cambia la API Key o el proveedor en caliente, reinicializamos la conexión
@@ -393,6 +407,12 @@ export class RagService implements OnModuleInit {
     requiereAnalisis?: boolean,
   ): Promise<void> {
     try {
+      // ── Pre-validación de suscripción (solo esquemas tenant) ──
+      const activeSchema = TenantContextService.getTenantSchema();
+      if (activeSchema && activeSchema !== 'public') {
+        await this.subscriptionValidator.checkSubscriptionLimits(activeSchema);
+      }
+
       const store = await this.initializeVectorStore();
 
       // Generar la llave única del producto (slug)

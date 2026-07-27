@@ -32,9 +32,23 @@ export class TenantsService implements OnModuleInit {
     const tenantInfo = await this.subscriptionValidator.getTenantPlanInfo(activeSchema);
 
     let tokensUsed = 0;
+    let tokensExtraUsed = 0;
     let tokensLimit = tenantInfo?.tokens_limit || 300000;
     let nextRenewal = tenantInfo?.next_renewal_date || null;
     let planName = tenantInfo?.plan_name || 'Plan Pro';
+    let price = tenantInfo?.price || 0;
+    let allowExtra = tenantInfo?.allow_extra ?? false;
+    let tenantName = tenantInfo?.tenant_name || '';
+    let isActive = tenantInfo?.is_active ?? true;
+    let tenantId = tenantInfo?.tenant_id || null;
+    let logo: string | null = null;
+
+    if (tenantInfo?.tenant_id) {
+      const fullTenant = await this.tenantRepository.findOne({ where: { id: tenantInfo.tenant_id } });
+      if (fullTenant) {
+        logo = fullTenant.logo;
+      }
+    }
 
     if (tenantInfo && nextRenewal) {
       const months = tenantInfo.billing_period_months || 1;
@@ -42,19 +56,25 @@ export class TenantsService implements OnModuleInit {
       periodStart.setMonth(periodStart.getMonth() - months);
       const periodEnd = nextRenewal;
 
-      tokensUsed = await this.subscriptionValidator.getTokensUsedInPeriod(
+      const consumptionResult = await this.subscriptionValidator.getTokensConsumptionInPeriod(
         tenantInfo.schema_name,
         periodStart,
-        periodEnd
+        periodEnd,
+        tokensLimit
       );
+      tokensUsed = consumptionResult.tokensUsed;
+      tokensExtraUsed = consumptionResult.tokensExtraUsed;
     } else if (activeSchema !== 'public') {
       const now = new Date();
       const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      tokensUsed = await this.subscriptionValidator.getTokensUsedInPeriod(
+      const consumptionResult = await this.subscriptionValidator.getTokensConsumptionInPeriod(
         activeSchema,
         periodStart,
-        now
+        now,
+        tokensLimit
       );
+      tokensUsed = consumptionResult.tokensUsed;
+      tokensExtraUsed = consumptionResult.tokensExtraUsed;
     }
 
     // 2. Conteo de documentos ingestados en RAG
@@ -71,13 +91,38 @@ export class TenantsService implements OnModuleInit {
     const documentsLimit = 101;
 
     return {
+      tenant_id: tenantId,
+      tenant_name: tenantName,
+      schema_name: activeSchema,
+      is_active: isActive,
+      allow_extra: allowExtra,
+      logo: logo,
       documents_used: documentsUsed,
       documents_limit: documentsLimit,
       tokens_used: tokensUsed,
+      tokens_extra_used: tokensExtraUsed,
       tokens_limit: tokensLimit,
       next_renewal_date: nextRenewal,
       plan_name: planName,
+      price: price,
     };
+  }
+
+  async getCurrentTenant(schemaName?: string) {
+    const activeSchema = schemaName || TenantContextService.getTenantSchema() || 'public';
+    const tenantInfo = await this.subscriptionValidator.getTenantPlanInfo(activeSchema);
+    if (!tenantInfo) {
+      const publicTenant = await this.tenantRepository.findOne({ where: { schema_name: 'public' }, relations: ['plan'] });
+      return publicTenant || null;
+    }
+    const tenant = await this.tenantRepository.findOne({ where: { id: tenantInfo.tenant_id }, relations: ['plan'] });
+    return tenant;
+  }
+
+  async updateLogo(tenantId: number, logoUrl: string) {
+    const tenant = await this.findOne(tenantId);
+    tenant.logo = logoUrl;
+    return this.tenantRepository.save(tenant);
   }
 
 

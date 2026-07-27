@@ -1,4 +1,4 @@
-import { Injectable, Logger, Inject, forwardRef, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef, OnModuleInit, HttpException } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -1248,7 +1248,25 @@ Asistente:`;
         route: selectedRoute,
         isHandedOff,
       };
-    } catch (err) {
+    } catch (err: any) {
+      // ── Manejo específico de errores de suscripción / límite de recursos ──
+      if (err instanceof HttpException && err.getStatus() === 402) {
+        const payload = err.getResponse() as any;
+        const code = payload?.code || 'SUBSCRIPTION_ERROR';
+
+        this.logger.warn(`[Subscription] Solicitud de IA bloqueada para tenant — código: ${code}`);
+
+        // No enviar ningún mensaje de respuesta al chat.
+        // La notificación in-app y por correo se gestionará en triggerAiReply.
+        return {
+          reply: '',
+          route: 'subscription_blocked',
+          isHandedOff: false,
+          subscriptionCode: code,
+          subscriptionPayload: payload,
+        } as any;
+      }
+
       this.logger.error('Error en el motor conversacional LangGraph:', err);
       return {
         reply: 'Lo siento, en este momento no puedo procesar tu solicitud de forma automática.',
@@ -1693,8 +1711,16 @@ Asistente:`;
 
   /**
    * Invoca el modelo correspondiente según el proveedor configurado (Gemini, OpenAI, Watsonx).
+   * Incluye pre-validación de suscripción para esquemas de tenant (no aplica a 'public').
    */
   private async callLLM(config: AiAgentConfig, prompt: string, temperatureOverride?: number): Promise<string> {
+    // ── Pre-validación de suscripción (solo esquemas tenant) ──
+    const activeSchema = TenantContextService.getTenantSchema();
+    if (activeSchema && activeSchema !== 'public') {
+      const checkResult = await this.subscriptionValidator.checkSubscriptionLimits(activeSchema);
+      // Si is_extra es true, los tokens se registrarán como extra al finalizar
+    }
+
     const provider = config.modelProvider;
     const model = config.modelName;
 

@@ -186,6 +186,10 @@ export class UsersService implements OnModuleInit {
   async updateStatus(id: string, updateUserStatusDto: UpdateUserStatusDto): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema === 'public') {
+      await this.dataSource.query(
+        `UPDATE public.users SET "isActive" = $1 WHERE id::text = $2 AND LOWER(role::text) = 'superadmin'`,
+        [updateUserStatusDto.isActive, id]
+      );
       return this.findOneById(id);
     }
     await this.ensureTenantUserColumns(tenantSchema);
@@ -214,7 +218,10 @@ export class UsersService implements OnModuleInit {
   async findAllActive(): Promise<User[]> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema === 'public') {
-      return this.findAll();
+      const rows = await this.dataSource.query(
+        `SELECT id, username, email, role, "isActive" FROM public.users WHERE "isActive" = true AND LOWER(role::text) = 'superadmin' ORDER BY id DESC`
+      );
+      return rows as User[];
     }
     await this.ensureTenantUserColumns(tenantSchema);
     const rows = await this.dataSource.query(

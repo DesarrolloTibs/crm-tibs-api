@@ -21,11 +21,14 @@ export class AuthService {
     // 1. Verificar primero en el esquema public (public.users) para cuentas de SuperAdmin
     try {
       const publicUsers = await this.dataSource.query(
-        `SELECT id, username, email, password, role FROM public.users WHERE LOWER(email) = LOWER($1) AND role = 'superadmin'`,
+        `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE LOWER(email) = LOWER($1) AND role = 'superadmin'`,
         [email]
       );
       if (publicUsers.length > 0) {
         const su = publicUsers[0];
+        if (su.isActive === false) {
+          throw new BadRequestException('La cuenta de superadmin está inactiva. Contacte a un administrador.');
+        }
         if (await bcrypt.compare(pass, su.password)) {
           return {
             id: su.id,
@@ -37,6 +40,7 @@ export class AuthService {
         }
       }
     } catch (err) {
+      if (err instanceof BadRequestException) throw err;
       // Ignorar si la tabla no se ha creado aún
     }
 
@@ -44,6 +48,9 @@ export class AuthService {
     // 2. Si no es SuperAdmin, validar en esquemas locales de tenant (roles: admin y executive)
     try {
       const user = await this.usersService.findOneByEmail(email);
+      if (user && user.isActive === false) {
+        throw new BadRequestException('Su cuenta se encuentra inactiva.');
+      }
       const isMatch = user && (await bcrypt.compare(pass, user.password));
 
       if (isMatch) {
@@ -51,6 +58,7 @@ export class AuthService {
         return result;
       }
     } catch (err) {
+      if (err instanceof BadRequestException) throw err;
       // Usuario local no encontrado
     }
 

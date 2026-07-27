@@ -53,20 +53,56 @@ export class SubscriptionValidatorService {
   }
 
   /**
-   * Calcula los tokens consumidos en el período de facturación activo
-   * del esquema dado donde is_extra = FALSE.
+   * Obtiene la suma total de tokens consumidos en el período de facturación activo
+   * y los desglosa dinámicamente en consumo base (hasta tokensLimit) y consumo extra.
+   */
+  async getTokensConsumptionInPeriod(
+    schemaName: string, 
+    periodStart: Date, 
+    periodEnd: Date,
+    tokensLimit: number
+  ): Promise<{ tokensUsed: number; tokensExtraUsed: number }> {
+    try {
+      const result = await this.dataSource.query(
+        `SELECT COALESCE(SUM(total_tokens), 0) AS total 
+         FROM "${schemaName}".transaction_history 
+         WHERE fecha_procesamiento >= $1 
+           AND fecha_procesamiento <= $2`,
+        [periodStart, periodEnd]
+      );
+
+      const totalAccumulated = result[0]?.total ? parseInt(result[0].total, 10) : 0;
+
+      if (tokensLimit <= 0) {
+        return { tokensUsed: totalAccumulated, tokensExtraUsed: 0 };
+      }
+
+      const tokensUsed = Math.min(totalAccumulated, tokensLimit);
+      const tokensExtraUsed = Math.max(0, totalAccumulated - tokensLimit);
+
+      return { tokensUsed, tokensExtraUsed };
+    } catch (e) {
+      return { tokensUsed: 0, tokensExtraUsed: 0 };
+    }
+  }
+
+  /**
+   * Obtiene el acumulado total de tokens consumidos en el período activo.
    */
   async getTokensUsedInPeriod(schemaName: string, periodStart: Date, periodEnd: Date): Promise<number> {
-    const result = await this.dataSource.query(
-      `SELECT COALESCE(SUM(total_tokens), 0) AS total 
-       FROM "${schemaName}".transaction_history 
-       WHERE is_extra = false 
-         AND fecha_procesamiento >= $1 
-         AND fecha_procesamiento <= $2`,
-      [periodStart, periodEnd]
-    );
+    try {
+      const result = await this.dataSource.query(
+        `SELECT COALESCE(SUM(total_tokens), 0) AS total 
+         FROM "${schemaName}".transaction_history 
+         WHERE fecha_procesamiento >= $1 
+           AND fecha_procesamiento <= $2`,
+        [periodStart, periodEnd]
+      );
 
-    return result[0]?.total ? parseInt(result[0].total, 10) : 0;
+      return result[0]?.total ? parseInt(result[0].total, 10) : 0;
+    } catch (e) {
+      return 0;
+    }
   }
 
   /**
@@ -76,6 +112,11 @@ export class SubscriptionValidatorService {
     schemaName: string,
     estimatedTokens: number = 0
   ): Promise<CheckSubscriptionResult> {
+    // Esquema public (superadmin / sistema global) → no aplican restricciones de plan
+    if (!schemaName || schemaName === 'public') {
+      return { is_extra: false };
+    }
+
     const tenantInfo = await this.getTenantPlanInfo(schemaName);
 
     // a) Validar que el tenant tenga plan asignado
@@ -148,11 +189,30 @@ export class SubscriptionValidatorService {
     isExtra: boolean = false,
     actionName?: string
   ): Promise<void> {
+    let calculatedIsExtra = isExtra;
+    if (!calculatedIsExtra) {
+      try {
+        const tenantInfo = await this.getTenantPlanInfo(schemaName);
+        if (tenantInfo && tenantInfo.next_renewal_date && tenantInfo.tokens_limit > 0) {
+          const months = tenantInfo.billing_period_months || 1;
+          const periodStart = new Date(tenantInfo.next_renewal_date);
+          periodStart.setMonth(periodStart.getMonth() - months);
+          
+          const currentTotal = await this.getTokensUsedInPeriod(schemaName, periodStart, tenantInfo.next_renewal_date);
+          if (currentTotal >= tenantInfo.tokens_limit) {
+            calculatedIsExtra = true;
+          }
+        }
+      } catch (err) {
+        // Ignorar fallback
+      }
+    }
+
     await this.dataSource.query(
       `INSERT INTO "${schemaName}".transaction_history 
        (prompt_tokens, completion_tokens, total_tokens, fecha_procesamiento, is_extra, action_name) 
        VALUES ($1, $2, $3, now(), $4, $5)`,
-      [promptTokens, completionTokens, totalTokens, isExtra, actionName || null]
+      [promptTokens, completionTokens, totalTokens, calculatedIsExtra, actionName || null]
     );
   }
 }

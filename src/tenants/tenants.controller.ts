@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, ParseIntPipe, Query } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, ParseIntPipe, Query, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 
 import { TenantsService } from './tenants.service';
 import { ProvisionTenantDto } from '../tenancy/tenant-provisioner.service';
@@ -18,9 +19,27 @@ export class TenantsController {
     return this.tenantsService.getConsumption(schemaName);
   }
 
+  @Get('my-tenant')
+  async getMyTenant(@Query('schemaName') schemaName?: string) {
+    return this.tenantsService.getCurrentTenant(schemaName);
+  }
+
   @Get()
   async findAll() {
     return this.tenantsService.findAll();
+  }
+
+  @Post(':id/logo')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadLogo(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new Error('Archivo de imagen no proporcionado');
+    }
+    const logoUrl = `/${file.path.replace(/\\/g, '/')}`;
+    return this.tenantsService.updateLogo(id, logoUrl);
   }
 
 

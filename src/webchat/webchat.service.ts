@@ -1,4 +1,4 @@
-import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, HttpException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { AiAgentService } from '../conversations/ai-agent.service';
@@ -242,6 +242,22 @@ Genera tu respuesta JSON:`;
 
     } catch (error: any) {
       this.logger.error(`[WebChat] Error procesando consulta: ${error.message}`, error.stack);
+
+      // ── Manejo específico de errores de suscripción / límite de recursos ──
+      if (error instanceof HttpException && error.getStatus() === 402) {
+        const payload = error.getResponse() as any;
+        const code = payload?.code || 'SUBSCRIPTION_ERROR';
+        let msg = 'No es posible procesar consultas de IA en este momento.';
+        if (code === 'TOKENS_LIMIT_EXCEEDED') {
+          msg = 'Se ha alcanzado el límite de recursos de IA del plan actual. Contacte a un administrador para ampliar su suscripción.';
+        } else if (code === 'SUBSCRIPTION_EXPIRED') {
+          msg = 'La suscripción de la organización ha expirado. Contacte a un administrador para renovarla.';
+        } else if (code === 'PLAN_NOT_ASSIGNED') {
+          msg = 'La organización no cuenta con un plan de suscripción activo.';
+        }
+        return { answer: msg };
+      }
+
       if (error instanceof ForbiddenException) {
         throw error;
       }

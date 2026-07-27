@@ -254,8 +254,47 @@ export class ConversationsService {
    */
   private async triggerAiReply(conversation: Conversation, text: string) {
     try {
-      const { reply, route, isHandedOff } = await this.aiAgentService.processIncomingMessage(conversation, text);
-      
+      const result = await this.aiAgentService.processIncomingMessage(conversation, text);
+      const { reply, route, isHandedOff } = result;
+
+      // ── Bloqueo por suscripción: no enviar mensaje, solo notificación in-app y correo ──
+      if (route === 'subscription_blocked') {
+        const subscriptionCode = (result as any).subscriptionCode || 'SUBSCRIPTION_ERROR';
+        const subscriptionPayload = (result as any).subscriptionPayload || {};
+
+        let notifTitle = '⚠️ Límite de Suscripción Alcanzado';
+        let notifMessage = 'El asistente de IA no pudo procesar un mensaje entrante porque se alcanzó un límite de la suscripción.';
+
+        if (subscriptionCode === 'TOKENS_LIMIT_EXCEEDED') {
+          const used = subscriptionPayload.tokens_used?.toLocaleString() || '—';
+          const limit = subscriptionPayload.tokens_limit?.toLocaleString() || '—';
+          notifTitle = '⚠️ Límite de Tokens de IA Alcanzado';
+          notifMessage = `Se ha alcanzado el límite de tokens de IA del plan actual (${used} / ${limit} tokens). Los mensajes entrantes no serán procesados por la IA hasta que se renueve o amplíe la suscripción.`;
+        } else if (subscriptionCode === 'SUBSCRIPTION_EXPIRED') {
+          notifTitle = '🚫 Suscripción Expirada';
+          notifMessage = 'La suscripción de la organización ha expirado. Los mensajes entrantes no serán procesados por la IA hasta que se renueve el plan.';
+        } else if (subscriptionCode === 'PLAN_NOT_ASSIGNED') {
+          notifTitle = '📋 Plan No Asignado';
+          notifMessage = 'La organización no cuenta con un plan de suscripción asignado. Los mensajes entrantes no serán procesados por la IA.';
+        }
+
+        // Notificar a TODOS los administradores del tenant vía notificación in-app + correo
+        const adminUsers = await this.userRepository.find({ where: { role: Role.Admin, isActive: true } });
+        for (const admin of adminUsers) {
+          await this.notificationsService.createAndSendNotification(
+            admin.id,
+            notifTitle,
+            notifMessage,
+            'subscription_limit',
+            undefined,
+            true, // sendEmail = true
+          );
+        }
+
+        this.logger.warn(`[Subscription] Notificación enviada a ${adminUsers.length} admin(s) del tenant por bloqueo de IA (${subscriptionCode}).`);
+        return; // No enviar nada al chat
+      }
+
       if (reply && reply.trim() !== '') {
         const botMessage = this.messageRepository.create({
           conversationId: conversation.id,
