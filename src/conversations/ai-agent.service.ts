@@ -1586,10 +1586,10 @@ Asistente:`;
           let email = input.correo || null;
           let phone = input.telefono ? String(input.telefono).trim() : null;
 
-          // Búsqueda previa por teléfono para unificar cliente existente si ya fue registrado previamente en el CRM
+          // Búsqueda previa por teléfono (variantes e internacional) para unificar cliente existente si ya fue registrado previamente en el CRM
           let client: Client | null = null;
           if (phone) {
-            client = await this.clientRepository.findOne({ where: { telefono: phone } });
+            client = await this.clientsService.findByPhone(phone);
           }
 
           if (client) {
@@ -1625,7 +1625,7 @@ Asistente:`;
 
           // Si nos dan un teléfono y existe otro cliente con ese teléfono en la BD, unificamos a ese cliente
           if (phone) {
-            const existingClient = await this.clientRepository.findOne({ where: { telefono: phone } });
+            const existingClient = await this.clientsService.findByPhone(phone);
             if (existingClient) {
               conversation.clientId = existingClient.id;
               if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {

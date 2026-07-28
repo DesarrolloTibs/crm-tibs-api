@@ -5,6 +5,7 @@ import { Client } from './entities/client.entity';
 import { Company } from '../companies/entities/company.entity';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto, UpdateClientStatusDto } from './dto/update-client.dto';
+import { PhoneUtils } from '../common/utils/phone.utils';
 
 
 @Injectable()
@@ -15,6 +16,28 @@ export class ClientsService {
     @InjectRepository(Company)
     private readonly companyRepository: Repository<Company>,
   ) {}
+
+  /**
+   * Busca un cliente existente por número telefónico considerando prefijos internacionales y variantes de canal.
+   */
+  async findByPhone(phone: string | null | undefined): Promise<Client | null> {
+    if (!phone) return null;
+    const variants = PhoneUtils.getPhoneVariants(phone);
+    if (!variants || variants.length === 0) return null;
+
+    const suffix = PhoneUtils.extractSubscriberSuffix(phone);
+
+    const qb = this.clientRepository.createQueryBuilder('client')
+      .leftJoinAndSelect('client.ejecutivo', 'ejecutivo')
+      .leftJoinAndSelect('client.company', 'company')
+      .where('client.telefono IN (:...variants)', { variants });
+
+    if (suffix && suffix.length >= 8) {
+      qb.orWhere("REGEXP_REPLACE(client.telefono, '[^0-9]', '', 'g') LIKE :suffix", { suffix: `%${suffix}` });
+    }
+
+    return qb.getOne();
+  }
 
   async create(createClientDto: CreateClientDto): Promise<Client> {
     let companyId = createClientDto.companyId;

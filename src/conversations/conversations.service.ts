@@ -12,6 +12,8 @@ import { ConversationsGateway } from './conversations.gateway';
 import { AiAgentService } from './ai-agent.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { ClientsService } from '../clients/clients.service';
+import { PhoneUtils } from '../common/utils/phone.utils';
 
 
 @Injectable()
@@ -34,6 +36,7 @@ export class ConversationsService {
     private readonly aiAgentService: AiAgentService,
     @Inject(forwardRef(() => NotificationsService))
     private readonly notificationsService: NotificationsService,
+    private readonly clientsService: ClientsService,
   ) {}
 
   /**
@@ -121,15 +124,20 @@ export class ConversationsService {
   async autoLinkClientConversations(clientId: string, phone?: string | null): Promise<void> {
     if (!clientId || !phone) return;
     try {
-      const cleanPhone = phone.trim().replace(/^\+/, '');
-      await this.conversationRepository.createQueryBuilder()
+      const variants = PhoneUtils.getPhoneVariants(phone);
+      const suffix = PhoneUtils.extractSubscriberSuffix(phone);
+      if (variants.length === 0) return;
+
+      const qb = this.conversationRepository.createQueryBuilder()
         .update(Conversation)
         .set({ clientId })
-        .where('clientId IS NULL AND (externalId = :phone OR externalId = :cleanPhone)', {
-          phone: phone.trim(),
-          cleanPhone,
-        })
-        .execute();
+        .where('clientId IS NULL AND externalId IN (:...variants)', { variants });
+
+      if (suffix && suffix.length >= 8) {
+        qb.orWhere("clientId IS NULL AND REGEXP_REPLACE(externalId, '[^0-9]', '', 'g') LIKE :suffix", { suffix: `%${suffix}` });
+      }
+
+      await qb.execute();
     } catch (err: any) {
       this.logger.warn(`No se pudieron auto-vincular conversaciones para cliente ${clientId}: ${err.message}`);
     }
@@ -160,12 +168,10 @@ export class ConversationsService {
     if (!conversation) {
       const config = await this.aiAgentService.getOrInitConfig();
       
-      // Intentar resolver cliente existente por teléfono en WhatsApp
+      // Intentar resolver cliente existente por teléfono en WhatsApp usando búsqueda inteligente de variantes
       let linkedClientId: string | null = null;
       if (channel === 'whatsapp') {
-        const existingClient = await this.clientRepository.findOne({
-          where: { telefono: externalId },
-        });
+        const existingClient = await this.clientsService.findByPhone(externalId);
         if (existingClient) {
           linkedClientId = existingClient.id;
           clientNickname = `${existingClient.nombre} ${existingClient.apellido || ''}`.trim();
