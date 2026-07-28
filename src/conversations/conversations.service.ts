@@ -903,4 +903,121 @@ export class ConversationsService {
       this.logger.error(`Error enviando mensaje real por ${channel} a ${externalId}: ${err.message}`);
     }
   }
+
+  /**
+   * Envía un documento/PDF por el canal de origen de la conversación (WhatsApp, Messenger, Instagram, Webchat)
+   * e inserta el registro en el historial de mensajes de la conversación notificando en tiempo real vía WebSockets.
+   */
+  async sendDocumentToExternalChannel(
+    conversation: Conversation,
+    documentUrl: string,
+    filename: string,
+    caption?: string,
+  ): Promise<void> {
+    let docMsgContent = caption ? `${caption}\n📄 [Cotización en PDF] (${filename}): /${documentUrl.replace(/\\/g, '/')}` : `📄 [Cotización en PDF] (${filename}): /${documentUrl.replace(/\\/g, '/')}`;
+    if (!docMsgContent.startsWith('/')) {
+      docMsgContent = docMsgContent.replace(': uploads/', ': /uploads/');
+    }
+
+    try {
+      const docMessage = this.messageRepository.create({
+        conversationId: conversation.id,
+        sender: 'agent',
+        content: docMsgContent,
+      });
+      const savedDoc = await this.messageRepository.save(docMessage);
+      const fullDocMessage = await this.messageRepository.findOne({
+        where: { id: savedDoc.id },
+        relations: ['senderUser'],
+      });
+
+      if (fullDocMessage) {
+        this.gateway.emitMessage(fullDocMessage);
+      }
+    } catch (dbErr) {
+      this.logger.error(`Error guardando o emitiendo mensaje de documento en conversación: ${dbErr.message}`);
+    }
+
+    const channelConfig = await this.channelConfigRepository.findOne({
+      where: { channel: conversation.channel, isActive: true }
+    });
+
+    const { channel, externalId } = conversation;
+    if (!channelConfig || !channelConfig.accessToken) {
+      this.logger.log(`[SIMULADO / MOCK DOCUMENT OUTBOUND] Canal: ${conversation.channel} | Para: ${externalId} | Documento: "${documentUrl}"`);
+      return;
+    }
+
+    const token = channelConfig.accessToken;
+
+    try {
+      if (channel === 'whatsapp') {
+        const phoneId = channelConfig.phoneNumberId;
+        if (!phoneId) {
+          this.logger.warn(`WhatsApp configurado sin phoneNumberId para enviar documento.`);
+          return;
+        }
+
+        const url = `https://graph.facebook.com/v19.0/${phoneId}/messages`;
+        const body = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: externalId,
+          type: 'document',
+          document: {
+            link: documentUrl,
+            filename: filename,
+            caption: caption || `Cotización: ${filename}`,
+          }
+        };
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(`Meta API WhatsApp Document error: ${JSON.stringify(errData)}`);
+        }
+
+        this.logger.log(`[REAL WHATSAPP DOCUMENT OUTBOUND] Documento enviado con éxito a ${externalId}`);
+      } else if (channel === 'messenger' || channel === 'facebook' || channel === 'instagram') {
+        const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${token}`;
+        const body = {
+          recipient: { id: externalId },
+          message: {
+            attachment: {
+              type: 'file',
+              payload: {
+                url: documentUrl,
+                is_reusable: true
+              }
+            }
+          }
+        };
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(`Meta API ${channel} Document error: ${JSON.stringify(errData)}`);
+        }
+
+        this.logger.log(`[REAL ${channel.toUpperCase()} DOCUMENT OUTBOUND] Documento enviado con éxito a ${externalId}`);
+      }
+    } catch (error) {
+      this.logger.error(`Error enviando documento por canal ${channel}: ${error.message}`);
+    }
+  }
 }

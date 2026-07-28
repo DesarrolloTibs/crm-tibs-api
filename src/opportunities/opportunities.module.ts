@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MulterModule } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -7,10 +7,12 @@ import { extname } from 'path';
 
 import { Opportunity } from './entities/opportunity.entity';
 import { OpportunityFile } from './entities/opportunity-file.entity';
+import { OpportunityProduct } from './entities/opportunity-product.entity';
 import { Client } from '../clients/entities/client.entity';
 import { Pipeline } from '../pipelines/entities/pipeline.entity';
 import { Stage } from '../stages/entities/stage.entity';
 import { OpportunitiesService } from './opportunities.service';
+import { QuotationPdfService } from './quotation-pdf.service';
 import { OpportunitiesController } from './opportunities.controller';
 import { Product } from '../products/entities/product.entity';
 import { OpportunityLabel } from './entities/opportunity-label.entity';
@@ -27,16 +29,18 @@ import { ClientsModule } from 'src/clients/clients.module';
 import { StorageModule } from '../storage/storage.module';
 import { InteractionsModule } from '../interactions/interactions.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { ConversationsModule } from '../conversations/conversations.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage, OpportunityFile, Product, OpportunityLabel, BusinessLineOption, DeliveryTypeOption, LicensingOption]),
+    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage, OpportunityFile, OpportunityProduct, Product, OpportunityLabel, BusinessLineOption, DeliveryTypeOption, LicensingOption]),
     UsersModule,
     OpportunityTrackingsModule,
     ClientsModule,
     StorageModule,
     InteractionsModule,
     NotificationsModule,
+    forwardRef(() => ConversationsModule),
 
     MulterModule.register({
       storage: diskStorage({
@@ -59,7 +63,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     }),
   ],
   controllers: [OpportunitiesController, OpportunityLabelsController, OpportunityCatalogsController],
-  providers: [OpportunitiesService, OpportunityLabelsService, OpportunityCatalogsService],
-  exports: [OpportunitiesService],
+  providers: [OpportunitiesService, QuotationPdfService, OpportunityLabelsService, OpportunityCatalogsService],
+  exports: [OpportunitiesService, QuotationPdfService],
 })
-export class OpportunitiesModule { }
+export class OpportunitiesModule { }

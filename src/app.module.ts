@@ -47,6 +47,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware';
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_DATABASE'),
         entities: [__dirname + '/**/*.entity{.ts,.js}'],
+        autoLoadEntities: true,
         synchronize: true, // In production, this should be false and migrations should be used
       }),
       inject: [ConfigService],

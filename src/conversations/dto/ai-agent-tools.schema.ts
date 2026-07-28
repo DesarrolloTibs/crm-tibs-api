@@ -19,6 +19,7 @@ export const CreateOpportunitySchema = z.object({
   moneda: z.enum(['MXN', 'USD']).optional().default('MXN'),
   productIds: z.array(z.string()).optional(),
   nombreProducto: z.string().optional(), // Nombre del producto del catálogo que le interesa
+  cantidad: z.number().positive().optional().default(1), // Cantidad solicitada por el cliente
   lineaNegocio: z.string().optional(), // 'Datos', 'Desarrollo', 'RH', etc.
   tipoEntrega: z.string().optional(), // 'Proyecto', 'Licencia', 'Asignacion', 'Bolsa de Horas', etc.
   licenciamiento: z.string().optional(), // 'Microsoft', 'IBM', 'Qlik', 'Alteryx', 'KNIME', etc.
@@ -30,6 +31,8 @@ export const ModifyOpportunitySchema = z.object({
   descripcion: z.string().optional(),
   montoTotal: z.number().nonnegative().nullable().optional(),
   moneda: z.enum(['MXN', 'USD']).optional(),
+  cantidad: z.number().positive().optional(),
+  nombreProducto: z.string().optional(),
 });
 
 export const CheckAvailabilitySchema = z.object({
@@ -56,3 +59,8 @@ export const ConsultProductCatalogSchema = z.object({
   query: z.string().min(2, 'Ingresa una consulta para el catálogo de productos.'),
   productKey: z.string().nullable().optional().describe('Filtro por identificador del producto.'),
 });
+
+export const SendQuotationPdfSchema = z.object({
+  opportunityId: z.string().uuid('ID de oportunidad no válido (debe ser UUID).').optional(),
+});
+

@@ -27,5 +27,6 @@ services:
     volumes:
       - ./cube/schema:/cube/conf/model
       - ./cube/cube.js:/cube/conf/cube.js
+      - ./.env:/cube/conf/.env
 
 

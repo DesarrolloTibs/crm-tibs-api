@@ -1,5 +1,7 @@
-import { IsString, IsUUID, IsNumber, Min, IsOptional, IsDateString, IsArray, IsEnum, IsInt, Max } from 'class-validator';
+import { IsString, IsUUID, IsNumber, Min, IsOptional, IsDateString, IsArray, IsEnum, IsInt, Max, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { Currency } from '../entities/opportunity.entity';
+import { ProductItemDto } from './create-opportunity.dto';
 
 export class UpdateOpportunityDto {
   @IsString()
@@ -108,10 +110,15 @@ export class UpdateOpportunityDto {
         @IsOptional()
         productIds?: string[];
 
+        @IsArray()
+        @ValidateNested({ each: true })
+        @Type(() => ProductItemDto)
+        @IsOptional()
+        productItems?: ProductItemDto[];
+
         @IsInt()
         @Min(0)
         @Max(3)
         @IsOptional()
         priority?: number;
 }
-  

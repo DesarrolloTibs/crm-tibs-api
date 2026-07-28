@@ -1,7 +1,20 @@
-import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray, IsInt, Max } from 'class-validator';
+import { IsString, IsNotEmpty, IsUUID, IsEnum, IsNumber, Min, IsOptional, IsDateString, IsArray, IsInt, Max, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Currency } from '../entities/opportunity.entity';
+
+export class ProductItemDto {
+  @ApiProperty({ description: 'ID del producto', format: 'uuid' })
+  @IsUUID()
+  productId: string;
+
+  @ApiPropertyOptional({ description: 'Cantidad del producto', minimum: 0.01, type: Number })
+  @IsNumber()
+  @Min(0.01)
+  @IsOptional()
+  cantidad?: number;
+}
 
 export class CreateOpportunityDto {
   @ApiProperty({ description: 'Nombre del proyecto' })
@@ -110,11 +123,18 @@ export class CreateOpportunityDto {
   @IsOptional()
   stage_entered_at?: Date;
 
-  @ApiPropertyOptional({ description: 'Arreglo de IDs de productos asociados', type: [String] })
+  @ApiPropertyOptional({ description: 'Arreglo de IDs de productos asociados (legacy, cantidad=1)', type: [String] })
   @IsArray()
   @IsUUID(undefined, { each: true })
   @IsOptional()
   productIds?: string[];
+
+  @ApiPropertyOptional({ description: 'Productos con cantidad', type: [ProductItemDto] })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductItemDto)
+  @IsOptional()
+  productItems?: ProductItemDto[];
 
   @ApiPropertyOptional({ description: 'Prioridad del proyecto (0 a 3 estrellas)', minimum: 0, maximum: 3, type: Number })
   @IsInt()
@@ -123,3 +143,4 @@ export class CreateOpportunityDto {
   @IsOptional()
   priority?: number;
 }
+

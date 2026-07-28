@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { FindManyOptions, Repository, FindOptionsWhere, Brackets } from 'typeorm';
 import { Opportunity } from './entities/opportunity.entity';
 import { OpportunityFile } from './entities/opportunity-file.entity';
+import { OpportunityProduct } from './entities/opportunity-product.entity';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { StorageService } from '../storage/storage.service';
 import type { Response } from 'express';
@@ -32,6 +33,8 @@ export class OpportunitiesService {
     private readonly opportunityRepository: Repository<Opportunity>,
     @InjectRepository(OpportunityFile)
     private readonly opportunityFileRepository: Repository<OpportunityFile>,
+    @InjectRepository(OpportunityProduct)
+    private readonly opportunityProductRepository: Repository<OpportunityProduct>,
     @InjectRepository(Client)
     private readonly clientRepository: Repository<Client>,
     @InjectRepository(Pipeline)
@@ -49,16 +52,33 @@ export class OpportunitiesService {
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto, user?: User): Promise<Opportunity> {
-    const { contactIds, productIds, ...dtoWithoutContacts } = createOpportunityDto;
+    const { contactIds, productIds, productItems, ...dtoWithoutContacts } = createOpportunityDto;
     delete (dtoWithoutContacts as any).stage_entered_at;
 
+    // Resolver productos con cantidades
     let productsPriceSum = 0;
-    let selectedProducts: Product[] = [];
-    if (productIds && productIds.length > 0) {
-      selectedProducts = await this.productRepository.find({
-        where: productIds.map(id => ({ id }))
-      });
-      productsPriceSum = selectedProducts.reduce((sum, p) => sum + (Number(p.precioBase) || 0), 0);
+    let resolvedProductItems: Array<{ productId: string; cantidad: number; precioBase: number }> = [];
+
+    if (productItems && productItems.length > 0) {
+      // Nuevo formato: { productId, cantidad }
+      const ids = productItems.map(pi => pi.productId);
+      const products = await this.productRepository.find({ where: ids.map(id => ({ id })) });
+      const productMap = new Map(products.map(p => [p.id, p]));
+      for (const pi of productItems) {
+        const product = productMap.get(pi.productId);
+        if (product) {
+          const qty = pi.cantidad || 1;
+          resolvedProductItems.push({ productId: product.id, cantidad: qty, precioBase: Number(product.precioBase) || 0 });
+          productsPriceSum += qty * (Number(product.precioBase) || 0);
+        }
+      }
+    } else if (productIds && productIds.length > 0) {
+      // Formato legacy: array de UUIDs (cantidad = 1 por defecto)
+      const selectedProducts = await this.productRepository.find({ where: productIds.map(id => ({ id })) });
+      for (const p of selectedProducts) {
+        resolvedProductItems.push({ productId: p.id, cantidad: 1, precioBase: Number(p.precioBase) || 0 });
+        productsPriceSum += Number(p.precioBase) || 0;
+      }
     }
 
     let convertedProductsPrice = productsPriceSum;
@@ -66,7 +86,7 @@ export class OpportunitiesService {
       convertedProductsPrice = productsPriceSum / Number(dtoWithoutContacts.tipoCambio);
     }
 
-    const total = (dtoWithoutContacts.monto_licenciamiento || 0) + (dtoWithoutContacts.monto_servicios || 0) + convertedProductsPrice;
+    const total = (Number(dtoWithoutContacts.monto_licenciamiento) || 0) + (Number(dtoWithoutContacts.monto_servicios) || 0) + convertedProductsPrice;
     const opportunityData = { ...dtoWithoutContacts, monto_total: total } as any;
 
     // Si la moneda no es USD, nos aseguramos de que tipoCambio sea nulo.
@@ -155,7 +175,6 @@ export class OpportunitiesService {
     const opportunity = this.opportunityRepository.create({
       ...opportunityData,
       stage_entered_at: new Date(),
-      products: selectedProducts,
     } as any) as unknown as Opportunity;
 
     // Si hay ids de contacto, los cargamos.
@@ -171,6 +190,16 @@ export class OpportunitiesService {
     }
 
     const savedOpportunity: Opportunity = await this.opportunityRepository.save(opportunity);
+
+    // Guardar OpportunityProducts con cantidad
+    if (resolvedProductItems.length > 0) {
+      const oppProducts = resolvedProductItems.map(pi => this.opportunityProductRepository.create({
+        opportunityId: savedOpportunity.id,
+        productId: pi.productId,
+        cantidad: pi.cantidad,
+      }));
+      await this.opportunityProductRepository.save(oppProducts);
+    }
 
     // Create the initial tracking record
     await this.opportunityTrackingsService.create({
@@ -235,7 +264,8 @@ export class OpportunitiesService {
       .leftJoinAndSelect('opportunity.company', 'company')
       .leftJoinAndSelect('opportunity.contacts', 'contacts')
       .leftJoinAndSelect('opportunity.stage', 'stage')
-      .leftJoinAndSelect('opportunity.products', 'products')
+      .leftJoinAndSelect('opportunity.opportunityProducts', 'opportunityProducts')
+      .leftJoinAndSelect('opportunityProducts.product', 'product')
       .where('opportunity.archived = :showArchived', { showArchived });
 
     if (stage_id) {
@@ -273,7 +303,7 @@ export class OpportunitiesService {
 
 
     const findOptions: FindManyOptions<Opportunity> = {
-      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage', 'products'],
+      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage', 'opportunityProducts', 'opportunityProducts.product'],
       where,
     };
     return this.opportunityRepository.find(findOptions);
@@ -286,7 +316,7 @@ export class OpportunitiesService {
     }
     const opportunity = await this.opportunityRepository.findOne({
       where: { id },
-      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage', 'products'],
+      relations: ['cliente', 'ejecutivo', 'company', 'contacts', 'stage', 'opportunityProducts', 'opportunityProducts.product'],
     });
     if (!opportunity) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
@@ -314,7 +344,7 @@ export class OpportunitiesService {
 
     const originalStageId = existingOpportunity.stage_id;
     const originalStageName = existingOpportunity.stage ? existingOpportunity.stage.strname : 'N/A';
-    const { contactIds, productIds, ...dtoWithoutContacts } = updateOpportunityDto;
+    const { contactIds, productIds, productItems, ...dtoWithoutContacts } = updateOpportunityDto;
     delete (dtoWithoutContacts as any).stage_entered_at;
 
     // Detectar cambios antes de aplicar el preload
@@ -410,10 +440,20 @@ export class OpportunitiesService {
       const newOption = updateOpportunityDto.licenciamiento_id ? await this.opportunityRepository.manager.getRepository(LicensingOption).findOne({ where: { id: updateOpportunityDto.licenciamiento_id } }) : null;
       changes.push(`- ${labelLicenciamiento}: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
     }
-    if (productIds !== undefined) {
-      const existingProductNames = (existingOpportunity.products || []).map(p => p.nombre).sort().join(', ');
-      const selectedProducts = productIds.length > 0 ? await this.productRepository.find({ where: productIds.map(uid => ({ id: uid })) }) : [];
-      const newProductNames = selectedProducts.map(p => p.nombre).sort().join(', ');
+    const hasProductChanges = productItems !== undefined || productIds !== undefined;
+    if (hasProductChanges) {
+      const existingProductNames = (existingOpportunity.opportunityProducts || []).map(op => op.product?.nombre || '').sort().join(', ');
+      let newProductNames = existingProductNames;
+      if (productItems && productItems.length > 0) {
+        const ids = productItems.map(pi => pi.productId);
+        const products = await this.productRepository.find({ where: ids.map(uid => ({ id: uid })) });
+        newProductNames = products.map(p => p.nombre).sort().join(', ');
+      } else if (productIds && productIds.length > 0) {
+        const products = await this.productRepository.find({ where: productIds.map(uid => ({ id: uid })) });
+        newProductNames = products.map(p => p.nombre).sort().join(', ');
+      } else {
+        newProductNames = '';
+      }
       if (existingProductNames !== newProductNames) {
         changes.push(`- Productos: [${existingProductNames || 'Ninguno'}] -> [${newProductNames || 'Ninguno'}]`);
       }
@@ -429,18 +469,41 @@ export class OpportunitiesService {
     }
 
     let productsPriceSum = 0;
-    if (productIds !== undefined) {
-      if (productIds.length > 0) {
-        const selectedProducts = await this.productRepository.find({
-          where: productIds.map(uid => ({ id: uid }))
-        });
-        opportunity.products = selectedProducts;
-        productsPriceSum = selectedProducts.reduce((sum, p) => sum + (Number(p.precioBase) || 0), 0);
-      } else {
-        opportunity.products = [];
+    if (hasProductChanges) {
+      // Eliminar productos actuales
+      await this.opportunityProductRepository.delete({ opportunityId: id });
+
+      if (productItems && productItems.length > 0) {
+        const ids = productItems.map(pi => pi.productId);
+        const products = await this.productRepository.find({ where: ids.map(uid => ({ id: uid })) });
+        const productMap = new Map(products.map(p => [p.id, p]));
+        const newOppProducts = productItems
+          .filter(pi => productMap.has(pi.productId))
+          .map(pi => this.opportunityProductRepository.create({
+            opportunityId: id,
+            productId: pi.productId,
+            cantidad: pi.cantidad || 1,
+          }));
+        await this.opportunityProductRepository.save(newOppProducts);
+        productsPriceSum = productItems.reduce((sum, pi) => {
+          const product = productMap.get(pi.productId);
+          return sum + ((pi.cantidad || 1) * (Number(product?.precioBase) || 0));
+        }, 0);
+      } else if (productIds && productIds.length > 0) {
+        // Formato legacy: array de UUIDs (cantidad = 1)
+        const products = await this.productRepository.find({ where: productIds.map(uid => ({ id: uid })) });
+        const newOppProducts = products.map(p => this.opportunityProductRepository.create({
+          opportunityId: id,
+          productId: p.id,
+          cantidad: 1,
+        }));
+        await this.opportunityProductRepository.save(newOppProducts);
+        productsPriceSum = products.reduce((sum, p) => sum + (Number(p.precioBase) || 0), 0);
       }
     } else {
-      productsPriceSum = (existingOpportunity.products || []).reduce((sum, p) => sum + (Number(p.precioBase) || 0), 0);
+      productsPriceSum = (existingOpportunity.opportunityProducts || []).reduce((sum, op) => {
+        return sum + (Number(op.cantidad || 1) * (Number(op.product?.precioBase) || 0));
+      }, 0);
     }
 
     let convertedProductsPrice = productsPriceSum;
@@ -451,7 +514,7 @@ export class OpportunitiesService {
       convertedProductsPrice = productsPriceSum / Number(currentTipoCambio);
     }
 
-    opportunity.monto_total = (opportunity.monto_licenciamiento ?? existingOpportunity.monto_licenciamiento ?? 0) + (opportunity.monto_servicios ?? existingOpportunity.monto_servicios ?? 0) + convertedProductsPrice;
+    opportunity.monto_total = (Number(opportunity.monto_licenciamiento ?? existingOpportunity.monto_licenciamiento) || 0) + (Number(opportunity.monto_servicios ?? existingOpportunity.monto_servicios) || 0) + convertedProductsPrice;
 
     if (opportunity.moneda !== 'USD') {
       opportunity.tipoCambio = 0;

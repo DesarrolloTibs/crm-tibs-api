@@ -447,9 +447,11 @@ export class TenantProvisionerService {
         );
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".opportunity_products (
-          "opportunitiesId" uuid NOT NULL REFERENCES "${schemaName}".opportunities(id) ON DELETE CASCADE,
-          "productsId" uuid NOT NULL REFERENCES "${schemaName}".products(id) ON DELETE CASCADE,
-          CONSTRAINT pk_opportunity_products PRIMARY KEY ("opportunitiesId", "productsId")
+          id uuid NOT NULL DEFAULT gen_random_uuid(),
+          "opportunityId" uuid NOT NULL REFERENCES "${schemaName}".opportunities(id) ON DELETE CASCADE,
+          "productId" uuid NOT NULL REFERENCES "${schemaName}".products(id) ON DELETE CASCADE,
+          cantidad numeric(10,2) NOT NULL DEFAULT 1,
+          CONSTRAINT pk_opportunity_products PRIMARY KEY (id)
         );
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".opportunity_files (

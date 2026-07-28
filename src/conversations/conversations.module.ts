@@ -35,7 +35,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
       Product,
       ProductFile
     ]),
-    OpportunitiesModule,
+    forwardRef(() => OpportunitiesModule),
     ActivitiesModule,
     RemindersModule,
     ClientsModule,

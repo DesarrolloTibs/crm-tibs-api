@@ -31,8 +31,10 @@ import {
   CheckAvailabilitySchema, 
   CreateActivitySchema, 
   CreateTicketSchema, 
-  ConsultProductCatalogSchema 
+  ConsultProductCatalogSchema,
+  SendQuotationPdfSchema
 } from './dto/ai-agent-tools.schema';
+import { QuotationPdfService } from '../opportunities/quotation-pdf.service';
 
 export const AgentStateAnnotation = Annotation.Root({
   messages: Annotation<any[]>({
@@ -71,6 +73,8 @@ export class AiAgentService implements OnModuleInit {
     @InjectRepository(ProductFile)
     private readonly productFileRepository: Repository<ProductFile>,
     private readonly opportunitiesService: OpportunitiesService,
+    @Inject(forwardRef(() => QuotationPdfService))
+    private readonly quotationPdfService: QuotationPdfService,
     private readonly activitiesService: ActivitiesService,
     private readonly remindersService: RemindersService,
     private readonly clientsService: ClientsService,
@@ -179,8 +183,8 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
       if (count > 0) {
         // RESPETAR LA FUENTE DE VERDAD Y AUTO-MIGRACIÓN DE TEXTOS EN BD
         try {
-          const existingAgents = await this.aiSubAgentRepository.find();
-          for (const sa of existingAgents) {
+          const subAgents = await this.aiSubAgentRepository.find();
+          for (const sa of subAgents) {
             let modified = false;
             if (sa.context && (sa.context.includes('asesor humano') || sa.context.includes('disponibilidad de asesores'))) {
               sa.context = sa.context
@@ -197,6 +201,11 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
             if (sa.key === 'comercial' && (!sa.context || !sa.context.includes('OBSERVACIONES'))) {
               sa.context = `${baseCommonPrompt}\n\n${comercialInstructions}`;
               modified = true;
+            }
+            if (sa.key === 'comercial' && (!sa.tools || !sa.tools.includes('sendQuotationPdf'))) {
+              sa.tools = [...(sa.tools || []), 'sendQuotationPdf'];
+              modified = true;
+              this.logger.log('Herramienta sendQuotationPdf agregada al sub-agente comercial existente.');
             }
             if (modified) {
               await this.aiSubAgentRepository.save(sa);
@@ -223,7 +232,7 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
           name: 'Sub-Agente Comercial',
           description: 'Se encarga de calificar prospectos, cotizaciones y gestionar oportunidades comerciales de venta en el CRM.',
           context: `${baseCommonPrompt}\n\n${comercialInstructions}`,
-          tools: ['registerContact', 'updateContact', 'createOpportunity', 'modifyOpportunity', 'consult_product_catalog'],
+          tools: ['registerContact', 'updateContact', 'createOpportunity', 'modifyOpportunity', 'consult_product_catalog', 'sendQuotationPdf'],
           temperature: 0.2,
           isActive: true,
         },
@@ -765,13 +774,13 @@ Genera el JSON de salida:
 
         // Mapeo de prompts de herramientas permitidas al subagente
         const ALL_TOOL_PROMPTS: Record<string, string> = {
-          createOpportunity: `1. createOpportunity: Registra oportunidad.
-Campos: nombreProyecto(str), descripcion(str), montoTotal(num|null — usa null o 0 para desarrollos a la medida), moneda("MXN"|"USD"), nombreProducto(str, opcional - Nombre del producto del catálogo que le interesa), lineaNegocio(str, opcional - Debe ser uno de: ${activeBusinessLines.join(', ')}), tipoEntrega(str, opcional - Debe ser uno de: ${activeDeliveryTypes.join(', ')}), licenciamiento(str, opcional - Debe ser uno de: ${activeLicensings.join(', ')}).
-{"thought": "Crear oportunidad y asociar producto.", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "Proyecto A", "descripcion": "Interés en A", "montoTotal": null, "moneda": "MXN", "nombreProducto": "Nombre del producto de interés"}}`,
+          createOpportunity: `1. createOpportunity: Registra oportunidad comercial.
+Campos: nombreProyecto(str), descripcion(str), montoTotal(num|null — usa null o 0 para desarrollos a la medida o cuando se calcula automáticamente por catálogo), moneda("MXN"|"USD"), nombreProducto(str, opcional - Nombre o palabras clave del producto del catálogo que le interesa), cantidad(num, opcional - Cantidad de piezas/unidades solicitadas por el cliente, por defecto 1), lineaNegocio(str, opcional - Debe ser uno de: ${activeBusinessLines.join(', ')}), tipoEntrega(str, opcional - Debe ser uno de: ${activeDeliveryTypes.join(', ')}), licenciamiento(str, opcional - Debe ser uno de: ${activeLicensings.join(', ')}).
+{"thought": "Crear oportunidad y asociar producto.", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "Compra Laptop Gaming Omen", "descripcion": "Interés en Laptop Gaming Omen", "montoTotal": null, "moneda": "MXN", "nombreProducto": "LAPTOP GAMING OMEN", "cantidad": 4}}`,
 
-          modifyOpportunity: `2. modifyOpportunity: Edita oportunidad. Usa ID real.
-Campos: id(UUID), nombreProyecto, descripcion, montoTotal, moneda, etapa. Omite sin cambio.
-{"thought": "Modificar oportunidad.", "tool_name": "modifyOpportunity", "tool_input": {"id": "uuid-real", "montoTotal": 15000}}`,
+          modifyOpportunity: `2. modifyOpportunity: Edita oportunidad existente. Usa ID real.
+Campos: id(UUID), nombreProyecto, descripcion, montoTotal, cantidad(num, opcional - Nueva cantidad de piezas requeridas por el cliente), moneda.
+{"thought": "Modificar cantidad a 4 piezas.", "tool_name": "modifyOpportunity", "tool_input": {"id": "uuid-real", "cantidad": 4}}`,
 
           updateContact: `3. updateContact: Actualiza contacto vinculado.
 Campos opcionales: nombre(str), correo(str), telefono(str). Envía solo cambios.
@@ -792,7 +801,11 @@ Campos: title(str), description(str), priority(1=Bajo,2=Medio,3=Alto), category(
           consult_product_catalog: `7. consult_product_catalog: Consulta información de productos en el catálogo, especificaciones técnicas, compatibilidad, observaciones o precios. Úsala de forma libre para buscar cualquier producto o categoría.
 REGLA CRÍTICA: Si el producto devuelto contiene "Observaciones / Notas" (ej. 'no incluye IVA', 'no incluye instalación'), DEBES MENCIONAR DICHAS OBSERVACIONES O CONDICIONANTES de forma obligatoria en la respuesta final al cliente.
 Campos: query(str, término de búsqueda o pregunta libre).
-{"thought": "Consultar catálogo.", "tool_name": "consult_product_catalog", "tool_input": {"query": "término o producto a buscar"}}`
+{"thought": "Consultar catálogo.", "tool_name": "consult_product_catalog", "tool_input": {"query": "término o producto a buscar"}}`,
+
+          sendQuotationPdf: `8. sendQuotationPdf: Genera y transmite el archivo PDF de la cotización al chat del cliente. Úsala cuando el cliente pida la cotización en PDF o al solicitar un documento formal.
+Campos opcionales: opportunityId(UUID).
+{"thought": "Enviar cotización en PDF.", "tool_name": "sendQuotationPdf", "tool_input": {}}`
         };
 
         const allowedTools = subAgent?.tools || [];
@@ -1098,6 +1111,9 @@ Asistente:`;
             case 'consult_product_catalog':
               validationResult = ConsultProductCatalogSchema.safeParse(input);
               break;
+            case 'sendQuotationPdf':
+              validationResult = SendQuotationPdfSchema.safeParse(input);
+              break;
             default:
               return {
                 toolCallResult: { status: 'ERROR', message: `Herramienta '${state.toolCallName}' no reconocida.` }
@@ -1377,26 +1393,24 @@ Asistente:`;
             }
           }
 
-          // Resolver ids de producto basados en nombreProducto del catálogo
+          // Resolver ids de producto desde la Capa Semántica de Cube.dev
           const finalProductIds: string[] = input.productIds || [];
+          let matchedProducts: Array<{ id: string; nombre: string }> = [];
+
           if (input.nombreProducto) {
-            try {
-              const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
-              const qb = productRepo.createQueryBuilder('p');
-              qb.where('LOWER(p.nombre) LIKE :name', { name: `%${input.nombreProducto.toLowerCase()}%` })
-                .andWhere('p.status = :status', { status: true });
-              const matchedProducts = await qb.getMany();
-              
-              if (matchedProducts.length > 0) {
-                this.logger.log(`Productos asociados automáticamente a la oportunidad por coincidencia de nombre: ${matchedProducts.map(p => p.nombre).join(', ')}`);
-                for (const p of matchedProducts) {
-                  if (!finalProductIds.includes(p.id)) {
-                    finalProductIds.push(p.id);
-                  }
-                }
+            matchedProducts = await this.findProductsFromSemanticLayer(input.nombreProducto);
+          }
+
+          if (matchedProducts.length === 0 && input.nombreProyecto) {
+            matchedProducts = await this.findProductsFromSemanticLayer(input.nombreProyecto);
+          }
+
+          if (matchedProducts.length > 0) {
+            this.logger.log(`Productos asociados automáticamente vía Capa Semántica Cube.dev: ${matchedProducts.map(p => p.nombre).join(', ')}`);
+            for (const p of matchedProducts) {
+              if (!finalProductIds.includes(p.id)) {
+                finalProductIds.push(p.id);
               }
-            } catch (productErr) {
-              this.logger.error(`Error al buscar productos del catálogo por nombre: ${productErr.message}`);
             }
           }
 
@@ -1469,6 +1483,11 @@ Asistente:`;
             }
           }
 
+          const productItems = finalProductIds.map((id) => ({
+            productId: id,
+            cantidad: input.cantidad || 1,
+          }));
+
           const opp = await this.opportunitiesService.create({
             nombre_proyecto: input.nombreProyecto,
             description: input.descripcion || 'Creado por Agente IA',
@@ -1479,9 +1498,19 @@ Asistente:`;
             linea_negocio_id: businessLineId,
             tipo_entrega_id: deliveryTypeId,
             licenciamiento_id: licensingId,
+            productItems: productItems.length > 0 ? productItems : undefined,
             productIds: finalProductIds,
           } as any, userEntity);
-          return { status: 'SUCCESS', message: 'Oportunidad creada con éxito', opportunityId: opp.id, productsAddedCount: finalProductIds.length };
+
+          // Enviar cotización PDF automáticamente por el canal de la conversación
+          try {
+            await this.quotationPdfService.sendQuotationToChannel(opp.id, conversation.id);
+            this.logger.log(`PDF de cotización transmitido automáticamente al canal para la oportunidad ${opp.id}`);
+          } catch (pdfErr) {
+            this.logger.error(`Error al enviar PDF de cotización automático: ${pdfErr.message}`);
+          }
+
+          return { status: 'SUCCESS', message: 'Oportunidad creada con éxito y PDF de cotización transmitido al canal', opportunityId: opp.id, productsAddedCount: finalProductIds.length };
         }
 
         case 'modifyOpportunity': {
@@ -1496,12 +1525,61 @@ Asistente:`;
             }
           }
 
+          let productItems: Array<{ productId: string; cantidad: number }> | undefined = undefined;
+          if (input.cantidad && Number(input.cantidad) > 0) {
+            const existingOpp = await this.opportunitiesService.findOne(input.id).catch(() => null);
+            if (existingOpp && existingOpp.opportunityProducts && existingOpp.opportunityProducts.length > 0) {
+              productItems = existingOpp.opportunityProducts.map(op => ({
+                productId: op.productId,
+                cantidad: Number(input.cantidad),
+              }));
+            } else if (input.nombreProducto || input.nombreProyecto) {
+              const semanticMatched = await this.findProductsFromSemanticLayer(input.nombreProducto || input.nombreProyecto || '');
+              if (semanticMatched.length > 0) {
+                productItems = semanticMatched.map(p => ({
+                  productId: p.id,
+                  cantidad: Number(input.cantidad),
+                }));
+              }
+            }
+          }
+
           const opp = await this.opportunitiesService.update(input.id, {
             nombre_proyecto: input.nombreProyecto,
             description: input.descripcion,
             monto_total: cleanMonto,
+            productItems: productItems,
           });
-          return { status: 'SUCCESS', message: 'Oportunidad modificada con éxito', opportunityId: opp.id };
+
+          // Enviar cotización PDF actualizada por el canal de la conversación
+          try {
+            await this.quotationPdfService.sendQuotationToChannel(opp.id, conversation.id);
+            this.logger.log(`PDF de cotización actualizado transmitido automáticamente para la oportunidad ${opp.id}`);
+          } catch (pdfErr) {
+            this.logger.error(`Error al enviar PDF de cotización actualizado: ${pdfErr.message}`);
+          }
+
+          return { status: 'SUCCESS', message: 'Oportunidad modificada con éxito y PDF de cotización actualizado transmitido al canal', opportunityId: opp.id };
+        }
+
+        case 'sendQuotationPdf': {
+          let targetOppId = input?.opportunityId;
+          if (!targetOppId && conversation.clientId) {
+            const clientOpps = await this.opportunitiesService.findByClientId(conversation.clientId);
+            if (clientOpps && clientOpps.length > 0) {
+              targetOppId = clientOpps[0].id;
+            }
+          }
+          if (!targetOppId) {
+            return { status: 'ERROR', message: 'No hay una oportunidad activa en esta conversación para generar la cotización en PDF.' };
+          }
+          try {
+            await this.quotationPdfService.sendQuotationToChannel(targetOppId, conversation.id);
+            return { status: 'SUCCESS', message: 'Cotización en PDF generada y transmitida exitosamente al chat del cliente.', opportunityId: targetOppId };
+          } catch (pdfErr) {
+            this.logger.error(`Error en tool sendQuotationPdf: ${pdfErr.message}`);
+            return { status: 'ERROR', message: `Error al generar/enviar el PDF de cotización: ${pdfErr.message}` };
+          }
         }
 
         case 'registerContact': {
@@ -2238,7 +2316,12 @@ Unidad de Medida: ${p['Productos.unidadMedida'] || 'Pieza'}
 Observaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p['Productos.observaciones'] && p['Productos.observaciones'].trim() ? p['Productos.observaciones'].trim() : 'Sin observaciones'}
 Descripción del Producto: ${p['Productos.descripcion'] || 'Sin descripción'}
 Estado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? 'Activo' : 'Inactivo'}`,
-          metadata: { source: 'cube-semantic-layer', productId: p['Productos.id'] }
+          metadata: {
+            source: 'cube-semantic-layer',
+            productId: p['Productos.id'],
+            productName: p['Productos.nombre'],
+            precioBase: p['Productos.precioBase'],
+          }
         }));
       }
       return [];
@@ -2382,5 +2465,93 @@ NUEVO RESUMEN ACUMULADO:`;
    */
   sanitizeJsonOutput(text: string): string {
     return this.cleanJsonOutput(text);
+  }
+
+  /**
+   * Busca productos en la base de datos con estrategia flexible (coincidencia de subcadena y palabras clave)
+   */
+  private async findProductsByKeywords(searchText: string): Promise<Product[]> {
+    if (!searchText || searchText.trim().length < 2) return [];
+    try {
+      const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
+      const cleanText = searchText.toLowerCase().trim();
+
+      // 1. Intento: Coincidencia de subcadena directa
+      let products = await productRepo.createQueryBuilder('p')
+        .where('LOWER(p.nombre) LIKE :name', { name: `%${cleanText}%` })
+        .andWhere('p.status = :status', { status: true })
+        .getMany();
+
+      if (products.length > 0) return products;
+
+      // 2. Intento: Búsqueda por palabras clave individuales
+      const stopWords = new Set(['de', 'del', 'la', 'las', 'el', 'los', 'en', 'para', 'con', 'sin', 'un', 'una', 'por', 'compra', 'interes', 'cotizacion', 'piezas', 'piezas/unidades']);
+      const words = cleanText
+        .split(/\s+/)
+        .map(w => w.replace(/[^a-z0-9]/g, ''))
+        .filter(w => w.length >= 2 && !stopWords.has(w));
+
+      if (words.length === 0) return [];
+
+      const qb = productRepo.createQueryBuilder('p')
+        .where('p.status = :status', { status: true });
+
+      const wordConditions = words.map((_, idx) => `LOWER(p.nombre) LIKE :word_${idx}`);
+      qb.andWhere(`(${wordConditions.join(' OR ')})`);
+
+      const params: Record<string, any> = { status: true };
+      words.forEach((w, idx) => {
+        params[`word_${idx}`] = `%${w}%`;
+      });
+
+      qb.setParameters(params);
+      const candidates = await qb.getMany();
+
+      // Ordenar candidatos por cantidad de palabras que coinciden
+      candidates.sort((a, b) => {
+        const nameA = a.nombre.toLowerCase();
+        const nameB = b.nombre.toLowerCase();
+        const matchesA = words.filter(w => nameA.includes(w)).length;
+        const matchesB = words.filter(w => nameB.includes(w)).length;
+        return matchesB - matchesA;
+      });
+
+      return candidates;
+    } catch (err) {
+      this.logger.error(`Error en findProductsByKeywords: ${err.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Busca productos utilizando la Capa Semántica de Cube.dev.
+   */
+  private async findProductsFromSemanticLayer(searchText: string): Promise<Array<{ id: string; nombre: string }>> {
+    if (!searchText || searchText.trim().length < 2) return [];
+
+    try {
+      const cubeDocs = await this.queryCubeProducts(searchText);
+      const semanticProducts: Array<{ id: string; nombre: string }> = [];
+
+      for (const doc of cubeDocs) {
+        if (doc.metadata && doc.metadata.productId) {
+          semanticProducts.push({
+            id: doc.metadata.productId,
+            nombre: doc.metadata.productName || 'Producto',
+          });
+        }
+      }
+
+      if (semanticProducts.length > 0) {
+        this.logger.log(`[Capa Semántica Cube.dev] Productos encontrados para '${searchText}': ${semanticProducts.map(p => p.nombre).join(', ')}`);
+        return semanticProducts;
+      }
+    } catch (err) {
+      this.logger.warn(`Error al consultar la capa semántica de Cube.dev para productos: ${err.message}`);
+    }
+
+    // Fallback a base de datos si la capa semántica no arrojó resultados
+    const dbFallback = await this.findProductsByKeywords(searchText);
+    return dbFallback.map(p => ({ id: p.id, nombre: p.nombre }));
   }
 }

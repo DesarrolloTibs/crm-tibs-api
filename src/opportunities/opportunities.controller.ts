@@ -6,6 +6,7 @@ import { join } from 'path';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 
 import { OpportunitiesService } from './opportunities.service';
+import { QuotationPdfService } from './quotation-pdf.service';
 import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
@@ -19,7 +20,10 @@ import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody } from '@nes
 @UseGuards(AuthGuard('jwt'))
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class OpportunitiesController {
-  constructor(private readonly opportunitiesService: OpportunitiesService) { }
+  constructor(
+    private readonly opportunitiesService: OpportunitiesService,
+    private readonly quotationPdfService: QuotationPdfService,
+  ) { }
 
   @Post()
   @ApiOperation({ summary: 'Crear una nueva oportunidad' })
@@ -67,6 +71,43 @@ export class OpportunitiesController {
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.opportunitiesService.remove(id);
   }
+
+  // ── COTIZACIÓN PDF ─────────────────────────────────────────────────────────
+
+  @Post(':id/quotation-pdf')
+  @ApiOperation({ summary: 'Generar PDF de cotización para una oportunidad' })
+  async generateQuotationPdf(@Param('id', ParseUUIDPipe) id: string) {
+    const result = await this.quotationPdfService.generateQuotationPdf(id);
+    return {
+      message: 'PDF de cotización generado exitosamente.',
+      filePath: result.filePath,
+      fileName: result.fileName,
+    };
+  }
+
+  @Get(':id/quotation-pdf')
+  @ApiOperation({ summary: 'Descargar el PDF de cotización de una oportunidad' })
+  async downloadQuotationPdf(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Res() res: Response,
+  ) {
+    const result = await this.quotationPdfService.generateQuotationPdf(id);
+    return this.opportunitiesService.downloadFile(result.filePath, result.fileName, res);
+  }
+
+  @Post(':id/quotation-pdf/send')
+  @ApiOperation({ summary: 'Generar y enviar el PDF de cotización por el canal de la conversación' })
+  async sendQuotationPdf(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body('conversationId') conversationId: string,
+  ) {
+    if (!conversationId) {
+      throw new BadRequestException('Se requiere conversationId para enviar la cotización.');
+    }
+    return this.quotationPdfService.sendQuotationToChannel(id, conversationId);
+  }
+
+  // ── ARCHIVOS ───────────────────────────────────────────────────────────────
 
   @Post(':id/files')
   @ApiOperation({ summary: 'Subir archivo para una oportunidad' })
@@ -128,3 +169,4 @@ export class OpportunitiesController {
     return this.opportunitiesService.archive(id, archiveOpportunityDto, user);
   }
 }
+
