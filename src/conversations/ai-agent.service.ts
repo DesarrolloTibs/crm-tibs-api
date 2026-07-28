@@ -33,7 +33,8 @@ import {
   CreateActivitySchema, 
   CreateTicketSchema, 
   ConsultProductCatalogSchema,
-  SendQuotationPdfSchema
+  SendQuotationPdfSchema,
+  RequestHumanHandoffSchema
 } from './dto/ai-agent-tools.schema';
 import { QuotationPdfService } from '../opportunities/quotation-pdf.service';
 
@@ -51,6 +52,10 @@ export const AgentStateAnnotation = Annotation.Root({
   toolCallInput: Annotation<any | null>(),
   toolCallResult: Annotation<any | null>(),
   response: Annotation<string | null>(),
+  isHandedOff: Annotation<boolean>({
+    reducer: (x: boolean, y: boolean) => (y !== undefined ? (x || y) : x),
+    default: () => false,
+  }),
 });
 
 import { ConversationsGateway } from './conversations.gateway';
@@ -146,11 +151,11 @@ Estructura del JSON:
       const baseCommonPrompt = `Eres el asistente conversacional de la empresa del CRM.
 Tono y estilo: Profesional, resolutivo y breve (mensajes cortos adaptados a chat). Nunca hables con lenguaje técnico de base de datos ni reveles IDs.
 Idioma: Responde siempre en el mismo idioma en que escribe el cliente (español o inglés).
-REGLA CRÍTICA DE CONFIDENCIALIDAD E IDENTIDAD: Está estrictamente PROHIBIDO decir que eres una IA, un bot, un modelo automatizado o una inteligencia artificial. Está strictly PROHIBIDO usar el término 'asesor humano' o hacer cualquier alusión a que el cliente está hablando con una IA. Si el cliente solicita hablar con alguien más, o expresa molestar, quejas, urgencia o derivación, refiérete SIEMPRE a un 'ejecutivo especializado'.
-ANCLAJE ESTRICTO DE CONOCIMIENTO (CUBE.DEV Y RAG): Está strictly prohibido inventar o alucinar información de productos, características, compatibilidades, precios o disponibilidad. Limítate única y exclusivamente a los datos reales provistos por Cube.dev o el RAG. Si no aparecen allí, responde amigablemente que no dispones de ese producto en el catálogo.
+REGLA CRÍTICA DE CONFIDENCIALIDAD E IDENTIDAD: Está estrictamente PROHIBIDO decir que eres una IA, un bot, un modelo automatizado o una inteligencia artificial. Está estrictamente PROHIBIDO usar el término 'asesor humano' o hacer cualquier alusión a que el cliente está hablando con una IA. Si el cliente solicita hablar con alguien más, o expresa molestia, quejas, urgencia o derivación, refiérete SIEMPRE a un 'ejecutivo especializado'.
+ANCLAJE ESTRICTO DE CONOCIMIENTO (CUBE.DEV Y RAG): Está estrictamente prohibido inventar o alucinar información de productos, características, compatibilidades, precios o disponibilidad. Limítate única y exclusivamente a los datos reales provistos por Cube.dev o el RAG. Si no aparecen allí, responde amigablemente que no dispones de ese producto en el catálogo.
 SOLICITUD OBLIGATORIA DE TELÉFONO PARA IDENTIFICACIÓN: El número de teléfono es el identificador principal obligatorio del cliente en el CRM. Si la información del cliente provista no cuenta con un número de teléfono registrado (o si no se ha recibido el teléfono), DEBES solicitar forzosamente al cliente su número telefónico ANTES de continuar con cualquier proceso (cotizaciones, catálogo, agendamiento de demos o soporte). En cuanto el cliente te proporcione su número telefónico, debes llamar de inmediato a la herramienta updateContact o registerContact enviando el teléfono para identificarlo o registrarlo en el CRM.
 NO AUTOCOMPLETAR/SIMULAR HERRAMIENTAS: Tu respuesta debe finalizar inmediatamente al cerrar el JSON de tu turno (la llave de cierre }). Está estrictamente PROHIBIDO que simules la ejecución de la herramienta, que escribas '[Herramienta] ...' o que inventes el resultado del sistema.
-Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quejas, molestia o si el cliente lo solicita.`;
+Redirección: Si derivas o transfieres la conversación con un ejecutivo especializado por molestia, quejas o solicitud directa, DEBES llamar obligatoriamente a la herramienta 'requestHumanHandoff'. Está PROHIBIDO derivar sólo con texto sin usar 'requestHumanHandoff'.`;
 
       const comercialInstructions = `[INSTRUCCIONES COMERCIALES]
 - Registra oportunidades en el CRM.
@@ -172,10 +177,16 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
 - Vincula la actividad con el cliente. No uses UUIDs del sistema.`;
 
       const soporteInstructions = `[INSTRUCCIONES DE SOPORTE Y HELPDESK]
-- Atiende incidencias, quejas y dudas de soporte técnico.
-- Si el cliente expresa molestia, urgencia o solicita hablar con un superior, indícale amablemente que lo derivarás con un ejecutivo especializado de inmediato para brindarle atención personalizada.
-- Genera un ticket en el CRM con createTicket si corresponde.
-- Campos: title (título corto), description (falla), priority (1:Bajo, 2:Medio, 3:Alto), category (ej. Soporte Técnico).`;
+- Tu objetivo principal es atender incidencias, dudas técnicas, reportes de problemas y quejas del cliente, intentando resolver y aclarar cualquier problemática que tenga.
+- Genera un ticket en el CRM con la herramienta createTicket cuando corresponda registrar la falla (campos: title, description, priority: 1=Bajo, 2=Medio, 3=Alto, category).
+- REGLAS OBLIGATORIAS DE REDIRECCIÓN A HUMANO (EJECUTIVO ESPECIALIZADO):
+  Debes llamar OBLIGATORIAMENTE a la herramienta 'requestHumanHandoff' para transferir la conversación a un ejecutivo especializado en los siguientes escenarios específicos:
+  1. Si se detecta un cliente molesto, problemático, irritado o agresivo.
+  2. Si la conversación, después de varios intentos, no llega a ninguna solución o entendimiento.
+  3. Si el cliente está haciendo preguntas o solicitudes completamente ajenas a lo establecido para el soporte o la empresa.
+  4. Si el cliente solicita explícitamente ser atendido por una persona real, un humano o un ejecutivo.
+  NUNCA respondas sólo con final_answer diciendo que lo conectarás o derivarás sin haber llamado PRIMERO a la herramienta 'requestHumanHandoff'.
+- En cualquier otro escenario, tú debes resolver directamente la duda o problemática del cliente sin derivar ni desactivarte.`;
 
       const generalInstructions = `[INSTRUCCIONES CONVERSACIONALES GENERALES]
 - Responde amablemente a saludos, despedidas o preguntas de plática informal.
@@ -207,6 +218,18 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
               sa.tools = [...(sa.tools || []), 'sendQuotationPdf'];
               modified = true;
               this.logger.log('Herramienta sendQuotationPdf agregada al sub-agente comercial existente.');
+            }
+            if (sa.key === 'soporte_atencion') {
+              if (!sa.tools || !sa.tools.includes('requestHumanHandoff')) {
+                sa.tools = [...(sa.tools || []), 'requestHumanHandoff'];
+                modified = true;
+                this.logger.log('Herramienta requestHumanHandoff agregada al sub-agente de soporte existente.');
+              }
+              if (!sa.context || !sa.context.includes('requestHumanHandoff') || !sa.context.includes('NUNCA respondas sólo con final_answer')) {
+                sa.context = `${baseCommonPrompt}\n\n${soporteInstructions}`;
+                modified = true;
+                this.logger.log('Contexto e instrucciones de redirección a humano actualizadas en el sub-agente de soporte.');
+              }
             }
             if (modified) {
               await this.aiSubAgentRepository.save(sa);
@@ -249,9 +272,9 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
         {
           key: 'soporte_atencion',
           name: 'Sub-Agente de Soporte',
-          description: 'Atiende incidencias de soporte, quejas, dudas técnicas, deriva con un ejecutivo especializado y genera tickets de soporte en la mesa de ayuda (Helpdesk).',
+          description: 'Atiende incidencias de soporte, quejas y dudas técnicas. Si detecta un cliente molesto, problemático o sin solución tras varios intentos, lo redirecciona con un ejecutivo especializado (humano).',
           context: `${baseCommonPrompt}\n\n${soporteInstructions}`,
-          tools: ['registerContact', 'updateContact', 'createTicket'],
+          tools: ['registerContact', 'updateContact', 'createTicket', 'requestHumanHandoff'],
           temperature: 0.5,
           isActive: true,
         },
@@ -820,7 +843,12 @@ Campos: query(str, término de búsqueda o pregunta libre).
 
           sendQuotationPdf: `8. sendQuotationPdf: Genera y transmite el archivo PDF de la cotización al chat del cliente. Úsala cuando el cliente pida la cotización en PDF o al solicitar un documento formal.
 Campos opcionales: opportunityId(UUID).
-{"thought": "Enviar cotización en PDF.", "tool_name": "sendQuotationPdf", "tool_input": {}}`
+{"thought": "Enviar cotización en PDF.", "tool_name": "sendQuotationPdf", "tool_input": {}}`,
+
+          requestHumanHandoff: `9. requestHumanHandoff: Redirecciona la conversación a un ejecutivo especializado (humano) y desactiva el bot.
+Úsala ÚNICAMENTE cuando se cumpla alguna condición de derivación: cliente molesto/problemático, conversación sin solución tras varios intentos, preguntas ajenas a lo establecido, o solicitud explícita de hablar con un humano.
+Campos: reason(str, motivo de la derivación).
+{"thought": "El cliente está molesto / solicita atención humana, procedo a derivarlo con un ejecutivo.", "tool_name": "requestHumanHandoff", "tool_input": {"reason": "Cliente molesto / solicitud de atención humana"}}`
         };
 
         const allowedTools = subAgent?.tools || [];
@@ -1129,6 +1157,9 @@ Asistente:`;
             case 'sendQuotationPdf':
               validationResult = SendQuotationPdfSchema.safeParse(input);
               break;
+            case 'requestHumanHandoff':
+              validationResult = RequestHumanHandoffSchema.safeParse(input);
+              break;
             default:
               return {
                 toolCallResult: { status: 'ERROR', message: `Herramienta '${state.toolCallName}' no reconocida.` }
@@ -1203,6 +1234,9 @@ Asistente:`;
 
           // Si registramos o actualizamos contacto, asociar de inmediato el clientId al estado y recargar la relación en memoria
           let nextState: Partial<AgentState> = { toolCallResult: executionResult };
+          if (state.toolCallName === 'requestHumanHandoff' || executionResult?.isHandedOff) {
+            nextState.isHandedOff = true;
+          }
           if ((state.toolCallName === 'registerContact' || state.toolCallName === 'updateContact') && executionResult.status === 'SUCCESS') {
             const targetClientId = executionResult.clientId || executionResult.client?.id || conversation.clientId;
             if (targetClientId) {
@@ -1335,8 +1369,19 @@ Asistente:`;
       });
 
       const selectedRoute = finalState.route || 'general';
-      const replyLower = (agentReply || '').toLowerCase();
-      const isHandedOff = selectedRoute === 'soporte_atencion' || replyLower.includes('ejecutivo especializado') || replyLower.includes('deriv');
+      const replyNormalized = (agentReply || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+      // Regex de seguridad para detectar compromisos explícitos de derivación/transferencia a ejecutivo humano en la respuesta
+      const handoffRegex = /(conectare|derivare|transferire|canalizare|comunicare|conecto|derivo|transfiero|canalizo|comunico)\s+con\s+(un\s+)?ejecutivo|(ejecutivo|asesor)\s+especializado\s+se\s+pondra\s+en\s+contacto|atencion\s+mas\s+personalizada.*ejecutivo/;
+
+      const isHandedOff = Boolean(
+        finalState.isHandedOff || 
+        finalState.toolCallName === 'requestHumanHandoff' ||
+        handoffRegex.test(replyNormalized)
+      );
 
       return {
         reply: agentReply,
@@ -1744,6 +1789,7 @@ Asistente:`;
             cliente_id: conversation.clientId || undefined,
             contactName: conversation.clientName || undefined,
             contactPhone: conversation.externalId || undefined,
+            responsable_id: conversation.assignedUserId || undefined,
           } as any, userEntity);
 
           return { status: 'SUCCESS', message: 'Ticket de soporte técnico creado con éxito', ticketId: ticket.id, ticketNumber: ticket.ticket_number };
@@ -1836,6 +1882,16 @@ Asistente:`;
             available: false,
             message: 'El horario solicitado ya está ocupado.',
             suggestedSlots: suggestions,
+          };
+        }
+
+        case 'requestHumanHandoff': {
+          const reason = input.reason || 'Derivación a ejecutivo especializado solicitada';
+          this.logger.log(`[Tool requestHumanHandoff] Solicitada derivación a ejecutivo especializado. Motivo: ${reason}`);
+          return {
+            status: 'SUCCESS',
+            isHandedOff: true,
+            message: `Derivación a ejecutivo especializado registrada con éxito. Motivo: ${reason}. Procede a responder amablemente al cliente mediante final_answer informándole que ha sido derivado con un ejecutivo especializado que lo atenderá personalmente.`,
           };
         }
 

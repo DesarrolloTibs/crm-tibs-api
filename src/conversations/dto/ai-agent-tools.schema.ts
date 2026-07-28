@@ -64,3 +64,8 @@ export const SendQuotationPdfSchema = z.object({
   opportunityId: z.string().uuid('ID de oportunidad no válido (debe ser UUID).').optional(),
 });
 
+export const RequestHumanHandoffSchema = z.object({
+  reason: z.string().optional().default('Derivación a ejecutivo especializado solicitada'),
+});
+
+
