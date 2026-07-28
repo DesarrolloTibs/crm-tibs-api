@@ -373,7 +373,7 @@ Fecha: ${fechaHoy} — Hora: ${horaActual} (Ciudad de México)
 
 5. **Productos** (tabla: products)
    - Measures: count, precioBaseMax, precioBaseMin
-   - Dimensions: id, nombre, descripcion, precioBase, requiereAnalisis, status
+   - Dimensions: id, nombre, descripcion, precioBase, unidadMedida, observaciones, status
 
 6. **Gastos** (tabla: expenses)
    - Measures: count, montoSum

@@ -226,13 +226,18 @@ export class TenantProvisionerService {
           nombre text NOT NULL,
           descripcion text NULL,
           "precioBase" numeric(10,2) NOT NULL DEFAULT 0.00,
-          "requiere_analisis" boolean NOT NULL DEFAULT false,
+          "unidadMedida" text NOT NULL DEFAULT 'Pieza',
+          "observaciones" text NULL,
           status boolean NOT NULL DEFAULT true,
           "imagenPortada" varchar(512) NULL,
           "createdById" uuid NULL REFERENCES "${schemaName}".users(id) ON DELETE SET NULL,
           "createdAt" timestamptz NOT NULL DEFAULT now(),
           CONSTRAINT pk_products PRIMARY KEY (id)
         );
+
+        ALTER TABLE "${schemaName}".products ADD COLUMN IF NOT EXISTS "unidadMedida" text NOT NULL DEFAULT 'Pieza';
+        ALTER TABLE "${schemaName}".products ADD COLUMN IF NOT EXISTS "observaciones" text NULL;
+        ALTER TABLE "${schemaName}".products DROP COLUMN IF EXISTS "requiere_analisis";
 
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".product_files (
@@ -645,7 +650,7 @@ SOLICITUD OBLIGATORIA DE TELÉFONO PARA IDENTIFICACIÓN: El número de teléfono
 NO AUTOCOMPLETAR/SIMULAR HERRAMIENTAS: Tu respuesta debe finalizar inmediatamente al cerrar el JSON de tu turno (la llave de cierre }). Está estrictamente PROHIBIDO que simules la ejecución de la herramienta, que escribas '[Herramienta] ...' o que inventes el resultado del sistema.
 Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quejas, molestia o si el cliente lo solicita.`;
 
-      const comercialPrompt = `${baseCommonPrompt}\n\n[INSTRUCCIONES COMERCIALES]\n- Registra oportunidades en el CRM.\n- PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento. Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta consult_product_catalog para consultar la base de datos real.\n- REGLA CRÍTICA DE INVENTARIO: No manejan stock. Si el producto existe en Cube.dev/RAG, está disponible para cotización. NUNCA respondas que no hay stock en almacén.\n- Si el producto tiene manuales PDF en RAG, resume especificaciones clave.\n- Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity.\n- Para detalles de compatibilidad, especificaciones o disponibilidad del catálogo, llama a consult_product_catalog.\n- Si hay una oportunidad activa del mismo producto, actualízala con modifyOpportunity.`;
+      const comercialPrompt = `${baseCommonPrompt}\n\n[INSTRUCCIONES COMERCIALES]\n- Registra oportunidades en el CRM.\n- PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento. Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta consult_product_catalog para consultar la base de datos real.\n- PRECIOS, UNIDADES DE MEDIDA Y OBSERVACIONES: Todos los productos tienen un precio base y una unidad de medida asignada (ej. pieza, servicio, licencia, hora). Muestra siempre el precio base indicando su unidad de medida. Si el producto contiene observaciones o notas de precio (ej. 'no incluye IVA', 'no incluye instalación', 'precio refleja configuración básica'), DEBES comunicar de forma explícita dichas observaciones o condicionantes al cliente al entregar la información o cotización.\n- VARIANTES DE PRODUCTO: Las variantes (como colores o modelos) se manejan como productos independientes dentro del catálogo.\n- REGLA CRÍTICA DE INVENTARIO: No manejan stock. Si el producto existe en Cube.dev/RAG, está disponible para cotización. NUNCA respondas que no hay stock en almacén.\n- Si el producto tiene manuales PDF en RAG, resume especificaciones clave.\n- Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity.\n- Para detalles de compatibilidad, especificaciones o disponibilidad del catálogo, llama a consult_product_catalog.\n- Si hay una oportunidad activa del mismo producto, actualízala con modifyOpportunity.`;
 
       const seguimientoPrompt = `${baseCommonPrompt}\n\n[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]\n- Tu objetivo es agendar llamadas, demostraciones o reuniones con un ejecutivo especializado.\n- Consulta disponibilidad usando checkAvailability antes de agendar.\n- Si está AVAILABLE, agenda con createActivity y añade recordatorios de forma proactiva.\n- Si está UNAVAILABLE, ofrece los slots de suggestedSlots.\n- Si falta fecha u hora, pregúntala. Si da ambos datos, agenda de inmediato.\n- Vincula la actividad con el cliente. No uses UUIDs del sistema.`;
 

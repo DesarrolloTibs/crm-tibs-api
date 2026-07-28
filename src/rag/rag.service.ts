@@ -404,7 +404,8 @@ export class RagService implements OnModuleInit {
     nombre: string,
     descripcion: string | null,
     precioBase?: number | null,
-    requiereAnalisis?: boolean,
+    unidadMedida?: string,
+    observaciones?: string | null,
   ): Promise<void> {
     try {
       // ── Pre-validación de suscripción (solo esquemas tenant) ──
@@ -430,9 +431,10 @@ export class RagService implements OnModuleInit {
       );
 
       // 2. Construir el texto del catálogo estructurado con todos los atributos clave
-      const precioText = precioBase ? `$${precioBase} MXN` : 'A la medida / Por definir';
-      const analisisText = requiereAnalisis ? 'Sí (Requiere cotización personalizada)' : 'No (Precio estándar)';
-      const contentText = `Producto: ${nombre}\nDescripción: ${descripcion || 'Sin descripción'}\nPrecio Base: ${precioText}\nRequiere Análisis Técnico: ${analisisText}`;
+      const unidadText = unidadMedida || 'Pieza';
+      const precioText = precioBase !== undefined && precioBase !== null ? `$${precioBase} MXN por ${unidadText}` : `Por definir por ${unidadText}`;
+      const obsText = observaciones && observaciones.trim() ? observaciones.trim() : 'Sin observaciones / notas adicionales';
+      const contentText = `Producto: ${nombre}\nPrecio Base: ${precioText}\nUnidad de Medida: ${unidadText}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${obsText}\nDescripción: ${descripcion || 'Sin descripción'}`;
 
       // 3. Crear el formato de documento de LangChain
       const document = {

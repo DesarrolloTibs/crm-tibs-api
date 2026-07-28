@@ -16,8 +16,11 @@ export class Product {
   @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
   precioBase: number | null;
 
-  @Column({ type: 'boolean', default: false })
-  requiere_analisis: boolean;
+  @Column({ type: 'text', default: 'Pieza' })
+  unidadMedida: string;
+
+  @Column({ type: 'text', nullable: true })
+  observaciones: string | null;
 
   @Column({ type: 'boolean', default: true })
   status: boolean;

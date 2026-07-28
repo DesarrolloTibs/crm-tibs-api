@@ -150,6 +150,8 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
       const comercialInstructions = `[INSTRUCCIONES COMERCIALES]
 - Registra oportunidades en el CRM.
 - PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento. Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta consult_product_catalog para consultar la base de datos real.
+- REGLA CRÍTICA OBLIGATORIA DE PRECIOS, UNIDADES DE MEDIDA Y OBSERVACIONES: Todos los productos tienen un precio base y una unidad de medida asignada (ej. pieza, servicio, licencia, hora). Muestra siempre el precio base indicando su unidad de medida. Si el producto devuelto por consult_product_catalog o RAG contiene observaciones o notas de precio (ej. 'no incluye IVA', 'no incluye instalación', 'precio refleja configuración básica'), DEBES comunicar de forma explícita y completa dichas observaciones o condicionantes al cliente en tu respuesta al entregar el precio o la cotización. NUNCA omitas las observaciones o notas del producto.
+- VARIANTES DE PRODUCTO: Las variantes (como colores o modelos) se manejan como productos independientes dentro del catálogo.
 - REGLA CRÍTICA DE INVENTARIO: No manejan stock. Si el producto existe en Cube.dev/RAG, está disponible para cotización. NUNCA respondas que no hay stock en almacén.
 - Si el producto tiene manuales PDF en RAG, resume especificaciones clave.
 - Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity.
@@ -175,7 +177,7 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
 - No intentes llamar a ninguna herramienta si el cliente solo te saluda.`;
 
       if (count > 0) {
-        // RESPETAR LA FUENTE DE VERDAD Y AUTO-MIGRACIÓN DE TEXTOS 'ASESOR HUMANO' EN BD
+        // RESPETAR LA FUENTE DE VERDAD Y AUTO-MIGRACIÓN DE TEXTOS EN BD
         try {
           const existingAgents = await this.aiSubAgentRepository.find();
           for (const sa of existingAgents) {
@@ -190,6 +192,10 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
               sa.description = sa.description
                 .replace(/asesor humano/g, 'ejecutivo especializado')
                 .replace(/asesores/g, 'ejecutivos especializados');
+              modified = true;
+            }
+            if (sa.key === 'comercial' && (!sa.context || !sa.context.includes('OBSERVACIONES'))) {
+              sa.context = `${baseCommonPrompt}\n\n${comercialInstructions}`;
               modified = true;
             }
             if (modified) {
@@ -783,7 +789,8 @@ Campos: activityText(str), date(ISO 8601 UTC), typeActivityId(num), opportunityI
 Campos: title(str), description(str), priority(1=Bajo,2=Medio,3=Alto), category(str).
 {"thought": "Registrar ticket.", "tool_name": "createTicket", "tool_input": {"title": "Error login", "description": "Falla acceso", "priority": 2, "category": "Soporte"}}`,
 
-          consult_product_catalog: `7. consult_product_catalog: Consulta información de productos en el catálogo, especificaciones técnicas, compatibilidad o precios. Úsala de forma libre para buscar cualquier producto o categoría.
+          consult_product_catalog: `7. consult_product_catalog: Consulta información de productos en el catálogo, especificaciones técnicas, compatibilidad, observaciones o precios. Úsala de forma libre para buscar cualquier producto o categoría.
+REGLA CRÍTICA: Si el producto devuelto contiene "Observaciones / Notas" (ej. 'no incluye IVA', 'no incluye instalación'), DEBES MENCIONAR DICHAS OBSERVACIONES O CONDICIONANTES de forma obligatoria en la respuesta final al cliente.
 Campos: query(str, término de búsqueda o pregunta libre).
 {"thought": "Consultar catálogo.", "tool_name": "consult_product_catalog", "tool_input": {"query": "término o producto a buscar"}}`
         };
@@ -1139,10 +1146,10 @@ Asistente:`;
               cubeResults.push(...fallbackResults);
             }
             
-            // Truncar fragmentos de texto para evitar exceder el límite de tokens de entrada de la IA
+            // Truncar fragmentos de texto muy extensos para evitar exceder el límite de tokens de entrada de la IA
             const truncatedResults = ragResults.map(r => ({
-              content: r.pageContent && r.pageContent.length > 300 
-                ? r.pageContent.substring(0, 300) + '... (texto truncado por límite de tokens)' 
+              content: r.pageContent && r.pageContent.length > 1000 
+                ? r.pageContent.substring(0, 1000) + '... (texto truncado por límite de tokens)' 
                 : r.pageContent,
               metadata: r.metadata
             }));
@@ -2204,7 +2211,8 @@ Asistente:`;
               'Productos.nombre',
               'Productos.descripcion',
               'Productos.precioBase',
-              'Productos.requiereAnalisis',
+              'Productos.unidadMedida',
+              'Productos.observaciones',
               'Productos.status'
             ],
             filters
@@ -2225,9 +2233,10 @@ Asistente:`;
         return data.data.map((p: any) => ({
           content: `[PRODUCTO EN EL CATALOGO - CAPA SEMÁNTICA CUBE.DEV]
 Nombre del Producto: ${p['Productos.nombre']}
+Precio Base: $${p['Productos.precioBase'] !== undefined && p['Productos.precioBase'] !== null ? p['Productos.precioBase'] : 0} MXN por ${p['Productos.unidadMedida'] || 'Pieza'}
+Unidad de Medida: ${p['Productos.unidadMedida'] || 'Pieza'}
+Observaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p['Productos.observaciones'] && p['Productos.observaciones'].trim() ? p['Productos.observaciones'].trim() : 'Sin observaciones'}
 Descripción del Producto: ${p['Productos.descripcion'] || 'Sin descripción'}
-Precio de Lista / Base: ${p['Productos.precioBase'] ? `$${p['Productos.precioBase']} MXN` : 'A la medida / Por definir'}
-Requiere Análisis Técnico: ${p['Productos.requiereAnalisis'] === 'true' || p['Productos.requiereAnalisis'] === true ? 'Sí (A la medida)' : 'No (Estándar)'}
 Estado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? 'Activo' : 'Inactivo'}`,
           metadata: { source: 'cube-semantic-layer', productId: p['Productos.id'] }
         }));
@@ -2258,37 +2267,36 @@ Estado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? '
         relations: ['product']
       });
 
-      let syncedCount = 0;
       const fs = require('fs');
-      for (const file of files) {
-        if (file.fileName.toLowerCase().endsWith('.pdf') || file.filePath.toLowerCase().endsWith('.pdf')) {
-          const product = file.product;
-          if (!product) continue;
-
-          const productKey = product.nombre
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/(^-|-$)+/g, '');
-
+      for (const pf of files) {
+        if (pf.filePath && (pf.filePath.toLowerCase().endsWith('.pdf') || pf.fileName.toLowerCase().endsWith('.pdf'))) {
           try {
-            const absolutePath = `./${file.filePath}`;
-            if (fs.existsSync(absolutePath)) {
-              const fileBuffer = fs.readFileSync(absolutePath);
-              await this.ragService.ingestPdf(fileBuffer, file.fileName, productKey);
-              syncedCount++;
+            const productKey = pf.product.nombre
+              .toLowerCase()
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .replace(/[^a-z0-9]+/g, '-')
+              .replace(/(^-|-$)+/g, '');
+
+            const pathCandidates = [pf.filePath, `./${pf.filePath}`];
+            let fileBuffer: Buffer | null = null;
+            for (const p of pathCandidates) {
+              if (fs.existsSync(p)) {
+                fileBuffer = fs.readFileSync(p);
+                break;
+              }
             }
-          } catch (fileErr) {
-            this.logger.error(`Error al indexar archivo retrospectivo '${file.fileName}': ${fileErr.message}`);
+
+            if (fileBuffer) {
+              await this.ragService.ingestPdf(fileBuffer, pf.fileName, productKey);
+            }
+          } catch (e: any) {
+            this.logger.warn(`No se pudo sincronizar el archivo PDF '${pf.fileName}': ${e.message}`);
           }
         }
       }
-      this.logger.log(`Sincronización retrospectiva finalizada. Se indexaron ${syncedCount} fichas técnicas PDF en pgvector.`);
-      // Sincronizar también los productos del catálogo en base de datos
-      await this.syncCatalogProductsToRag();
-    } catch (err) {
-      this.logger.error(`Error en la sincronización retrospectiva de fichas RAG: ${err.message}`);
+    } catch (err: any) {
+      this.logger.error(`Error en la sincronización retrospectiva de PDFs a RAG: ${err.message}`);
     }
   }
 
@@ -2304,7 +2312,7 @@ Estado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? '
 
       let syncedCount = 0;
       for (const product of products) {
-        await this.ragService.ingestProduct(product.id, product.nombre, product.descripcion, product.precioBase as number | null, product.requiere_analisis);
+        await this.ragService.ingestProduct(product.id, product.nombre, product.descripcion, product.precioBase as number | null, product.unidadMedida, product.observaciones);
         syncedCount++;
       }
       this.logger.log(`Sincronización de catálogo finalizada. Se indexaron ${syncedCount} productos en pgvector.`);

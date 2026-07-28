@@ -44,9 +44,14 @@ cube(`Productos`, {
       type: `number`
     },
 
-    requiereAnalisis: {
-      sql: `requiere_analisis`,
-      type: `boolean`
+    unidadMedida: {
+      sql: `COALESCE("unidadMedida", 'Pieza')`,
+      type: `string`
+    },
+
+    observaciones: {
+      sql: `observaciones`,
+      type: `string`
     },
 
     status: {

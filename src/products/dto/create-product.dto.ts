@@ -28,8 +28,13 @@ export class CreateProductDto {
   @IsOptional()
   imagenPortada?: string | null;
 
-  @ApiPropertyOptional({ description: 'Indica si el producto requiere análisis o es a la medida', default: false })
-  @IsBoolean()
+  @ApiPropertyOptional({ description: 'Unidad de medida del producto (ej: Pieza, Servicio)', default: 'Pieza' })
+  @IsString()
   @IsOptional()
-  requiere_analisis?: boolean;
+  unidadMedida?: string;
+
+  @ApiPropertyOptional({ description: 'Observaciones / Notas del producto', nullable: true })
+  @IsString()
+  @IsOptional()
+  observaciones?: string | null;
 }

@@ -41,7 +41,7 @@ export class ProductsService {
       createdById: validUserId,
     });
     const saved = await this.productRepository.save(product);
-    await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.requiere_analisis);
+    await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.unidadMedida, saved.observaciones);
     return saved;
   }
 
@@ -85,7 +85,7 @@ export class ProductsService {
     }
     const saved = await this.productRepository.save(product);
     if (saved.status) {
-      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.requiere_analisis);
+      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.unidadMedida, saved.observaciones);
     } else {
       await this.ragService.deleteProduct(saved.id);
     }
@@ -97,7 +97,7 @@ export class ProductsService {
     product.status = status;
     const saved = await this.productRepository.save(product);
     if (saved.status) {
-      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.requiere_analisis);
+      await this.ragService.ingestProduct(saved.id, saved.nombre, saved.descripcion, saved.precioBase, saved.unidadMedida, saved.observaciones);
     } else {
       await this.ragService.deleteProduct(saved.id);
     }

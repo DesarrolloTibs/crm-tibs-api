@@ -509,3 +509,11 @@ CREATE TABLE IF NOT EXISTS ticket_interactions (
 -- Agregar columna notified a la tabla reminders si no existe
 ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notified boolean NOT NULL DEFAULT false;
 
+-- =========================================================================
+-- ACTUALIZACIÓN CATÁLOGO DE PRODUCTOS (S&S / Billy Sales & Service) (2026-07-27)
+-- =========================================================================
+ALTER TABLE products ADD COLUMN IF NOT EXISTS "unidadMedida" text NOT NULL DEFAULT 'Pieza';
+ALTER TABLE products ADD COLUMN IF NOT EXISTS "observaciones" text NULL;
+ALTER TABLE products DROP COLUMN IF EXISTS "requiere_analisis";
+
+
