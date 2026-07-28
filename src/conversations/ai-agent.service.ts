@@ -21,6 +21,7 @@ import { DeliveryTypeOption } from '../opportunities/entities/delivery-type-opti
 import { LicensingOption } from '../opportunities/entities/licensing-option.entity';
 import { RagService } from '../rag/rag.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { PhoneUtils } from '../common/utils/phone.utils';
 import { StateGraph, Annotation, START, END } from '@langchain/langgraph';
 
 import { 
@@ -625,8 +626,22 @@ Genera la clasificación en formato JSON (iniciando con { y terminando con }):`;
 
       // Nodo de Identificación Dinámica por Teléfono
       const identificationNode = async (state: AgentState): Promise<Partial<AgentState>> => {
-        this.logger.log('[LangGraph - Identificación] Cliente sin teléfono registrado. Solicitando número telefónico.');
+        this.logger.log('[LangGraph - Identificación] Cliente sin teléfono registrado. Verificando o solicitando número telefónico.');
         
+        // 1. Detección determinista inmediata en el mensaje entrante
+        const extractedPhone = PhoneUtils.extractPhoneFromText(incomingContent);
+        if (extractedPhone) {
+          this.logger.log(`[LangGraph - Identificación] Teléfono detectado determinísticamente: ${extractedPhone}`);
+          return {
+            nextAction: 'call_tool',
+            toolCallName: 'registerContact',
+            toolCallInput: {
+              nombre: conversation.clientName || 'Visitante',
+              telefono: extractedPhone,
+            },
+          };
+        }
+
         const identPrompt = `
 Eres el Sub-Agente de Registro del CRM. Tu objetivo único u obligatorio es obtener el NÚMERO DE TELÉFONO del cliente como identificador principal en el CRM de la empresa antes de procesar cotizaciones, agendamientos o consultas del catálogo.
 
@@ -1582,28 +1597,45 @@ Asistente:`;
           }
         }
 
-        case 'registerContact': {
+        case 'registerContact':
+        case 'updateContact': {
           let email = input.correo || null;
           let phone = input.telefono ? String(input.telefono).trim() : null;
 
-          // Búsqueda previa por teléfono (variantes e internacional) para unificar cliente existente si ya fue registrado previamente en el CRM
+          const oldClientId = conversation.clientId;
           let client: Client | null = null;
+
           if (phone) {
             client = await this.clientsService.findByPhone(phone);
           }
 
           if (client) {
-            // Cliente existente encontrado por teléfono
+            // Se encontró un cliente existente en el CRM por número telefónico
             if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
               const names = this.splitFullName(input.nombre);
               client.nombre = names.nombre;
               if (names.apellido) client.apellido = names.apellido;
+            }
+            if (email) client.correo = email;
+            await this.clientRepository.save(client);
+          } else if (conversation.clientId) {
+            // No se encontró otro cliente por teléfono, pero la conversación ya tiene un registro de cliente asignado (ej: Visitante Webchat)
+            client = await this.clientRepository.findOne({ where: { id: conversation.clientId } });
+            if (client) {
+              if (phone) client.telefono = phone;
               if (email) client.correo = email;
+              if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
+                const names = this.splitFullName(input.nombre);
+                client.nombre = names.nombre;
+                if (names.apellido) client.apellido = names.apellido;
+              }
               await this.clientRepository.save(client);
             }
-          } else {
-            // Crear nuevo cliente en el CRM
-            const names = this.splitFullName(input.nombre || 'Visitante Webchat');
+          }
+
+          if (!client) {
+            // Si no existía un cliente asignado previamente ni se encontró por teléfono, crear uno nuevo
+            const names = this.splitFullName(input.nombre || 'Visitante');
             client = await this.clientsService.create({
               nombre: names.nombre,
               apellido: names.apellido,
@@ -1613,65 +1645,30 @@ Asistente:`;
             } as any);
           }
 
+          // 1. Reasignar tanto el objeto relacional client como la propiedad clientId en memoria y en la BD usando QueryBuilder directo
+          conversation.client = client;
           conversation.clientId = client.id;
           conversation.clientName = `${client.nombre} ${client.apellido || ''}`.trim();
-          await this.clientRepository.manager.save(Conversation, conversation);
 
-          return { status: 'SUCCESS', message: 'Contacto identificado por teléfono y vinculado', clientId: client.id, clientName: conversation.clientName };
-        }
+          await this.clientRepository.manager.getRepository(Conversation)
+            .createQueryBuilder()
+            .update(Conversation)
+            .set({ clientId: client.id, clientName: conversation.clientName })
+            .where('id = :id', { id: conversation.id })
+            .execute();
 
-        case 'updateContact': {
-          let phone = input.telefono ? String(input.telefono).trim() : null;
-
-          // Si nos dan un teléfono y existe otro cliente con ese teléfono en la BD, unificamos a ese cliente
-          if (phone) {
-            const existingClient = await this.clientsService.findByPhone(phone);
-            if (existingClient) {
-              conversation.clientId = existingClient.id;
-              if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
-                const names = this.splitFullName(input.nombre);
-                existingClient.nombre = names.nombre;
-                if (names.apellido) existingClient.apellido = names.apellido;
-                if (input.correo) existingClient.correo = input.correo;
-                await this.clientRepository.save(existingClient);
-              }
-              conversation.clientName = `${existingClient.nombre} ${existingClient.apellido || ''}`.trim();
-              await this.clientRepository.manager.save(Conversation, conversation);
-
-              return { status: 'SUCCESS', message: 'Contacto unificado por número de teléfono en el CRM', client: { id: existingClient.id, nombre: existingClient.nombre, apellido: existingClient.apellido, correo: existingClient.correo, telefono: existingClient.telefono } };
-            }
+          // 2. Si la conversación tenía un cliente temporal distinto al actual, eliminarlo limpiamente del CRM
+          if (oldClientId && oldClientId !== client.id) {
+            await this.deleteTemporaryClientIfUnused(oldClientId, client.id);
           }
 
-          if (!conversation.clientId) {
-            const names = this.splitFullName(input.nombre || 'Visitante');
-            const created = await this.clientsService.create({
-              nombre: names.nombre,
-              apellido: names.apellido,
-              correo: input.correo || null,
-              telefono: phone,
-              ejecutivo_id: conversation.assignedUserId || undefined,
-            } as any);
-            conversation.clientId = created.id;
-            conversation.clientName = `${created.nombre} ${created.apellido || ''}`.trim();
-            await this.clientRepository.manager.save(Conversation, conversation);
-            return { status: 'SUCCESS', message: 'Contacto registrado en el CRM', client: created };
-          }
-          
-          const updateData: any = {};
-          if (input.nombre) {
-            const names = this.splitFullName(input.nombre);
-            updateData.nombre = names.nombre;
-            updateData.apellido = names.apellido;
-          }
-          if (input.correo !== undefined) updateData.correo = input.correo;
-          if (input.telefono !== undefined) updateData.telefono = phone;
-
-          const updated = await this.clientsService.update(conversation.clientId, updateData);
-
-          conversation.clientName = `${updated.nombre} ${updated.apellido || ''}`.trim();
-          await this.clientRepository.manager.save(Conversation, conversation);
-
-          return { status: 'SUCCESS', message: 'Contacto actualizado en el CRM', client: { id: updated.id, nombre: updated.nombre, apellido: updated.apellido, correo: updated.correo, telefono: updated.telefono } };
+          return {
+            status: 'SUCCESS',
+            message: 'Contacto identificado y actualizado correctamente en el CRM',
+            clientId: client.id,
+            clientName: conversation.clientName,
+            client: { id: client.id, nombre: client.nombre, apellido: client.apellido, correo: client.correo, telefono: client.telefono }
+          };
         }
 
         case 'createActivity': {
@@ -2445,6 +2442,67 @@ NUEVO RESUMEN ACUMULADO:`;
       }
     } catch (err) {
       this.logger.error(`Error al actualizar resumen conversacional incremental: ${err.message}`);
+    }
+  }
+
+  /**
+   * Elimina de forma segura un cliente temporal desvinculado si no posee teléfono distinto o fue unificado.
+   */
+  private async deleteTemporaryClientIfUnused(oldClientId: string | null | undefined, newClientId: string): Promise<void> {
+    if (!oldClientId || oldClientId === newClientId) return;
+    try {
+      const oldClient = await this.clientRepository.findOne({ where: { id: oldClientId } });
+      if (!oldClient) return;
+
+      const oldPhoneClean = PhoneUtils.cleanDigits(oldClient.telefono);
+      const newClient = await this.clientRepository.findOne({ where: { id: newClientId } });
+      const newPhoneClean = PhoneUtils.cleanDigits(newClient?.telefono);
+
+      const isSamePhoneOrEmpty = !oldPhoneClean || (newPhoneClean && (oldPhoneClean === newPhoneClean || PhoneUtils.extractSubscriberSuffix(oldPhoneClean) === PhoneUtils.extractSubscriberSuffix(newPhoneClean)));
+      if (!isSamePhoneOrEmpty) {
+        this.logger.log(`No se elimina cliente previo ${oldClientId} porque posee un teléfono distinto (${oldClient.telefono}).`);
+        return;
+      }
+
+      // Re-vincular cualquier conversación residual en BD que aún apunte a oldClientId
+      await this.clientRepository.manager.createQueryBuilder()
+        .update(Conversation)
+        .set({ clientId: newClientId })
+        .where('clientId = :oldClientId', { oldClientId })
+        .execute();
+
+      // Re-vincular cualquier Oportunidad en BD asociada a oldClientId
+      try {
+        await this.clientRepository.manager.createQueryBuilder()
+          .update('opportunities')
+          .set({ cliente_id: newClientId })
+          .where('cliente_id = :oldClientId', { oldClientId })
+          .execute();
+      } catch (e) {}
+
+      // Re-vincular cualquier Ticket en BD asociado a oldClientId
+      try {
+        await this.clientRepository.manager.createQueryBuilder()
+          .update('tickets')
+          .set({ clientId: newClientId })
+          .where('clientId = :oldClientId', { oldClientId })
+          .execute();
+      } catch (e) {}
+
+      // Re-vincular cualquier Actividad en BD asociada a oldClientId
+      try {
+        await this.clientRepository.manager.createQueryBuilder()
+          .update('activities')
+          .set({ clientId: newClientId })
+          .where('clientId = :oldClientId', { oldClientId })
+          .execute();
+      } catch (e) {}
+
+      // Eliminar el cliente temporal desvinculado de la base de datos
+      await this.clientRepository.delete(oldClientId);
+      this.logger.log(`Cliente temporal (${oldClientId}) desvinculado y re-enlazado a ${newClientId} fue eliminado con éxito del CRM.`);
+    } catch (err: any) {
+      this.logger.warn(`No se pudo eliminar el cliente temporal ${oldClientId}: ${err.message}`);
     }
   }
 

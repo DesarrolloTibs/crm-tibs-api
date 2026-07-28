@@ -86,4 +86,28 @@ export class PhoneUtils {
 
     return Array.from(variants).filter((v) => v.length > 0);
   }
+
+  /**
+   * Extrae el primer número de teléfono candidato (7 a 15 dígitos) de un texto libre.
+   */
+  static extractPhoneFromText(text: string | null | undefined): string | null {
+    if (!text) return null;
+
+    // 1. Intentar coincidencia con patrones telefónicos con o sin código de país (+52 55 1234 5678, (555) 123-4567, 5551234567)
+    const match = text.match(/(?:\+?\d{1,3}[\s\-]?)?(?:\(?\d{2,4}\)?[\s\-]?)?\d{3,4}[\s\-]?\d{4}/);
+    if (match) {
+      const cleaned = PhoneUtils.cleanDigits(match[0]);
+      if (cleaned.length >= 7 && cleaned.length <= 15) {
+        return cleaned;
+      }
+    }
+
+    // 2. Fallback: Si el texto completo despojado de caracteres no numéricos tiene entre 7 y 15 dígitos
+    const cleanAll = PhoneUtils.cleanDigits(text);
+    if (cleanAll.length >= 7 && cleanAll.length <= 15) {
+      return cleanAll;
+    }
+
+    return null;
+  }
 }

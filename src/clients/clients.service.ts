@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindManyOptions, FindOptionsWhere, Repository } from 'typeorm';
+import { FindManyOptions, FindOptionsWhere, Repository, Brackets } from 'typeorm';
 import { Client } from './entities/client.entity';
 import { Company } from '../companies/entities/company.entity';
 import { CreateClientDto } from './dto/create-client.dto';
@@ -22,6 +22,9 @@ export class ClientsService {
    */
   async findByPhone(phone: string | null | undefined): Promise<Client | null> {
     if (!phone) return null;
+    const clean = PhoneUtils.cleanDigits(phone);
+    if (!clean || clean.length < 7) return null;
+
     const variants = PhoneUtils.getPhoneVariants(phone);
     if (!variants || variants.length === 0) return null;
 
@@ -29,12 +32,16 @@ export class ClientsService {
 
     const qb = this.clientRepository.createQueryBuilder('client')
       .leftJoinAndSelect('client.ejecutivo', 'ejecutivo')
-      .leftJoinAndSelect('client.company', 'company')
-      .where('client.telefono IN (:...variants)', { variants });
+      .leftJoinAndSelect('client.company', 'company');
 
-    if (suffix && suffix.length >= 8) {
-      qb.orWhere("REGEXP_REPLACE(client.telefono, '[^0-9]', '', 'g') LIKE :suffix", { suffix: `%${suffix}` });
-    }
+    qb.where(
+      new Brackets((inner) => {
+        inner.where('client.telefono IN (:...variants)', { variants });
+        if (suffix && suffix.length >= 8) {
+          inner.orWhere("REGEXP_REPLACE(client.telefono, '[^0-9]', '', 'g') LIKE :suffix", { suffix: `%${suffix}` });
+        }
+      }),
+    );
 
     return qb.getOne();
   }

@@ -65,18 +65,16 @@ export class RemindersService {
     });
 
     if (existing) {
-      if (existing.notified) {
-        // Si ya fue notificado, omitimos la actualización para no interferir con cambios en el resto de la actividad
-        return existing;
-      }
       existing.title = data.title;
       existing.date = new Date(data.date);
+      existing.notified = false;
       return this.reminderRepository.save(existing);
     }
 
     const reminder = this.reminderRepository.create({
       title: data.title,
       date: new Date(data.date),
+      notified: false,
       activityId,
     });
     return this.reminderRepository.save(reminder);

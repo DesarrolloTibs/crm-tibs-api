@@ -600,6 +600,112 @@ export class MailService {
   }
 
   /**
+   * Envía un correo electrónico de recordatorio de actividad a un cliente o contacto.
+   */
+  async sendActivityReminderToClient(
+    to: string,
+    clientName: string,
+    activityTitle: string,
+    reminderTitle: string,
+    date: Date,
+    opportunityName?: string,
+  ): Promise<void> {
+    const from = this.configService.get<string>('SMTP_FROM') || '"Billy Sales & Services" <noreply@tibs.com.mx>';
+    const apiUrl = this.getApiUrl();
+    const formattedClientName = clientName ? clientName.trim() : 'Estimado(a) cliente';
+
+    const formattedDate = new Date(date).toLocaleDateString('es-MX', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Recordatorio de Actividad - Billy Sales & Services</title>
+        <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+        <style>
+          body {
+            font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background-color: #f8fafc;
+            margin: 0;
+            padding: 0;
+            -webkit-font-smoothing: antialiased;
+          }
+        </style>
+      </head>
+      <body style="background-color: #f8fafc; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 40px 0; margin: 0; width: 100%;">
+        <table align="center" border="0" cellpadding="0" cellspacing="0" width="550" style="background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; margin: 0 auto;">
+          <!-- HEADER -->
+          <tr>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/header_reminder_activity.png" alt="Header" style="width: 100%; max-width: 550px; display: block; border-top-left-radius: 16px; border-top-right-radius: 16px;" />
+            </td>
+          </tr>
+          <!-- CONTENT -->
+          <tr>
+            <td style="padding: 40px 30px; text-align: left;">
+              <p style="color: #000000; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 700; margin: 0 0 20px 0;">
+                Hola ${formattedClientName},
+              </p>
+              <p style="color: #334155; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 15px; margin: 0 0 24px 0; line-height: 1.6;">
+                Te enviamos un cordial saludo. Le recordamos que tiene una actividad programada en nuestro sistema:
+              </p>
+
+              <!-- CARD -->
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 24px;">
+                <tr>
+                  <td style="padding: 20px; text-align: left;">
+                    <p style="margin: 0 0 8px 0; font-size: 15px; font-weight: 700; color: #1e293b;">
+                      ${reminderTitle || activityTitle || 'Recordatorio de Actividad'}
+                    </p>
+                    ${activityTitle ? `<p style="margin: 0 0 8px 0; font-size: 14px; color: #475569;"><strong>Actividad:</strong> ${activityTitle}</p>` : ''}
+                    <p style="margin: 0 0 8px 0; font-size: 14px; color: #475569;">
+                      <strong>Fecha y Hora:</strong> ${formattedDate}
+                    </p>
+                    ${opportunityName ? `<p style="margin: 0; font-size: 14px; color: #475569;"><strong>Oportunidad:</strong> ${opportunityName}</p>` : ''}
+                  </td>
+                </tr>
+              </table>
+
+              <p style="color: #64748b; font-family: 'Open Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 14px; margin: 0; line-height: 1.6;">
+                Si tiene alguna duda o requiere reprogramar, por favor póngase en contacto con su ejecutivo asignado.
+              </p>
+            </td>
+          </tr>
+          <!-- FOOTER -->
+          <tr>
+            <td align="center" style="padding: 0; text-align: center;">
+              <img src="${apiUrl}/static/footer.png" alt="Footer" style="width: 100%; max-width: 550px; display: block; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px;" />
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    try {
+      await this.transporter.sendMail({
+        from,
+        to,
+        subject: `Recordatorio: ${reminderTitle || activityTitle}`,
+        html: htmlContent,
+      });
+      this.logger.log(`Correo de recordatorio enviado a cliente ${to}`);
+    } catch (error) {
+      this.logger.error(`Error al enviar correo de recordatorio a cliente ${to}:`, error);
+    }
+  }
+
+  /**
    * Retorna los colores de la etiqueta según el tipo de actividad para enriquecer visualmente el correo.
    */
   private getActivityTypeBadgeColor(type: string): { bg: string; fg: string } {

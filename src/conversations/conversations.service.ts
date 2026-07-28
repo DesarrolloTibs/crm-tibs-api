@@ -1,7 +1,7 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Brackets } from 'typeorm';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { Client } from '../clients/entities/client.entity';
@@ -131,11 +131,14 @@ export class ConversationsService {
       const qb = this.conversationRepository.createQueryBuilder()
         .update(Conversation)
         .set({ clientId })
-        .where('clientId IS NULL AND externalId IN (:...variants)', { variants });
+        .where('clientId IS NULL');
 
-      if (suffix && suffix.length >= 8) {
-        qb.orWhere("clientId IS NULL AND REGEXP_REPLACE(externalId, '[^0-9]', '', 'g') LIKE :suffix", { suffix: `%${suffix}` });
-      }
+      qb.andWhere(new Brackets((inner) => {
+        inner.where('externalId IN (:...variants)', { variants });
+        if (suffix && suffix.length >= 8) {
+          inner.orWhere("REGEXP_REPLACE(externalId, '[^0-9]', '', 'g') LIKE :suffix", { suffix: `%${suffix}` });
+        }
+      }));
 
       await qb.execute();
     } catch (err: any) {

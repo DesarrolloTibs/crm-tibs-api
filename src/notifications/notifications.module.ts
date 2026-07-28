@@ -8,6 +8,8 @@ import { Ticket } from '../tickets/entities/ticket.entity';
 import { HelpdeskCronConfig } from '../tickets/entities/helpdesk-cron-config.entity';
 import { Notification } from './entities/notification.entity';
 import { Opportunity } from '../opportunities/entities/opportunity.entity';
+import { Client } from '../clients/entities/client.entity';
+import { Tenant } from '../tenants/entities/tenant.entity';
 import { MailModule } from '../mail/mail.module';
 import { NotificationsSchedulerService } from './notifications.scheduler.service';
 import { NotificationsController } from './notifications.controller';
@@ -17,7 +19,7 @@ import { TicketsModule } from '../tickets/tickets.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Reminder, Activity, User, Ticket, HelpdeskCronConfig, Notification, Opportunity]),
+    TypeOrmModule.forFeature([Reminder, Activity, User, Ticket, HelpdeskCronConfig, Notification, Opportunity, Client, Tenant]),
     MailModule,
     ConfigModule,
     forwardRef(() => TicketsModule),

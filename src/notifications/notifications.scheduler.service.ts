@@ -10,6 +10,9 @@ import { User } from '../users/entities/user.entity';
 import { Ticket } from '../tickets/entities/ticket.entity';
 import { HelpdeskCronConfig } from '../tickets/entities/helpdesk-cron-config.entity';
 import { Opportunity } from '../opportunities/entities/opportunity.entity';
+import { Client } from '../clients/entities/client.entity';
+import { Tenant } from '../tenants/entities/tenant.entity';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 import { Notification } from './entities/notification.entity';
 import { Role } from '../role.enum';
 import { MailService } from '../mail/mail.service';
@@ -35,11 +38,34 @@ export class NotificationsSchedulerService implements OnModuleInit {
     private readonly opportunityRepository: Repository<Opportunity>,
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
+    @InjectRepository(Client)
+    private readonly clientRepository: Repository<Client>,
+    @InjectRepository(Tenant)
+    private readonly tenantRepository: Repository<Tenant>,
     private readonly mailService: MailService,
     private readonly notificationsService: NotificationsService,
     private readonly configService: ConfigService,
     private readonly schedulerRegistry: SchedulerRegistry,
   ) {}
+
+  /**
+   * Obtiene la lista de todos los esquemas tenant activos registrados en el sistema,
+   * incluyendo 'public' como fallback.
+   */
+  private async getActiveSchemas(): Promise<string[]> {
+    const schemas = new Set<string>(['public']);
+    try {
+      const activeTenants = await this.tenantRepository.find({ where: { is_active: true } });
+      for (const t of activeTenants) {
+        if (t.schema_name && TenantContextService.validateSchemaName(t.schema_name)) {
+          schemas.add(t.schema_name);
+        }
+      }
+    } catch (err) {
+      this.logger.debug(`No se pudieron obtener esquemas tenant dinámicos: ${err.message}`);
+    }
+    return Array.from(schemas);
+  }
 
   /**
    * Al iniciar el módulo, programa el cron dinámico según la configuración
@@ -60,7 +86,12 @@ export class NotificationsSchedulerService implements OnModuleInit {
   async handleDailyNotificationsCron() {
     this.logger.log('Iniciando ejecución programada (cron) de notificaciones diarias a las 9:00 AM');
     try {
-      await this.sendDailyNotifications();
+      const schemas = await this.getActiveSchemas();
+      for (const schema of schemas) {
+        await TenantContextService.run({ tenantSchema: schema }, async () => {
+          await this.sendDailyNotifications();
+        });
+      }
       this.logger.log('Ejecución programada de notificaciones completada con éxito');
     } catch (error) {
       this.logger.error('Error durante la ejecución programada de notificaciones:', error);
@@ -78,54 +109,204 @@ export class NotificationsSchedulerService implements OnModuleInit {
   })
   async checkExactTimeReminders(): Promise<void> {
     try {
-      const now = new Date();
-      const pendingReminders = await this.reminderRepository.find({
-        where: {
-          notified: false,
-          date: LessThanOrEqual(now),
-        },
-        relations: [
-          'activity',
-          'activity.user',
-          'activity.opportunity',
-        ],
-      });
-
-      if (pendingReminders.length === 0) return;
-
-      this.logger.log(`Procesando ${pendingReminders.length} recordatorios programados a la hora exacta.`);
-
-      for (const rem of pendingReminders) {
-        // Notificar al ejecutivo de la oportunidad, o en su defecto al creador de la actividad
-        const userId = rem.activity?.opportunity?.ejecutivo_id || rem.activity?.userId;
-        if (!userId) {
-          this.logger.debug(`Omitiendo recordatorio "${rem.title}" (${rem.id}): No hay usuario asignado.`);
-          rem.notified = true;
-          await this.reminderRepository.save(rem);
-          continue;
-        }
-
-        const opportunityId = rem.activity?.opportunityId || undefined;
-
-        // Enviar notificación in-app y correo electrónico inmediatamente
-        const reminderMessage = `Tienes una actividad programada pendiente.<br/><br/>Actividad: <strong>${rem.activity?.activity || 'N/A'}</strong>.<br/>Recordatorio: <strong>${rem.title}</strong>.<br/><br/>Te recomendamos revisarla y darle seguimiento en el tiempo previsto.`;
-
-        await this.notificationsService.createAndSendNotification(
-          userId,
-          'Recordatorio de Actividad',
-          reminderMessage,
-          'activity_reminder',
-          opportunityId,
-          true, // Enviar correo electrónico
-        );
-
-        // Marcar como notificado
-        rem.notified = true;
-        await this.reminderRepository.save(rem);
+      const schemas = await this.getActiveSchemas();
+      for (const schema of schemas) {
+        await TenantContextService.run({ tenantSchema: schema }, async () => {
+          await this.processExactTimeRemindersForCurrentSchema();
+        });
       }
     } catch (error) {
       this.logger.error('Error procesando recordatorios a la hora exacta:', error);
     }
+  }
+
+  private async processExactTimeRemindersForCurrentSchema(): Promise<void> {
+    const now = new Date();
+    const pendingReminders = await this.reminderRepository.find({
+      where: {
+        notified: false,
+        date: LessThanOrEqual(now),
+      },
+      relations: [
+        'activity',
+        'activity.user',
+        'activity.opportunity',
+        'activity.opportunity.cliente',
+        'activity.opportunity.company',
+        'activity.opportunity.company.contacts',
+        'activity.opportunity.contacts',
+        'activity.client',
+        'activity.company',
+        'activity.company.contacts',
+        'activity.contacts',
+      ],
+    });
+
+    if (pendingReminders.length === 0) return;
+
+    const currentSchema = TenantContextService.getTenantSchema();
+    this.logger.log(`Procesando ${pendingReminders.length} recordatorios programados a la hora exacta (Esquema: ${currentSchema}).`);
+
+    for (const rem of pendingReminders) {
+      // Notificar al ejecutivo de la oportunidad, o en su defecto al creador de la actividad
+      const userId = rem.activity?.opportunity?.ejecutivo_id || rem.activity?.userId;
+      if (!userId) {
+        this.logger.debug(`Omitiendo recordatorio "${rem.title}" (${rem.id}): No hay usuario asignado.`);
+        rem.notified = true;
+        await this.reminderRepository.save(rem);
+        continue;
+      }
+
+      const opportunityId = rem.activity?.opportunityId || undefined;
+
+      // Enviar notificación in-app y correo electrónico al ejecutivo/usuario
+      const reminderMessage = `Tienes una actividad programada pendiente.<br/><br/>Actividad: <strong>${rem.activity?.activity || 'N/A'}</strong>.<br/>Recordatorio: <strong>${rem.title}</strong>.<br/><br/>Te recomendamos revisarla y darle seguimiento en el tiempo previsto.`;
+
+      await this.notificationsService.createAndSendNotification(
+        userId,
+        'Recordatorio de Actividad',
+        reminderMessage,
+        'activity_reminder',
+        opportunityId,
+        true, // Enviar correo electrónico al usuario
+      );
+
+      // Enviar notificaciones por correo a los clientes y contactos asignados a la actividad
+      if (rem.activity) {
+        try {
+          const clientRecipients = await this.resolveClientRecipientsForActivity(rem.activity);
+          this.logger.log(
+            `Enviando recordatorio de actividad a ${clientRecipients.length} clientes/contactos para recordatorio "${rem.title}" (${rem.id}) (Esquema: ${currentSchema})`,
+          );
+          for (const recipient of clientRecipients) {
+            await this.mailService.sendActivityReminderToClient(
+              recipient.email,
+              recipient.name,
+              rem.activity.activity,
+              rem.title,
+              rem.date,
+              rem.activity.opportunity?.nombre_proyecto,
+            );
+          }
+        } catch (clientMailError) {
+          this.logger.error(
+            `Error enviando correo de recordatorio a clientes para recordatorio ${rem.id}:`,
+            clientMailError,
+          );
+        }
+      }
+
+      // Marcar como notificado
+      rem.notified = true;
+      await this.reminderRepository.save(rem);
+    }
+  }
+
+  /**
+   * Resuelve todos los clientes y contactos asociados a una actividad (directos, de empresa o de oportunidad)
+   * garantizando que se devuelvan emails únicos.
+   */
+  private async resolveClientRecipientsForActivity(
+    activity: Activity,
+  ): Promise<Array<{ email: string; name: string }>> {
+    const recipientsMap = new Map<string, string>(); // key: lowercase email, value: name
+
+    const addRecipient = (email?: string | null, name?: string | null) => {
+      if (!email) return;
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail || !cleanEmail.includes('@')) return;
+      if (!recipientsMap.has(cleanEmail)) {
+        recipientsMap.set(cleanEmail, (name || '').trim() || 'Estimado(a) cliente');
+      }
+    };
+
+    if (!activity) return [];
+
+    // 1. Cliente individual directo en la actividad
+    if (activity.client) {
+      const name = `${activity.client.nombre || ''} ${activity.client.apellido || ''}`;
+      addRecipient(activity.client.correo, name);
+    }
+
+    // 2. Contactos directos en la actividad (ManyToMany activity.contacts)
+    if (activity.contacts && activity.contacts.length > 0) {
+      for (const contact of activity.contacts) {
+        const name = `${contact.nombre || ''} ${contact.apellido || ''}`;
+        addRecipient(contact.correo, name);
+      }
+    }
+
+    // 3. Empresa directa en la actividad
+    const companyId = activity.companyId || activity.company?.id;
+    if (activity.company) {
+      // Correo propio de la empresa
+      addRecipient(activity.company.correo, activity.company.nombre);
+      // Contactos de la empresa si están cargados
+      if (activity.company.contacts && activity.company.contacts.length > 0) {
+        for (const contact of activity.company.contacts) {
+          const name = `${contact.nombre || ''} ${contact.apellido || ''}`;
+          addRecipient(contact.correo, name);
+        }
+      }
+    }
+
+    // Si la empresa tiene id pero sus contactos no venían en la relación, consultamos Client por companyId
+    if (companyId) {
+      try {
+        const companyContacts = await this.clientRepository.find({
+          where: { companyId },
+        });
+        for (const contact of companyContacts) {
+          const name = `${contact.nombre || ''} ${contact.apellido || ''}`;
+          addRecipient(contact.correo, name);
+        }
+      } catch (e) {
+        this.logger.error(`Error buscando contactos para companyId ${companyId}:`, e);
+      }
+    }
+
+    // 4. Oportunidad asociada (si aplica)
+    if (activity.opportunity) {
+      const opp = activity.opportunity;
+      if (opp.cliente) {
+        const name = `${opp.cliente.nombre || ''} ${opp.cliente.apellido || ''}`;
+        addRecipient(opp.cliente.correo, name);
+      }
+
+      if (opp.contacts && opp.contacts.length > 0) {
+        for (const contact of opp.contacts) {
+          const name = `${contact.nombre || ''} ${contact.apellido || ''}`;
+          addRecipient(contact.correo, name);
+        }
+      }
+
+      const oppCompanyId = opp.companyId || opp.company?.id;
+      if (opp.company) {
+        addRecipient(opp.company.correo, opp.company.nombre);
+        if (opp.company.contacts && opp.company.contacts.length > 0) {
+          for (const contact of opp.company.contacts) {
+            const name = `${contact.nombre || ''} ${contact.apellido || ''}`;
+            addRecipient(contact.correo, name);
+          }
+        }
+      }
+
+      if (oppCompanyId && oppCompanyId !== companyId) {
+        try {
+          const oppCompanyContacts = await this.clientRepository.find({
+            where: { companyId: oppCompanyId },
+          });
+          for (const contact of oppCompanyContacts) {
+            const name = `${contact.nombre || ''} ${contact.apellido || ''}`;
+            addRecipient(contact.correo, name);
+          }
+        } catch (e) {
+          this.logger.error(`Error buscando contactos para oppCompanyId ${oppCompanyId}:`, e);
+        }
+      }
+    }
+
+    return Array.from(recipientsMap.entries()).map(([email, name]) => ({ email, name }));
   }
 
   /**
@@ -391,14 +572,23 @@ export class NotificationsSchedulerService implements OnModuleInit {
       async () => {
         this.logger.log('Iniciando verificación de tickets desatendidos y semáforos vencidos (cron dinámico)...');
         try {
-          await this.checkUnattendedTickets();
+          const schemas = await this.getActiveSchemas();
+          for (const schema of schemas) {
+            await TenantContextService.run({ tenantSchema: schema }, async () => {
+              try {
+                await this.checkUnattendedTickets();
+              } catch (error) {
+                this.logger.error(`Error verificando tickets desatendidos (Esquema: ${schema}):`, error);
+              }
+              try {
+                await this.checkRedOpportunities();
+              } catch (error) {
+                this.logger.error(`Error verificando semáforos vencidos (Esquema: ${schema}):`, error);
+              }
+            });
+          }
         } catch (error) {
-          this.logger.error('Error durante la verificación de tickets desatendidos:', error);
-        }
-        try {
-          await this.checkRedOpportunities();
-        } catch (error) {
-          this.logger.error('Error durante la verificación de semáforos vencidos:', error);
+          this.logger.error('Error general durante la verificación de tickets y semáforos:', error);
         }
       },
       null,
