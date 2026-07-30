@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import type { Response } from 'express';
@@ -14,6 +14,8 @@ import { RagService } from '../rag/rag.service';
 
 @Injectable()
 export class ProductsService {
+  private readonly logger = new Logger('ProductsService');
+
   constructor(
     @InjectRepository(Product)
     private readonly productRepository: Repository<Product>,
@@ -176,7 +178,7 @@ export class ProductsService {
         const fileBuffer = fs.readFileSync(file.path);
         await this.ragService.ingestPdf(fileBuffer, fileName, productKey);
       } catch (ragError) {
-        console.error(`Error al indexar PDF en el RAG en addProductFile:`, ragError);
+        this.logger.error(`Error al indexar PDF en el RAG en addProductFile: ${ragError.message}`);
       }
     }
 

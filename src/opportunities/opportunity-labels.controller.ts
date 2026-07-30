@@ -1,4 +1,4 @@
-import { Controller, Get, Body, Patch, Param, UseGuards, UsePipes, ValidationPipe, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Body, Patch, Param, UseGuards, ParseUUIDPipe } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { OpportunityLabelsService } from './opportunity-labels.service';
@@ -10,7 +10,6 @@ import { User } from 'src/users/entities/user.entity';
 @ApiBearerAuth()
 @Controller('opportunity-labels')
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class OpportunityLabelsController {
   constructor(private readonly labelsService: OpportunityLabelsService) {}
 

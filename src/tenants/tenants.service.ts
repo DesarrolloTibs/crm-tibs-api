@@ -126,26 +126,7 @@ export class TenantsService implements OnModuleInit {
   }
 
 
-  async onModuleInit() {
-    try {
-      const email = 'jonathan.amadorz@tibs.com.mx';
-      const existing = await this.dataSource.query(
-        `SELECT id FROM public.users WHERE LOWER(email) = LOWER($1)`,
-        [email]
-      );
-      if (!existing || existing.length === 0) {
-        const hashedPassword = await bcrypt.hash('12345678', 10);
-        await this.dataSource.query(
-          `INSERT INTO public.users (username, email, password, role, "isActive")
-           VALUES ($1, $2, $3, 'superadmin', true)
-           ON CONFLICT (id) DO NOTHING`,
-          ['jonathan.amadorz', email, hashedPassword]
-        );
-      }
-    } catch (err) {
-      // Ignorar si la tabla no se ha sincronizado aún durante el inicio
-    }
-  }
+  async onModuleInit() {}
 
 
   async provision(dto: ProvisionTenantDto) {

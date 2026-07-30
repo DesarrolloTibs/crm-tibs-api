@@ -3,21 +3,47 @@ import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
-async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+import * as helmet from 'helmet';
+import { ValidationPipe } from '@nestjs/common';
+import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
+import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { NestAppLogger } from './common/logger/nest-logger';
 
-  // Servir archivos estáticos desde la carpeta 'uploads'
+async function bootstrap() {
+  const appLogger = new NestAppLogger('Bootstrap');
+  const logger = appLogger;
+
+  // Guardia de seguridad: bloquear inicio si synchronize:true en producción
+  if (process.env.NODE_ENV === 'production' && process.env.DB_SYNCHRONIZE === 'true') {
+    logger.error('FATAL: DB_SYNCHRONIZE=true está prohibido en NODE_ENV=production. Abortando inicio.');
+    process.exit(1);
+  }
+
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    logger: NestAppLogger.getLogLevels(),
+  });
+  app.useLogger(new NestAppLogger());
+
+  // --- Seguridad: Helmet (headers HTTP seguros) ---
+  // contentSecurityPolicy:false para no romper Swagger UI
+  app.use((helmet as any).default({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  }));
+
+  // --- Archivos estáticos desde 'uploads' ---
   // IMPORTANTE: Esto debe ir ANTES de setGlobalPrefix
   app.useStaticAssets(join(process.cwd(), 'uploads'), {
     prefix: '/uploads/',
   });
 
-  // Servir archivos estáticos desde la carpeta 'static'
+  // --- Archivos estáticos desde 'static' ---
   app.useStaticAssets(join(process.cwd(), 'static'), {
     prefix: '/static/',
   });
 
-  // Middleware para servir desde Azure si no se encuentra localmente
+  // --- Middleware para servir desde Azure si no se encuentra localmente ---
   app.use('/uploads', async (req: any, res: any) => {
     const storageType = process.env.STORAGE_TYPE || 'local';
     if (storageType === 'azure') {
@@ -45,36 +71,61 @@ async function bootstrap() {
             }
           }
         } catch (err) {
-          console.error('Error serving file from Azure:', err);
+          logger.error(`Error serving file from Azure: ${(err as Error).message}`);
         }
       }
     }
     res.status(404).send('File not found');
   });
 
-  // Establece un prefijo global para la API.
+  // --- Prefijo global de API ---
   app.setGlobalPrefix('api');
 
-  // Configuración explícita de CORS para permitir la comunicación con el frontend
-  app.enableCors();
+  // --- Pipes, Filters e Interceptors globales ---
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    }),
+  );
+  app.useGlobalFilters(new GlobalExceptionFilter());
+  app.useGlobalInterceptors(new LoggingInterceptor(), new TransformInterceptor());
 
+  // --- CORS: orígenes permitidos via variable de entorno ---
+  const rawOrigins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173,http://localhost:3000';
+  const allowedOrigins = rawOrigins.split(',').map((o) => o.trim());
+  app.enableCors({
+    origin: allowedOrigins,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    credentials: true,
+  });
+
+  // --- Swagger / OpenAPI ---
   const config = new DocumentBuilder()
-    .setTitle('CRM API')
-    .setDescription('The API for the TIBS CRM application')
-    .setVersion('1.0')
+    .setTitle('CRM TIBS API')
+    .setDescription(
+      'API empresarial para el CRM TIBS — gestión de clientes, oportunidades, tickets, agente IA y multi-tenancy.\n\n' +
+      '**Autenticación:** Bearer JWT en el header `Authorization: Bearer <token>`.\n\n' +
+      '**Errores estándar:** Todas las respuestas de error siguen el esquema `ErrorResponseDto` ' +
+      '`{ statusCode, message, timestamp, path }`.',
+    )
+    .setVersion('2.0')
+    .addServer(process.env.API_URL || 'http://localhost:3000', 'Servidor actual')
     .addBearerAuth(
       {
         type: 'http',
         scheme: 'bearer',
         bearerFormat: 'JWT',
         in: 'header',
+        description: 'Ingresa el token JWT obtenido de POST /api/auth/login',
       },
       'bearer',
     )
+    .setContact('Equipo TIBS', 'https://tibs.com.mx', 'soporte@tibs.com.mx')
     .build();
   const document = SwaggerModule.createDocument(app, config);
-  // Aplicar el esquema de seguridad globalmente para que todos los endpoints
-  // muestren el candado y puedan usar la autorización ingresada en Swagger
+  // Esquema de seguridad global: todos los endpoints muestran el candado en Swagger
   document.security = [{ bearer: [] }];
 
   SwaggerModule.setup('swagger', app, document, {
@@ -84,5 +135,7 @@ async function bootstrap() {
   });
 
   await app.listen(process.env.PORT ?? 3000);
+  logger.log(`Aplicación iniciada en puerto ${process.env.PORT ?? 3000}`);
+  logger.log(`Ambiente: ${process.env.NODE_ENV ?? 'development'}`);
 }
 bootstrap();

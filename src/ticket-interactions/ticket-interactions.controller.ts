@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, UseGuards, UsePipes, ValidationPipe, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, UseGuards, ParseUUIDPipe } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { TicketInteractionsService } from './ticket-interactions.service';
@@ -8,7 +8,6 @@ import { CreateTicketInteractionDto } from './dto/create-ticket-interaction.dto'
 @ApiBearerAuth()
 @Controller('ticket-interactions')
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class TicketInteractionsController {
   constructor(private readonly ticketInteractionsService: TicketInteractionsService) {}
 

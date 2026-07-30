@@ -19,7 +19,7 @@ export class ExpensesController {
 
     @Post()
     create(@Body() createExpenseDto: CreateExpenseDto, @GetUser() user: User) {
-        console.log('ExpensesController.create - User:', user);
+
         return this.expensesService.create(createExpenseDto, user);
     }
 

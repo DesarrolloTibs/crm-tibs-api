@@ -1,24 +1,26 @@
 import { WebSocketGateway, WebSocketServer, OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect } from '@nestjs/websockets';
+import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: process.env.ALLOWED_ORIGINS?.split(',').map((o) => o.trim()) || '*',
   },
 })
 export class TicketsGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer() server: Server;
+  private readonly logger = new Logger('TicketsGateway');
 
-  afterInit(server: Server) {
-    console.log('Tickets Websocket Gateway Initialized');
+  afterInit(_server: Server) {
+    this.logger.log('Tickets WebSocket Gateway initialized');
   }
 
   handleConnection(client: Socket) {
-    console.log(`Client connected to WebSocket: ${client.id}`);
+    this.logger.debug(`Client connected to Tickets WebSocket: ${client.id}`);
   }
 
   handleDisconnect(client: Socket) {
-    console.log(`Client disconnected from WebSocket: ${client.id}`);
+    this.logger.debug(`Client disconnected from Tickets WebSocket: ${client.id}`);
   }
 
   emitTicketCreated(ticket: any) {

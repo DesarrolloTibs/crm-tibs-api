@@ -2,10 +2,12 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, LessThanOrEqual } from 'typeorm';
 import { Cron, SchedulerRegistry } from '@nestjs/schedule';
+import { OnEvent } from '@nestjs/event-emitter';
 import { CronJob } from 'cron';
 import { ConfigService } from '@nestjs/config';
+import { SCHEDULER_EVENTS } from '../common/events/scheduler.events';
 import { Reminder } from '../reminders/entities/reminder.entity';
-import { Activity } from '../Activities/entities/activity.entity';
+import { Activity } from '../activities/entities/activity.entity';
 import { User } from '../users/entities/user.entity';
 import { Ticket } from '../tickets/entities/ticket.entity';
 import { HelpdeskCronConfig } from '../tickets/entities/helpdesk-cron-config.entity';
@@ -519,7 +521,9 @@ export class NotificationsSchedulerService implements OnModuleInit {
    * Lee la configuración guardada en BD y (re)programa el cron job dinámico.
    * Llamado al iniciar el módulo y cada vez que el administrador guarda
    * una nueva configuración desde el panel.
+   * También se puede disparar vía evento para eliminar la dependencia circular con HelpdesksService.
    */
+  @OnEvent(SCHEDULER_EVENTS.RESCHEDULE_UNATTENDED_TICKETS)
   async rescheduleUnattendedTicketsCron(): Promise<void> {
     const timeZone = 'America/Mexico_City';
 

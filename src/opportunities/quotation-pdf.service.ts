@@ -1,14 +1,17 @@
-import { Injectable, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Opportunity } from './entities/opportunity.entity';
 import { StorageService } from '../storage/storage.service';
-import { ConversationsService } from '../conversations/conversations.service';
 import { Conversation } from '../conversations/entities/conversation.entity';
 import { existsSync, mkdirSync, createWriteStream, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
+import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
+import { QUOTATION_EVENTS, QuotationSendPayload } from '../common/events/quotation.events';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class QuotationPdfService {
@@ -19,8 +22,7 @@ export class QuotationPdfService {
     private readonly opportunityRepository: Repository<Opportunity>,
     private readonly storageService: StorageService,
     private readonly dataSource: DataSource,
-    @Inject(forwardRef(() => ConversationsService))
-    private readonly conversationsService: ConversationsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -39,13 +41,13 @@ export class QuotationPdfService {
       throw new NotFoundException(`Oportunidad con ID "${opportunityId}" no encontrada.`);
     }
 
-    // 2. Obtener datos del tenant (logo y nombre de empresa)
+    // 2. Obtener datos del tenant (logo y nombre de empresa) del esquema activo de la request
+    const activeSchema = TenantContextService.getTenantSchema() || 'public';
     let tenantName = '';
     let tenantLogoPath: string | null = null;
     try {
-      const activeSchema = (this.dataSource.driver as any).options?.schema || 'public';
       const tenantResult = await this.dataSource.query(
-        `SELECT name, logo FROM public.tenants WHERE schema_name = $1 OR schema_name = 'public' ORDER BY (schema_name = $1) DESC LIMIT 1`,
+        `SELECT name, logo FROM public.tenants WHERE schema_name = $1 LIMIT 1`,
         [activeSchema]
       );
       if (tenantResult && tenantResult.length > 0) {
@@ -132,6 +134,19 @@ export class QuotationPdfService {
   }
 
   /**
+   * Listener de evento para generación y envío de PDF.
+   * Permite que AiAgentService dispare la generación sin importar QuotationPdfService directamente.
+   */
+  @OnEvent(QUOTATION_EVENTS.SEND_TO_CHANNEL)
+  async handleSendQuotationToChannel(payload: { opportunityId: string; conversationId: string }): Promise<void> {
+    try {
+      await this.sendQuotationToChannel(payload.opportunityId, payload.conversationId);
+    } catch (err) {
+      this.logger.error(`Error procesando evento ${QUOTATION_EVENTS.SEND_TO_CHANNEL}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
    * Genera el PDF de cotización y lo envía directamente por el canal activo de la conversación.
    */
   async sendQuotationToChannel(opportunityId: string, conversationId: string): Promise<{ success: boolean; filePath: string }> {
@@ -145,12 +160,12 @@ export class QuotationPdfService {
     }
 
     const caption = `Aquí tienes la cotización en PDF para tu proyecto.`;
-    await this.conversationsService.sendDocumentToExternalChannel(
+    this.eventEmitter.emit(CONVERSATION_EVENTS.SEND_DOCUMENT_TO_CHANNEL, {
       conversation,
-      pdfResult.filePath,
-      pdfResult.fileName,
+      filePath: pdfResult.filePath,
+      fileName: pdfResult.fileName,
       caption,
-    );
+    });
 
     return {
       success: true,
@@ -221,35 +236,6 @@ export class QuotationPdfService {
               break;
             }
           }
-        }
-
-        // Si no se encontró en la DB o la ruta no existe, buscar recursivamente en uploads/tenants o uploads/logos
-        if (!resolvedLogoPath) {
-          try {
-            const searchDirs = [
-              join(process.cwd(), 'uploads', 'tenants'),
-              join(process.cwd(), 'uploads', 'logos'),
-            ];
-            for (const sDir of searchDirs) {
-              if (existsSync(sDir)) {
-                const findLogoInDir = (dir: string): string | null => {
-                  const entries = readdirSync(dir, { withFileTypes: true });
-                  for (const entry of entries) {
-                    const fullPath = join(dir, entry.name);
-                    if (entry.isDirectory()) {
-                      const subMatch = findLogoInDir(fullPath);
-                      if (subMatch) return subMatch;
-                    } else if (entry.isFile() && /logo/i.test(entry.name)) {
-                      return fullPath;
-                    }
-                  }
-                  return null;
-                };
-                resolvedLogoPath = findLogoInDir(sDir);
-                if (resolvedLogoPath) break;
-              }
-            }
-          } catch (e) {}
         }
 
         let headerY = 40;

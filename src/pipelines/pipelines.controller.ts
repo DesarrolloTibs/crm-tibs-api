@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Controller, Get, Patch, Body, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { PipelinesService } from './pipelines.service';
@@ -7,7 +7,6 @@ import { PipelinesService } from './pipelines.service';
 @ApiBearerAuth()
 @Controller('pipelines')
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class PipelinesController {
   constructor(private readonly pipelinesService: PipelinesService) {}
 

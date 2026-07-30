@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UsePipes, ValidationPipe, Query, ParseUUIDPipe, Injectable } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query, ParseUUIDPipe, Injectable } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { TicketsService } from './tickets.service';
@@ -17,7 +17,6 @@ export class OptionalJwtAuthGuard extends AuthGuard('jwt') {
 
 @ApiTags('tickets')
 @Controller('tickets')
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class TicketsController {
   constructor(private readonly ticketsService: TicketsService) {}
 

@@ -205,7 +205,7 @@ export class ActivitiesService {
 
     // Registrar la creación de la actividad en el historial de la oportunidad
     if (savedActivity.opportunityId) {
-      const fullUser = await this.usersService.findOneById(userId);
+      const fullUser = await this.usersService.findOneById(userId).catch(() => null);
       const username = fullUser?.username || 'Sistema';
       const typeAct = savedActivity.typeActivityId
         ? await this.typeActivityRepository.findOne({ where: { id: savedActivity.typeActivityId } })

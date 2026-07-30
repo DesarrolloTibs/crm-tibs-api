@@ -7,8 +7,6 @@ import {
   Param,
   Delete,
   ParseUUIDPipe,
-  UsePipes,
-  ValidationPipe,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -31,7 +29,6 @@ import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody, ApiCreatedR
 @ApiBearerAuth()
 @Controller('products')
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 

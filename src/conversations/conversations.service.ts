@@ -1,7 +1,8 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Brackets } from 'typeorm';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { Client } from '../clients/entities/client.entity';
@@ -10,10 +11,11 @@ import { Role } from '../role.enum';
 import { ChannelConfig } from './entities/channel-config.entity';
 import { ConversationsGateway } from './conversations.gateway';
 import { AiAgentService } from './ai-agent.service';
-import { NotificationsService } from '../notifications/notifications.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { ClientsService } from '../clients/clients.service';
 import { PhoneUtils } from '../common/utils/phone.utils';
+import { NOTIFICATION_EVENTS } from '../common/events/notification.events';
+import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
 
 
 @Injectable()
@@ -34,8 +36,7 @@ export class ConversationsService {
     private readonly channelConfigRepository: Repository<ChannelConfig>,
     private readonly gateway: ConversationsGateway,
     private readonly aiAgentService: AiAgentService,
-    @Inject(forwardRef(() => NotificationsService))
-    private readonly notificationsService: NotificationsService,
+    private readonly eventEmitter: EventEmitter2,
     private readonly clientsService: ClientsService,
   ) {}
 
@@ -310,14 +311,14 @@ export class ConversationsService {
         // Notificar a TODOS los administradores del tenant vía notificación in-app + correo
         const adminUsers = await this.userRepository.find({ where: { role: Role.Admin, isActive: true } });
         for (const admin of adminUsers) {
-          await this.notificationsService.createAndSendNotification(
-            admin.id,
-            notifTitle,
-            notifMessage,
-            'subscription_limit',
-            undefined,
-            true, // sendEmail = true
-          );
+          this.eventEmitter.emit(NOTIFICATION_EVENTS.CREATE_AND_SEND, {
+            userId: admin.id,
+            title: notifTitle,
+            message: notifMessage,
+            type: 'subscription_limit',
+            entityId: undefined,
+            sendEmail: true,
+          });
         }
 
         this.logger.warn(`[Subscription] Notificación enviada a ${adminUsers.length} admin(s) del tenant por bloqueo de IA (${subscriptionCode}).`);
@@ -377,26 +378,26 @@ export class ConversationsService {
         const notificationMessage = `El cliente ${clientName} ha sido derivado en el chat para recibir atención de un ejecutivo especializado.`;
 
         if (conversation.assignedUserId) {
-          await this.notificationsService.createAndSendNotification(
-            conversation.assignedUserId,
-            notificationTitle,
-            notificationMessage,
-            'conversation_escalated',
-            conversation.id,
-            true,
-          );
+          this.eventEmitter.emit(NOTIFICATION_EVENTS.CREATE_AND_SEND, {
+            userId: conversation.assignedUserId,
+            title: notificationTitle,
+            message: notificationMessage,
+            type: 'conversation_escalated',
+            entityId: conversation.id,
+            sendEmail: true,
+          });
         } else {
           // Notificar a administradores si no hay un ejecutivo asignado
           const adminUsers = await this.userRepository.find({ where: { role: Role.Admin, isActive: true } });
           for (const admin of adminUsers) {
-            await this.notificationsService.createAndSendNotification(
-              admin.id,
-              notificationTitle,
-              notificationMessage,
-              'conversation_escalated',
-              conversation.id,
-              false,
-            );
+            this.eventEmitter.emit(NOTIFICATION_EVENTS.CREATE_AND_SEND, {
+              userId: admin.id,
+              title: notificationTitle,
+              message: notificationMessage,
+              type: 'conversation_escalated',
+              entityId: conversation.id,
+              sendEmail: false,
+            });
           }
         }
       }
@@ -910,6 +911,29 @@ export class ConversationsService {
       }
     } catch (err) {
       this.logger.error(`Error enviando mensaje real por ${channel} a ${externalId}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Listener de evento para envío de documentos al canal externo.
+   * Permite que QuotationPdfService dispare el envío sin inyectar ConversationsService directamente.
+   */
+  @OnEvent(CONVERSATION_EVENTS.SEND_DOCUMENT_TO_CHANNEL)
+  async handleSendDocumentToChannel(payload: {
+    conversation: Conversation;
+    filePath: string;
+    fileName: string;
+    caption?: string;
+  }): Promise<void> {
+    try {
+      await this.sendDocumentToExternalChannel(
+        payload.conversation,
+        payload.filePath,
+        payload.fileName,
+        payload.caption,
+      );
+    } catch (err) {
+      this.logger.error(`Error procesando evento ${CONVERSATION_EVENTS.SEND_DOCUMENT_TO_CHANNEL}: ${(err as Error).message}`);
     }
   }
 

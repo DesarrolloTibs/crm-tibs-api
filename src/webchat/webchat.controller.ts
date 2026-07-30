@@ -9,6 +9,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { WebchatService } from './webchat.service';
 import { WebchatQueryDto } from './dto/webchat-query.dto';
@@ -18,6 +19,9 @@ import { ConversationsService } from '../conversations/conversations.service';
 
 @ApiTags('webchat')
 @Controller('webchat')
+// Los endpoints públicos de webchat tienen límite más alto (webhook de IA)
+@Throttle({ webhook: { ttl: 60000, limit: 200 } })
+// whitelist:false porque el body puede contener campos dinámicos de conversaciones externas
 @UsePipes(new ValidationPipe({ whitelist: false, transform: true }))
 export class WebchatController {
   constructor(

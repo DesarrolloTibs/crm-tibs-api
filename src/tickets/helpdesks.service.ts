@@ -1,12 +1,13 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Helpdesk } from './entities/helpdesk.entity';
 import { TicketStage } from './entities/ticket-stage.entity';
 import { Ticket } from './entities/ticket.entity';
 import { HelpdeskCronConfig } from './entities/helpdesk-cron-config.entity';
 import { UpdateHelpdeskCronConfigDto } from './dto/update-helpdesk-cron-config.dto';
-import { NotificationsSchedulerService } from '../notifications/notifications.scheduler.service';
+import { SCHEDULER_EVENTS } from '../common/events/scheduler.events';
 
 @Injectable()
 export class HelpdesksService {
@@ -20,8 +21,7 @@ export class HelpdesksService {
     @InjectRepository(HelpdeskCronConfig)
     private readonly cronConfigRepository: Repository<HelpdeskCronConfig>,
     private readonly dataSource: DataSource,
-    @Inject(forwardRef(() => NotificationsSchedulerService))
-    private readonly schedulerService: NotificationsSchedulerService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async getMainHelpdesk(): Promise<Helpdesk & { stages: TicketStage[] }> {
@@ -286,7 +286,7 @@ export class HelpdesksService {
     const saved = await this.cronConfigRepository.save(config);
 
     // Reprogramar el cron job en caliente con la nueva configuración
-    await this.schedulerService.rescheduleUnattendedTicketsCron();
+    this.eventEmitter.emit(SCHEDULER_EVENTS.RESCHEDULE_UNATTENDED_TICKETS);
 
     return saved;
   }

@@ -11,8 +11,6 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
-  UsePipes,
-  ValidationPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -36,7 +34,6 @@ import { User } from 'src/users/entities/user.entity';
 @ApiTags('activities')
 @ApiBearerAuth()
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 @Controller('activities')
 export class ActivitiesController {
   constructor(private readonly activitiesService: ActivitiesService) { }

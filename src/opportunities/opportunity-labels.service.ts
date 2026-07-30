@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OpportunityLabel } from './entities/opportunity-label.entity';
@@ -6,6 +6,8 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class OpportunityLabelsService implements OnModuleInit {
+  private readonly logger = new Logger('OpportunityLabelsService');
+
   constructor(
     @InjectRepository(OpportunityLabel)
     private readonly labelRepository: Repository<OpportunityLabel>,
@@ -124,7 +126,7 @@ export class OpportunityLabelsService implements OnModuleInit {
       return await manager.save(OpportunityLabel, newLabel);
     });
 
-    console.log(`Wizard update: deleted label ID ${id}, created new label ID ${savedLabel.id} with key "${originalFieldKey}"`);
+    this.logger.log(`Wizard update: deleted label ID ${id}, created new label ID ${savedLabel.id} with key "${originalFieldKey}"`);
     return savedLabel;
   }
 }

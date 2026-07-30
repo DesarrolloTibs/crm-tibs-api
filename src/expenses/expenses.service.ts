@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -14,6 +14,8 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class ExpensesService implements OnModuleInit {
+    private readonly logger = new Logger('ExpensesService');
+
     constructor(
         @InjectRepository(Expense)
         private expensesRepository: Repository<Expense>,
@@ -35,8 +37,6 @@ export class ExpensesService implements OnModuleInit {
     }
 
     async create(createExpenseDto: CreateExpenseDto, user: any): Promise<Expense> {
-        console.log('ExpensesService.create - User:', user);
-        console.log('ExpensesService.create - DTO:', createExpenseDto);
         const { client_id, opportunity_id, ...expenseData } = createExpenseDto;
 
         // Validate XOR logic: Either client_id OR opportunity_id, but NOT both, and NOT neither.
@@ -176,7 +176,7 @@ export class ExpensesService implements OnModuleInit {
                 try {
                     fs.unlinkSync(oldPath);
                 } catch (error) {
-                    console.error(`Failed to delete old receipt: ${oldPath}`, error);
+                    this.logger.error(`Failed to delete old receipt: ${oldPath} — ${error.message}`);
                 }
             }
         }
@@ -194,7 +194,7 @@ export class ExpensesService implements OnModuleInit {
                 try {
                     fs.unlinkSync(filePath);
                 } catch (error) {
-                    console.error(`Failed to delete receipt: ${filePath}`, error);
+                    this.logger.error(`Failed to delete receipt: ${filePath} — ${error.message}`);
                 }
             }
             expense.receiptUrl = null;

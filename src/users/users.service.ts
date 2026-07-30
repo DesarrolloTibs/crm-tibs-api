@@ -18,44 +18,22 @@ export class UsersService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      // 0. Asegurar extensión pgvector en esquema public de Supabase y otorgar accesos globales
+      // 1. Asegurar extensión pgvector en esquema public de Supabase y otorgar accesos globales
       try {
         await this.dataSource.query(`CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;`);
         await this.dataSource.query(`GRANT USAGE ON SCHEMA public TO PUBLIC;`);
       } catch (e) {}
 
-
-      // 1. Migrar datos de public.super_users a public.users si aún existe la tabla
-
-      await this.dataSource.query(`
-        DO $$
-        BEGIN
-          IF EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'super_users') THEN
-            INSERT INTO public.users (id, username, email, password, role, "isActive")
-            SELECT id, username, email, password, 'superadmin', true
-            FROM public.super_users
-            ON CONFLICT (id) DO UPDATE
-            SET username = EXCLUDED.username,
-                email = EXCLUDED.email,
-                password = EXCLUDED.password,
-                role = 'superadmin';
-            
-            DROP TABLE IF EXISTS public.super_users CASCADE;
-          END IF;
-        END $$;
-      `);
-
       // 2. Asegurar que en public.users exista el usuario SuperAdmin por defecto
       const adminExists = await this.dataSource.query(
         `SELECT id FROM public.users WHERE LOWER(email) = LOWER($1) OR role = 'superadmin'`,
-        ['ivonne.cabriales@tibs.com.mx']
+        ['jonathan.amador@tibs.com.mx']
       );
       if (!adminExists || adminExists.length === 0) {
         const hashedPassword = await bcrypt.hash('Admin2026!', 10);
         await this.dataSource.query(
           `INSERT INTO public.users (username, email, password, role, "isActive")
-           VALUES ('Ivonne Cabriales', 'ivonne.cabriales@tibs.com.mx', $1, 'superadmin', true)
-           ON CONFLICT (id) DO NOTHING`,
+           VALUES ('Jonathan Amador', 'jonathan.amador@tibs.com.mx', $1, 'superadmin', true)`,
           [hashedPassword]
         );
       }
@@ -169,15 +147,26 @@ export class UsersService implements OnModuleInit {
     }
 
     await this.ensureTenantUserColumns(tenantSchema);
+    let roleToSet = updateUserDto.role || Role.Executive;
+    if ((roleToSet as any) === 'superadmin' || roleToSet === Role.SuperAdmin) {
+      roleToSet = Role.Executive;
+    }
+
     if (updateUserDto.password) {
       await this.dataSource.query(
         `UPDATE "${tenantSchema}".users SET username = $1, email = $2, password = $3, role = $4 WHERE id::text = $5`,
-        [updateUserDto.username, updateUserDto.email, updateUserDto.password, updateUserDto.role || 'executive', id]
+        [updateUserDto.username, updateUserDto.email, updateUserDto.password, roleToSet, id]
       );
     } else {
       await this.dataSource.query(
         `UPDATE "${tenantSchema}".users SET username = $1, email = $2, role = $3 WHERE id::text = $4`,
-        [updateUserDto.username, updateUserDto.email, updateUserDto.role || 'executive', id]
+        [updateUserDto.username, updateUserDto.email, roleToSet, id]
+      );
+    }
+    if (updateUserDto.profileImageUrl !== undefined) {
+      await this.dataSource.query(
+        `UPDATE "${tenantSchema}".users SET "profileImageUrl" = $1 WHERE id::text = $2`,
+        [updateUserDto.profileImageUrl, id]
       );
     }
     return this.findOneById(id);
@@ -268,8 +257,37 @@ export class UsersService implements OnModuleInit {
   }
 
   async save(user: User): Promise<User> {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const userId = user.id;
+
+    if (!userId) return user;
+
+    if (tenantSchema === 'public') {
+      await this.dataSource.query(
+        `UPDATE public.users SET 
+           username = $1, 
+           email = $2, 
+           password = $3, 
+           reset_password_token = $4, 
+           reset_password_expires = $5
+         WHERE id::text = $6`,
+        [user.username, user.email, user.password, user.resetPasswordToken || null, user.resetPasswordExpires || null, userId]
+      );
+    } else {
+      await this.dataSource.query(
+        `UPDATE "${tenantSchema}".users SET 
+           username = $1, 
+           email = $2, 
+           password = $3, 
+           reset_password_token = $4, 
+           reset_password_expires = $5
+         WHERE id::text = $6`,
+        [user.username, user.email, user.password, user.resetPasswordToken || null, user.resetPasswordExpires || null, userId]
+      );
+    }
+
     return user;
   }
 }
 
-
+

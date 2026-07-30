@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, UsePipes, ValidationPipe, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, ParseUUIDPipe } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { OpportunityCatalogsService } from './opportunity-catalogs.service';
@@ -8,7 +8,6 @@ import { CreateCatalogOptionDto, UpdateCatalogOptionDto } from './dto/catalog-op
 @ApiBearerAuth()
 @Controller()
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class OpportunityCatalogsController {
   constructor(private readonly catalogsService: OpportunityCatalogsService) {}
 

@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Controller, Get, Patch, Body, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { HelpdesksService } from './helpdesks.service';
@@ -8,7 +8,6 @@ import { UpdateHelpdeskCronConfigDto } from './dto/update-helpdesk-cron-config.d
 @ApiBearerAuth()
 @Controller('helpdesks')
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class HelpdesksController {
   constructor(private readonly helpdesksService: HelpdesksService) {}
 

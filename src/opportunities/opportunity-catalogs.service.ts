@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { BusinessLineOption } from './entities/business-line-option.entity';
@@ -10,6 +10,8 @@ export type CatalogType = 'business-lines' | 'delivery-types' | 'licensings';
 
 @Injectable()
 export class OpportunityCatalogsService implements OnModuleInit {
+  private readonly logger = new Logger('OpportunityCatalogsService');
+
   constructor(
     @InjectRepository(BusinessLineOption)
     private readonly businessLineRepository: Repository<BusinessLineOption>,
@@ -30,7 +32,7 @@ export class OpportunityCatalogsService implements OnModuleInit {
         { id: 'b2f0a149-14a0-410a-8bf8-28564f7b60cc', strname: 'Desarrollo', blnstatus: true },
         { id: 'c5d72bc1-12c8-47bc-8a7e-128a192bfa77', strname: 'RH', blnstatus: true },
       ]);
-      console.log('Seeded tblbusinesslines with default options.');
+      this.logger.log('Seeded tblbusinesslines with default options.');
     }
 
     // 2. Seed DeliveryTypeOption
@@ -42,7 +44,7 @@ export class OpportunityCatalogsService implements OnModuleInit {
         { id: 'f22db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Asignacion', blnstatus: true },
         { id: '012db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Bolsa de Horas', blnstatus: true },
       ]);
-      console.log('Seeded tbldeliverytypes with default options.');
+      this.logger.log('Seeded tbldeliverytypes with default options.');
     }
 
     // 3. Seed LicensingOption
@@ -56,7 +58,7 @@ export class OpportunityCatalogsService implements OnModuleInit {
         { id: '512db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Alteryx', blnstatus: true },
         { id: '612db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'KNIME', blnstatus: true },
       ]);
-      console.log('Seeded tblicensings with default options.');
+      this.logger.log('Seeded tblicensings with default options.');
     }
   }
 

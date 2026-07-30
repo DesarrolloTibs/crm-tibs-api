@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindManyOptions, Repository, FindOptionsWhere, Brackets } from 'typeorm';
 import { Opportunity } from './entities/opportunity.entity';
@@ -28,6 +28,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class OpportunitiesService {
+  private readonly logger = new Logger('OpportunitiesService');
   constructor(
     @InjectRepository(Opportunity)
     private readonly opportunityRepository: Repository<Opportunity>,
@@ -396,49 +397,69 @@ export class OpportunitiesService {
     if (updateOpportunityDto.priority !== undefined && updateOpportunityDto.priority !== existingOpportunity.priority) {
       changes.push(`- Prioridad: ${existingOpportunity.priority} -> ${updateOpportunityDto.priority}`);
     }
-    if (updateOpportunityDto.stage_id !== undefined && updateOpportunityDto.stage_id !== existingOpportunity.stage_id) {
-      const oldStage = await this.stageRepository.findOne({ where: { id: existingOpportunity.stage_id } });
-      const newStage = await this.stageRepository.findOne({ where: { id: updateOpportunityDto.stage_id } });
+    const auditPromises: Promise<any>[] = [];
+
+    const isStageChanged = updateOpportunityDto.stage_id !== undefined && updateOpportunityDto.stage_id !== existingOpportunity.stage_id;
+    const isPipelineChanged = updateOpportunityDto.pipeline_id !== undefined && updateOpportunityDto.pipeline_id !== existingOpportunity.pipeline_id;
+    const isEjecutivoChanged = updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id;
+    const isClienteChanged = updateOpportunityDto.cliente_id !== undefined && updateOpportunityDto.cliente_id !== existingOpportunity.cliente_id;
+    const isCompanyChanged = updateOpportunityDto.companyId !== undefined && updateOpportunityDto.companyId !== existingOpportunity.companyId;
+    const isLineaNegocioChanged = updateOpportunityDto.linea_negocio_id !== undefined && updateOpportunityDto.linea_negocio_id !== existingOpportunity.linea_negocio_id;
+    const isTipoEntregaChanged = updateOpportunityDto.tipo_entrega_id !== undefined && updateOpportunityDto.tipo_entrega_id !== existingOpportunity.tipo_entrega_id;
+    const isLicenciamientoChanged = updateOpportunityDto.licenciamiento_id !== undefined && updateOpportunityDto.licenciamiento_id !== existingOpportunity.licenciamiento_id;
+
+    const [
+      oldStage, newStage,
+      oldPipeline, newPipeline,
+      oldEjecutivo, newEjecutivo,
+      newCliente, newCompany,
+      newLineaNegocio, newTipoEntrega, newLicenciamiento
+    ] = await Promise.all([
+      isStageChanged ? this.stageRepository.findOne({ where: { id: existingOpportunity.stage_id } }) : null,
+      isStageChanged ? this.stageRepository.findOne({ where: { id: updateOpportunityDto.stage_id } }) : null,
+      isPipelineChanged ? this.pipelineRepository.findOne({ where: { id: existingOpportunity.pipeline_id } }) : null,
+      isPipelineChanged ? this.pipelineRepository.findOne({ where: { id: updateOpportunityDto.pipeline_id } }) : null,
+      isEjecutivoChanged && existingOpportunity.ejecutivo_id ? this.usersService.findOneById(existingOpportunity.ejecutivo_id).catch(() => null) : null,
+      isEjecutivoChanged && updateOpportunityDto.ejecutivo_id ? this.usersService.findOneById(updateOpportunityDto.ejecutivo_id).catch(() => null) : null,
+      isClienteChanged && updateOpportunityDto.cliente_id ? this.clientRepository.findOne({ where: { id: updateOpportunityDto.cliente_id } }) : null,
+      isCompanyChanged && updateOpportunityDto.companyId ? this.clientRepository.manager.getRepository(Company).findOne({ where: { id: updateOpportunityDto.companyId } }) : null,
+      isLineaNegocioChanged && updateOpportunityDto.linea_negocio_id ? this.opportunityRepository.manager.getRepository(BusinessLineOption).findOne({ where: { id: updateOpportunityDto.linea_negocio_id } }) : null,
+      isTipoEntregaChanged && updateOpportunityDto.tipo_entrega_id ? this.opportunityRepository.manager.getRepository(DeliveryTypeOption).findOne({ where: { id: updateOpportunityDto.tipo_entrega_id } }) : null,
+      isLicenciamientoChanged && updateOpportunityDto.licenciamiento_id ? this.opportunityRepository.manager.getRepository(LicensingOption).findOne({ where: { id: updateOpportunityDto.licenciamiento_id } }) : null,
+    ]);
+
+    if (isStageChanged) {
       changes.push(`- Etapa: "${oldStage?.strname || 'N/A'}" -> "${newStage?.strname || 'N/A'}"`);
     }
-    if (updateOpportunityDto.pipeline_id !== undefined && updateOpportunityDto.pipeline_id !== existingOpportunity.pipeline_id) {
-      const oldPipeline = await this.pipelineRepository.findOne({ where: { id: existingOpportunity.pipeline_id } });
-      const newPipeline = await this.pipelineRepository.findOne({ where: { id: updateOpportunityDto.pipeline_id } });
+    if (isPipelineChanged) {
       changes.push(`- Pipeline: "${oldPipeline?.strname || 'N/A'}" -> "${newPipeline?.strname || 'N/A'}"`);
     }
-    if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
-      const oldEjecutivo = await this.usersService.findOneById(existingOpportunity.ejecutivo_id).catch(() => null);
-      const newEjecutivo = await this.usersService.findOneById(updateOpportunityDto.ejecutivo_id).catch(() => null);
+    if (isEjecutivoChanged) {
       oldEjecutivoName = oldEjecutivo?.username || 'Sin asignar';
       newEjecutivoName = newEjecutivo?.username || 'Sin asignar';
       changes.push(`- Ejecutivo: "${oldEjecutivoName}" -> "${newEjecutivoName}"`);
     }
-    if (updateOpportunityDto.cliente_id !== undefined && updateOpportunityDto.cliente_id !== existingOpportunity.cliente_id) {
+    if (isClienteChanged) {
       const oldCliente = existingOpportunity.cliente;
-      const newCliente = updateOpportunityDto.cliente_id ? await this.clientRepository.findOne({ where: { id: updateOpportunityDto.cliente_id } }) : null;
       const oldClienteName = oldCliente ? `${oldCliente.nombre} ${oldCliente.apellido}` : 'N/A';
       const newClienteName = newCliente ? `${newCliente.nombre} ${newCliente.apellido}` : 'N/A';
       changes.push(`- Cliente: "${oldClienteName}" -> "${newClienteName}"`);
     }
-    if (updateOpportunityDto.companyId !== undefined && updateOpportunityDto.companyId !== existingOpportunity.companyId) {
+    if (isCompanyChanged) {
       const oldCompany = existingOpportunity.company;
-      const newCompany = updateOpportunityDto.companyId ? await this.clientRepository.manager.getRepository(Company).findOne({ where: { id: updateOpportunityDto.companyId } }) : null;
       changes.push(`- Empresa: "${oldCompany?.nombre || 'N/A'}" -> "${newCompany?.nombre || 'N/A'}"`);
     }
-    if (updateOpportunityDto.linea_negocio_id !== undefined && updateOpportunityDto.linea_negocio_id !== existingOpportunity.linea_negocio_id) {
+    if (isLineaNegocioChanged) {
       const oldOption = existingOpportunity.linea_negocio;
-      const newOption = updateOpportunityDto.linea_negocio_id ? await this.opportunityRepository.manager.getRepository(BusinessLineOption).findOne({ where: { id: updateOpportunityDto.linea_negocio_id } }) : null;
-      changes.push(`- ${labelLineaNegocio}: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+      changes.push(`- ${labelLineaNegocio}: "${oldOption?.strname || 'N/A'}" -> "${newLineaNegocio?.strname || 'N/A'}"`);
     }
-    if (updateOpportunityDto.tipo_entrega_id !== undefined && updateOpportunityDto.tipo_entrega_id !== existingOpportunity.tipo_entrega_id) {
+    if (isTipoEntregaChanged) {
       const oldOption = existingOpportunity.tipo_entrega;
-      const newOption = updateOpportunityDto.tipo_entrega_id ? await this.opportunityRepository.manager.getRepository(DeliveryTypeOption).findOne({ where: { id: updateOpportunityDto.tipo_entrega_id } }) : null;
-      changes.push(`- ${labelTipoEntrega}: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+      changes.push(`- ${labelTipoEntrega}: "${oldOption?.strname || 'N/A'}" -> "${newTipoEntrega?.strname || 'N/A'}"`);
     }
-    if (updateOpportunityDto.licenciamiento_id !== undefined && updateOpportunityDto.licenciamiento_id !== existingOpportunity.licenciamiento_id) {
+    if (isLicenciamientoChanged) {
       const oldOption = existingOpportunity.licenciamiento;
-      const newOption = updateOpportunityDto.licenciamiento_id ? await this.opportunityRepository.manager.getRepository(LicensingOption).findOne({ where: { id: updateOpportunityDto.licenciamiento_id } }) : null;
-      changes.push(`- ${labelLicenciamiento}: "${oldOption?.strname || 'N/A'}" -> "${newOption?.strname || 'N/A'}"`);
+      changes.push(`- ${labelLicenciamiento}: "${oldOption?.strname || 'N/A'}" -> "${newLicenciamiento?.strname || 'N/A'}"`);
     }
     const hasProductChanges = productItems !== undefined || productIds !== undefined;
     if (hasProductChanges) {
@@ -567,13 +588,13 @@ export class OpportunitiesService {
       }
     }
 
-    // Registrar cambios en el historial (interacciones)
+    // Registrar cambios e interacciones en segundo plano para no bloquear la respuesta HTTP (TTFB fast)
     if (changes.length > 0) {
       const comment = `El usuario ${username} modificó la oportunidad:\n${changes.join('\n')}`;
-      await this.interactionsService.create({
+      this.interactionsService.create({
         opportunity_id: id,
         comment,
-      });
+      }).catch(err => this.logger.error(`Error al registrar interacción en segundo plano: ${err.message}`));
 
       // Solo notifica al ejecutivo asignado. Si la oportunidad no tiene ejecutivo, no notifica a nadie.
       if (savedOpportunity.ejecutivo_id) {
@@ -584,24 +605,24 @@ export class OpportunitiesService {
         if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
           const assignMessage = `Te han asignado la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>. El usuario <strong>${username}</strong> modificó la oportunidad ${savedOpportunity.nombre_proyecto}.<br/><br/>Ejecutivo: de <strong>${oldEjecutivoName} -> ${newEjecutivoName}</strong>.`;
 
-          await this.notificationsService.createAndSendNotification(
+          this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Asignación de Oportunidad',
             assignMessage,
             'opportunity_assigned',
             savedOpportunity.id,
-          );
+          ).catch(err => this.logger.error(`Error al enviar notificación de asignación: ${err.message}`));
         } else if (updateOpportunityDto.stage_id && updateOpportunityDto.stage_id !== originalStageId) {
           const newStageName = selectedStage ? selectedStage.strname : 'N/A';
           const moveMessage = `El usuario <strong>${username}</strong> realizó una actualización en la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>Etapa: de <strong>${originalStageName} -> ${newStageName}</strong>.<br/><br/>Ingresa a la plataforma para ver el detalle del movimiento.`;
 
-          await this.notificationsService.createAndSendNotification(
+          this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Movimiento de Oportunidad',
             moveMessage,
             'opportunity_moved',
             savedOpportunity.id,
-          );
+          ).catch(err => this.logger.error(`Error al enviar notificación de movimiento: ${err.message}`));
         } else {
           const formattedChanges = changes.map(c => {
             let cleaned = c.replace(/^- /, '');
@@ -620,13 +641,13 @@ export class OpportunitiesService {
 
           const updateMessage = `El usuario <strong>${username}</strong> realizó una actualización en la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>${formattedChanges}<br/><br/>Ingresa a la plataforma para revisar los cambios y dar el seguimiento correspondiente, si es necesario.`;
 
-          await this.notificationsService.createAndSendNotification(
+          this.notificationsService.createAndSendNotification(
             savedOpportunity.ejecutivo_id,
             'Oportunidad Actualizada',
             updateMessage,
             'opportunity_updated',
             savedOpportunity.id,
-          );
+          ).catch(err => this.logger.error(`Error al enviar notificación de actualización: ${err.message}`));
         }
       }
     }

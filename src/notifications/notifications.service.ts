@@ -2,11 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
+import { OnEvent } from '@nestjs/event-emitter';
 import { Notification } from './entities/notification.entity';
 import { User } from '../users/entities/user.entity';
 import { NotificationsGateway } from './notifications.gateway';
 import { MailService } from '../mail/mail.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { NOTIFICATION_EVENTS, NotificationPayload } from '../common/events/notification.events';
 
 @Injectable()
 export class NotificationsService {
@@ -127,6 +129,30 @@ export class NotificationsService {
     }
 
     return saved;
+  }
+
+  /**
+   * Listener de evento desacoplado.
+   * Permite que otros módulos (ej. ConversationsService) emitan notificaciones
+   * sin importar directamente NotificationsService (elimina dependencia circular).
+   */
+  @OnEvent(NOTIFICATION_EVENTS.CREATE_AND_SEND)
+  async handleCreateAndSendNotification(payload: NotificationPayload & {
+    title: string;
+    sendEmail?: boolean;
+  }): Promise<void> {
+    try {
+      await this.createAndSendNotification(
+        payload.userId,
+        payload.title,
+        payload.message,
+        payload.type,
+        payload.entityId,
+        payload.sendEmail ?? true,
+      );
+    } catch (err) {
+      this.logger.error(`Error procesando evento ${NOTIFICATION_EVENTS.CREATE_AND_SEND}:`, err);
+    }
   }
 
   async getUserNotifications(userId: string, limit: number = 30): Promise<Notification[]> {

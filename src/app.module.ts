@@ -1,15 +1,18 @@
-import { Module, OnApplicationBootstrap, NestModule, MiddlewareConsumer } from '@nestjs/common';
+import { Module, OnApplicationBootstrap, NestModule, MiddlewareConsumer, Logger } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ClientsModule } from './clients/clients.module';
 import { InteractionsModule } from './interactions/interactions.module';
 import { RemindersModule } from './reminders/reminders.module';
 import { OpportunitiesModule } from './opportunities/opportunities.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
-import { ActivitiesModule } from './Activities/activities.module';
+import { ActivitiesModule } from './activities/activities.module';
 import { OpportunityTrackingsModule } from './opportunity-trackings/opportunity-trackings.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -34,9 +37,34 @@ import { TenantMiddleware } from './tenancy/tenant.middleware';
   imports: [
     ScheduleModule.forRoot(),
     ConfigModule.forRoot({
-      isGlobal: true, // Makes the ConfigService available throughout the app
+      isGlobal: true,
     }),
-
+    // EventEmitter global: permite comunicación desacoplada entre módulos
+    // eliminando la necesidad de forwardRef() en dependencias circulares
+    EventEmitterModule.forRoot({
+      wildcard: true,
+      delimiter: '.',
+      maxListeners: 20,
+      verboseMemoryLeak: true,
+    }),
+    // Rate limiting global: tres niveles diferenciados
+    ThrottlerModule.forRoot([
+      {
+        name: 'default',
+        ttl: 60000,   // 1 minuto
+        limit: 5000,   // 500 req/min para endpoints autenticados en desarrollo/producción
+      },
+      {
+        name: 'auth',
+        ttl: 60000,
+        limit: 1000,    // 10 req/min para endpoints de autenticación sensibles
+      },
+      {
+        name: 'webhook',
+        ttl: 60000,
+        limit: 1000,   // 200 req/min para webhooks de IA (webchat)
+      },
+    ]),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
@@ -48,7 +76,8 @@ import { TenantMiddleware } from './tenancy/tenant.middleware';
         database: configService.get<string>('DB_DATABASE'),
         entities: [__dirname + '/**/*.entity{.ts,.js}'],
         autoLoadEntities: true,
-        synchronize: true, // In production, this should be false and migrations should be used
+        // synchronize se controla con DB_SYNCHRONIZE (ver main.ts para la guardia de producción)
+        synchronize: configService.get<string>('DB_SYNCHRONIZE') === 'true' && configService.get<string>('NODE_ENV') !== 'production',
       }),
       inject: [ConfigService],
     }),
@@ -77,9 +106,18 @@ import { TenantMiddleware } from './tenancy/tenant.middleware';
     WebchatModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // ThrottlerGuard global: aplica rate limiting a todos los endpoints
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule implements OnApplicationBootstrap, NestModule {
+  private readonly logger = new Logger('AppModule');
+
   configure(consumer: MiddlewareConsumer) {
     consumer.apply(TenantMiddleware).forRoutes('*');
   }
@@ -88,7 +126,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
 
 
   async onApplicationBootstrap() {
-    console.log('Running automatic data migration...');
+    this.logger.log('Running automatic data migration...');
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
 
@@ -96,7 +134,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
       // 1. Check if the table "companies" exists
       const tableExists = await queryRunner.hasTable('companies');
       if (!tableExists) {
-        console.log('Companies table does not exist yet. Skipping migration for now.');
+        this.logger.log('Companies table does not exist yet. Skipping migration for now.');
         return;
       }
 
@@ -129,7 +167,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             [empresaName]
           );
           companyId = insertResult[0].id;
-          console.log(`Created company "${empresaName}" with ID ${companyId}`);
+          this.logger.log(`Created company "${empresaName}" with ID ${companyId}`);
         } else {
           companyId = companyRow[0].id;
         }
@@ -139,7 +177,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           'UPDATE clients SET "companyId" = $1 WHERE empresa = $2 AND "companyId" IS NULL',
           [companyId, row.empresa]
         );
-        console.log(`Linked clients with empresa "${row.empresa}" to company ID ${companyId}`);
+        this.logger.log(`Linked clients with empresa "${row.empresa}" to company ID ${companyId}`);
       }
 
       // 2. Link opportunities to companies
@@ -155,7 +193,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           'UPDATE opportunities SET "companyId" = $1 WHERE id = $2',
           [opp.companyId, opp.id]
         );
-        console.log(`Linked opportunity ${opp.id} to company ID ${opp.companyId}`);
+        this.logger.log(`Linked opportunity ${opp.id} to company ID ${opp.companyId}`);
 
         // Insert into opportunity_contacts many-to-many
         const exists = await queryRunner.query(
@@ -167,7 +205,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             'INSERT INTO opportunity_contacts ("opportunitiesId", "clientsId") VALUES ($1, $2)',
             [opp.id, opp.cliente_id]
           );
-          console.log(`Associated contact ${opp.cliente_id} to opportunity ${opp.id} in opportunity_contacts`);
+          this.logger.log(`Associated contact ${opp.cliente_id} to opportunity ${opp.id} in opportunity_contacts`);
         }
       }
 
@@ -184,7 +222,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           'UPDATE activities SET "companyId" = $1 WHERE id = $2',
           [act.companyId, act.id]
         );
-        console.log(`Linked activity ${act.id} to company ID ${act.companyId}`);
+        this.logger.log(`Linked activity ${act.id} to company ID ${act.companyId}`);
 
         // Insert into activity_contacts many-to-many
         const exists = await queryRunner.query(
@@ -196,12 +234,12 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             'INSERT INTO activity_contacts ("activitiesId", "clientsId") VALUES ($1, $2)',
             [act.id, act.clientId]
           );
-          console.log(`Associated contact ${act.clientId} to activity ${act.id} in activity_contacts`);
+          this.logger.log(`Associated contact ${act.clientId} to activity ${act.id} in activity_contacts`);
         }
       }
 
     } catch (err) {
-      console.error('Error running automatic migration:', err);
+      this.logger.error('Error running automatic migration:', err);
     } finally {
       await queryRunner.release();
     }

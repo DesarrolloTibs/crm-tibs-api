@@ -23,8 +23,9 @@ export class MailService {
         user,
         pass,
       },
+      // rejectUnauthorized:false solo en desarrollo — en producción se valida el certificado SSL
       tls: {
-        rejectUnauthorized: false, // Evita fallos de certificado SSL autofirmado
+        rejectUnauthorized: process.env.NODE_ENV === 'production',
       },
     });
   }

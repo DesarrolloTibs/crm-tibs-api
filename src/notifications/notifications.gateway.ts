@@ -14,7 +14,10 @@ import { Notification } from './entities/notification.entity';
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173,http://localhost:3000')
+      .split(',')
+      .map((o) => o.trim()),
+    credentials: true,
   },
 })
 export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {

@@ -1,90 +1,124 @@
-import { Injectable, NestMiddleware, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NestMiddleware, ForbiddenException, Logger, Inject } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { DataSource } from 'typeorm';
 import * as jwt from 'jsonwebtoken';
+import { ConfigService } from '@nestjs/config';
+import type { Cache } from 'cache-manager';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { TenantContextService } from './tenant-context.service';
 
 @Injectable()
 export class TenantMiddleware implements NestMiddleware {
-  constructor(private readonly dataSource: DataSource) {}
+  private readonly logger = new Logger('TenantMiddleware');
+
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly configService: ConfigService,
+    @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+  ) {}
 
   async use(req: Request, res: Response, next: NextFunction) {
     const authHeader = req.headers.authorization;
     let tenantSchema = 'public';
     let userId: string | undefined = undefined;
     let role: string | undefined = undefined;
+    let jwtVerified = false;
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
+      const secret = this.configService.get<string>('JWT_SECRET');
       try {
-        const decoded: any = jwt.decode(token);
-        if (decoded) {
-          userId = decoded.sub || decoded.userId;
-          role = decoded.role;
+        // Verificación REAL con firma — sustituye el antiguo jwt.decode() inseguro
+        const decoded: any = jwt.verify(token, secret!);
+        jwtVerified = true;
+        userId = decoded.sub || decoded.userId;
+        role = decoded.role;
 
-          if (role === 'superadmin') {
-            tenantSchema = 'public';
-          } else if (decoded.tenant) {
-            tenantSchema = decoded.tenant;
-          }
+        if (role === 'superadmin') {
+          tenantSchema = 'public';
+        } else if (decoded.tenant) {
+          tenantSchema = decoded.tenant;
         }
-      } catch (e) {
-        // Ignorar si el token no se pudo decodificar en el middleware, el AuthGuard se encargará de rechazarlo si la ruta requiere auth.
+      } catch {
+        // Token inválido o expirado: se permite continuar sin tenant context.
+        // Los guards de autenticación (@UseGuards(AuthGuard('jwt'))) rechazarán
+        // la petición si la ruta requiere autenticación.
       }
     }
 
-    // Permitir header override explícito para peticiones de desarrollo o servicios inter-modulo si aplica
+    // Header x-tenant-schema: solo se acepta si el token fue verificado y el rol es superadmin.
+    // En producción se ignora para cualquier otro caso.
     const customTenantHeader = req.headers['x-tenant-schema'] as string;
-    if (customTenantHeader && TenantContextService.validateSchemaName(customTenantHeader)) {
-      tenantSchema = customTenantHeader;
+    if (customTenantHeader) {
+      if (jwtVerified && role === 'superadmin' && (customTenantHeader === 'public' || TenantContextService.validateSchemaName(customTenantHeader))) {
+        tenantSchema = customTenantHeader;
+      } else if (process.env.NODE_ENV === 'production') {
+        this.logger.warn(
+          `Header x-tenant-schema ignorado: requiere token superadmin verificado. IP: ${req.ip}`,
+        );
+      }
     }
 
-    // Validar nombre de esquema si no es public
+    // Validar nombre de esquema cuando no es public
     if (tenantSchema !== 'public') {
       if (!TenantContextService.validateSchemaName(tenantSchema)) {
         throw new ForbiddenException(`Nombre de organización/esquema inválido '${tenantSchema}'.`);
       }
 
-      // Validar que el tenant exista y esté activo en public.tenants
-      try {
-        const tenants = await this.dataSource.query(
-          `SELECT is_active FROM public.tenants WHERE schema_name = $1`,
-          [tenantSchema]
-        );
+      // Validar tenant activo con caché LRU (TTL: 60s) para evitar query a BD en cada request
+      const cacheKey = `tenant_active:${tenantSchema}`;
+      let tenantActive: boolean | null | undefined = await this.cacheManager.get<boolean>(cacheKey);
 
-        if (tenants.length === 0) {
-          throw new ForbiddenException(`La organización '${tenantSchema}' no existe.`);
+      if (tenantActive === null || tenantActive === undefined) {
+        // No está en caché — consultar la BD y almacenar resultado
+        try {
+          const tenants = await this.dataSource.query(
+            `SELECT is_active FROM public.tenants WHERE schema_name = $1`,
+            [tenantSchema],
+          );
+
+          if (tenants.length === 0) {
+            // Guardar false en caché para no repetir la query para schemas inexistentes
+            await this.cacheManager.set(cacheKey, false, 60000);
+            throw new ForbiddenException(`La organización '${tenantSchema}' no existe.`);
+          }
+
+          tenantActive = tenants[0].is_active as boolean;
+          await this.cacheManager.set(cacheKey, tenantActive, 60000);
+        } catch (err) {
+          if (err instanceof ForbiddenException) throw err;
+          // Si public.tenants no existe aún en el primer inicio, se omite
         }
-
-        if (!tenants[0].is_active) {
-          throw new ForbiddenException(`La organización '${tenantSchema}' se encuentra INACTIVA o su suscripción ha expirado.`);
-        }
-
-        // Sincronizar usuarios SuperAdmin globales en la tabla de usuarios del tenant para evitar violaciones de Foreign Key
-        await this.dataSource.query(`
-          INSERT INTO "${tenantSchema}".users (id, username, email, password, role, "isActive")
-          SELECT id, username, email, password, role, "isActive"
-          FROM public.users
-          WHERE role = 'superadmin'
-          ON CONFLICT (id) DO UPDATE SET
-            username = EXCLUDED.username,
-            email = EXCLUDED.email,
-            role = EXCLUDED.role,
-            "isActive" = EXCLUDED."isActive";
-        `).catch(() => null);
-      } catch (err) {
-        if (err instanceof ForbiddenException) throw err;
-        // Si las tablas de public.tenants no existen aún durante inicio inicial, se omite
       }
+
+      if (tenantActive === false) {
+        throw new ForbiddenException(
+          `La organización '${tenantSchema}' se encuentra INACTIVA o su suscripción ha expirado.`,
+        );
+      }
+
+      // Sincronizar usuarios SuperAdmin globales en la tabla del tenant
+      // para evitar violaciones de Foreign Key
+      await this.dataSource.query(`
+        INSERT INTO "${tenantSchema}".users (id, username, email, password, role, "isActive")
+        SELECT id, username, email, password, role, "isActive"
+        FROM public.users
+        WHERE role = 'superadmin'
+        ON CONFLICT (id) DO UPDATE SET
+          username = EXCLUDED.username,
+          email = EXCLUDED.email,
+          password = EXCLUDED.password,
+          role = EXCLUDED.role,
+          "isActive" = EXCLUDED."isActive";
+      `).catch(() => null);
     }
 
-
-    // Ejecutar la petición en el contexto aislado de AsyncLocalStorage
+    // Ejecutar la petición dentro del contexto aislado de AsyncLocalStorage
     TenantContextService.run(
       { tenantSchema, userId, role },
       () => {
         next();
-      }
+      },
     );
   }
 }

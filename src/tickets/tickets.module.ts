@@ -1,4 +1,4 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Ticket } from './entities/ticket.entity';
 import { Helpdesk } from './entities/helpdesk.entity';
@@ -16,7 +16,10 @@ import { TicketInteractionsModule } from '../ticket-interactions/ticket-interact
 @Module({
   imports: [
     TypeOrmModule.forFeature([Ticket, Helpdesk, TicketStage, HelpdeskCronConfig, Client]),
-    forwardRef(() => NotificationsModule),
+    // NotificationsModule: necesario para NotificationsService en TicketsService
+    // Ya no circular — HelpdesksService usa EventEmitter para comunicarse con
+    // NotificationsSchedulerService en lugar de inyección directa
+    NotificationsModule,
     TicketInteractionsModule,
   ],
   controllers: [TicketsController, HelpdesksController],
@@ -24,4 +27,3 @@ import { TicketInteractionsModule } from '../ticket-interactions/ticket-interact
   exports: [TicketsService, HelpdesksService, TypeOrmModule, TicketsGateway],
 })
 export class TicketsModule {}
-

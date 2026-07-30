@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BlobServiceClient, ContainerClient } from '@azure/storage-blob';
 import { existsSync, unlinkSync } from 'fs';
@@ -7,6 +7,7 @@ import type { Response } from 'express';
 
 @Injectable()
 export class StorageService {
+  private readonly logger = new Logger('StorageService');
   private blobServiceClient: BlobServiceClient | null = null;
   private containerClient: ContainerClient | null = null;
   private storageType: string;
@@ -30,7 +31,7 @@ export class StorageService {
         this.blobServiceClient = BlobServiceClient.fromConnectionString(this.connectionString);
         this.containerClient = this.blobServiceClient.getContainerClient(this.containerName);
       } catch (err) {
-        console.error('Failed to initialize Azure Blob Service Client:', err);
+        this.logger.error('Failed to initialize Azure Blob Service Client:', err);
       }
     }
   }
@@ -72,15 +73,14 @@ export class StorageService {
       try {
         unlinkSync(absoluteLocalPath);
       } catch (err) {
-        console.error(
-          `Failed to delete local temp file ${absoluteLocalPath} after uploading to Azure:`,
-          err,
+        this.logger.error(
+          `Failed to delete local temp file ${absoluteLocalPath} after uploading to Azure: ${err.message}`,
         );
       }
 
       return normalizedDestPath;
     } catch (err) {
-      console.error(`Azure upload failed for file ${localPath}:`, err);
+      this.logger.error(`Azure upload failed for file ${localPath}: ${err.message}`);
       throw new InternalServerErrorException(`Azure storage upload error: ${err.message}`);
     }
   }
@@ -104,7 +104,7 @@ export class StorageService {
         const blockBlobClient = this.containerClient.getBlockBlobClient(relativePath);
         await blockBlobClient.deleteIfExists();
       } catch (err) {
-        console.error(`Failed to delete file from Azure: ${relativePath}`, err);
+        this.logger.error(`Failed to delete file from Azure: ${relativePath} — ${err.message}`);
       }
     } else {
       const absolutePath = join(process.cwd(), relativePath);
@@ -112,7 +112,7 @@ export class StorageService {
         try {
           unlinkSync(absolutePath);
         } catch (err) {
-          console.error(`Failed to delete local file: ${absolutePath}`, err);
+          this.logger.error(`Failed to delete local file: ${absolutePath} — ${err.message}`);
         }
       }
     }
@@ -151,7 +151,7 @@ export class StorageService {
           res.status(500).send('Unable to read file stream from Azure Storage');
         }
       } catch (err) {
-        console.error(`Failed to stream file from Azure: ${relativePath}`, err);
+        this.logger.error(`Failed to stream file from Azure: ${relativePath} — ${err.message}`);
         res.status(404).send('File not found in Azure Storage');
       }
     } else {

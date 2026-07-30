@@ -1,10 +1,10 @@
-import { Injectable, OnModuleInit, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DashboardIndicator } from './entities/dashboard-indicator.entity';
 import { Opportunity } from '../opportunities/entities/opportunity.entity';
 import { Ticket } from '../tickets/entities/ticket.entity';
-import { Activity } from '../Activities/entities/activity.entity';
+import { Activity } from '../activities/entities/activity.entity';
 import { Pipeline } from '../pipelines/entities/pipeline.entity';
 import { Helpdesk } from '../tickets/entities/helpdesk.entity';
 import { Stage } from '../stages/entities/stage.entity';
@@ -15,6 +15,8 @@ import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class ReportsService implements OnModuleInit {
+  private readonly logger = new Logger('ReportsService');
+
   constructor(
     @InjectRepository(DashboardIndicator)
     private readonly indicatorRepository: Repository<DashboardIndicator>,
@@ -40,7 +42,7 @@ export class ReportsService implements OnModuleInit {
         return;
       }
 
-      console.log('Seeding default dashboard indicators...');
+      this.logger.log('Seeding default dashboard indicators...');
 
       // 1. Seed indicators for existing pipelines
       const pipelines = await this.pipelineRepository.find({ relations: ['stages'] });
@@ -150,9 +152,9 @@ export class ReportsService implements OnModuleInit {
         }));
       }
 
-      console.log('Seeded default indicators successfully.');
+      this.logger.log('Seeded default indicators successfully.');
     } catch (err) {
-      console.error('Failed to seed dashboard indicators:', err);
+      this.logger.error('Failed to seed dashboard indicators:', err);
     }
   }
 

@@ -7,11 +7,16 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { Message } from './entities/message.entity';
+import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173,http://localhost:3000')
+      .split(',')
+      .map((o) => o.trim()),
+    credentials: true,
   },
 })
 export class ConversationsGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
@@ -57,5 +62,13 @@ export class ConversationsGateway implements OnGatewayInit, OnGatewayConnection,
       this.logger.log(`Emitted tenant_consumption_updated for schema ${schemaName}`);
     }
   }
-}
 
+  /**
+   * Listener de evento para consumo de tokens de tenant.
+   * Permite que AiAgentService notifique al Gateway sin inyectarlo directamente.
+   */
+  @OnEvent(CONVERSATION_EVENTS.TENANT_CONSUMPTION_UPDATED)
+  handleTenantConsumptionUpdated(payload: { schemaName: string }): void {
+    this.emitTenantConsumptionUpdated(payload.schemaName);
+  }
+}

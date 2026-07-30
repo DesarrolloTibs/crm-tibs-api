@@ -9,8 +9,6 @@ import {
   Query,
   UseGuards,
   ParseUUIDPipe,
-  UsePipes,
-  ValidationPipe,
   Res,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
@@ -26,7 +24,6 @@ import { Role } from '../role.enum';
 @ApiTags('conversations')
 @ApiBearerAuth()
 @Controller('conversations')
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 export class ConversationsController {
   constructor(
     private readonly conversationsService: ConversationsService,

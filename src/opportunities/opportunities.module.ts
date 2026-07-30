@@ -1,9 +1,8 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MulterModule } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { existsSync, mkdirSync } from 'fs';
-import { extname } from 'path';
 
 import { Opportunity } from './entities/opportunity.entity';
 import { OpportunityFile } from './entities/opportunity-file.entity';
@@ -29,32 +28,35 @@ import { ClientsModule } from 'src/clients/clients.module';
 import { StorageModule } from '../storage/storage.module';
 import { InteractionsModule } from '../interactions/interactions.module';
 import { NotificationsModule } from '../notifications/notifications.module';
-import { ConversationsModule } from '../conversations/conversations.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Opportunity, Client, Pipeline, Stage, OpportunityFile, OpportunityProduct, Product, OpportunityLabel, BusinessLineOption, DeliveryTypeOption, LicensingOption]),
+    TypeOrmModule.forFeature([
+      Opportunity, Client, Pipeline, Stage, OpportunityFile, OpportunityProduct,
+      Product, OpportunityLabel, BusinessLineOption, DeliveryTypeOption, LicensingOption,
+    ]),
     UsersModule,
     OpportunityTrackingsModule,
     ClientsModule,
     StorageModule,
     InteractionsModule,
     NotificationsModule,
-    forwardRef(() => ConversationsModule),
+    // ConversationsModule ya NO se importa — QuotationPdfService usa EventEmitter
+    // para comunicarse con ConversationsService, eliminando la circularidad
 
     MulterModule.register({
       storage: diskStorage({
         destination: (req, file, cb) => {
           const opportunityId = req.params.id;
           const uploadPath = `./uploads/opportunities/${opportunityId}`;
-          // Asegurarse de que el directorio de destino exista
           if (!existsSync(uploadPath)) {
             mkdirSync(uploadPath, { recursive: true });
           }
           cb(null, uploadPath);
         },
         filename: (req, file, cb) => {
-          // Decodificar el nombre del archivo para manejar correctamente caracteres especiales (acentos, ñ, etc.)
+          // Decodificar el nombre del archivo para manejar correctamente
+          // caracteres especiales (acentos, ñ, etc.)
           const decodedName = Buffer.from(file.originalname, 'latin1').toString('utf8');
           const uniqueName = `${Date.now()}-${decodedName}`;
           cb(null, uniqueName);
@@ -66,4 +68,4 @@ import { ConversationsModule } from '../conversations/conversations.module';
   providers: [OpportunitiesService, QuotationPdfService, OpportunityLabelsService, OpportunityCatalogsService],
   exports: [OpportunitiesService, QuotationPdfService],
 })
-export class OpportunitiesModule { }
+export class OpportunitiesModule {}

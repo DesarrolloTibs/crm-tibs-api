@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, ParseIntPipe, Query, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { SkipThrottle } from '@nestjs/throttler';
 
 import { TenantsService } from './tenants.service';
 import { ProvisionTenantDto } from '../tenancy/tenant-provisioner.service';
@@ -14,6 +15,7 @@ export class TenantsController {
     return this.tenantsService.provision(dto);
   }
 
+  @SkipThrottle()
   @Get('consumption')
   async getConsumption(@Query('schemaName') schemaName?: string) {
     return this.tenantsService.getConsumption(schemaName);

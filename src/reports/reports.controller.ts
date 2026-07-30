@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, UsePipes, ValidationPipe, ForbiddenException, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, ForbiddenException, ParseUUIDPipe } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ReportsService } from './reports.service';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
@@ -10,11 +11,11 @@ import { DashboardIndicator } from './entities/dashboard-indicator.entity';
 @ApiTags('reports')
 @ApiBearerAuth()
 @UseGuards(AuthGuard('jwt'))
-@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 @Controller('reports')
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
+  @SkipThrottle()
   @Get('dashboard')
   @ApiOperation({ summary: 'Obtener datos consolidados para el dashboard de reportes' })
   getDashboardData(@GetUser() user: User) {

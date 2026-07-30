@@ -5,7 +5,7 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
-import { Activity } from '../../Activities/entities/activity.entity';
+import { Activity } from '../../activities/entities/activity.entity';
 
 @Entity('reminders')
 export class Reminder {
