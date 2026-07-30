@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { User } from './entities/user.entity';
@@ -15,6 +15,43 @@ export class UsersService implements OnModuleInit {
     private readonly userRepository: Repository<User>,
     private readonly dataSource: DataSource,
   ) {}
+
+  /**
+   * Valida que un correo electrónico sea único en todo el sistema (en public.users y en todos los esquemas de tenants activos).
+   */
+  async checkEmailUnique(email: string, excludeUserId?: string): Promise<void> {
+    if (!email) return;
+    const cleanEmail = email.toLowerCase().trim();
+
+    // 1. Verificar en public.users
+    const suRows = await this.dataSource.query(
+      `SELECT id FROM public.users WHERE LOWER(email) = LOWER($1) ${excludeUserId ? 'AND id::text != $2' : ''}`,
+      excludeUserId ? [cleanEmail, excludeUserId] : [cleanEmail]
+    ).catch(() => []);
+
+    if (suRows && suRows.length > 0) {
+      throw new BadRequestException(`El correo electrónico "${email}" ya está registrado en el sistema.`);
+    }
+
+    // 2. Verificar en todos los esquemas de tenants activos
+    const tenants = await this.dataSource.query(
+      `SELECT schema_name FROM public.tenants WHERE is_active = true`
+    ).catch(() => []);
+
+    for (const t of tenants) {
+      try {
+        const rows = await this.dataSource.query(
+          `SELECT id FROM "${t.schema_name}".users WHERE LOWER(email) = LOWER($1) ${excludeUserId ? 'AND id::text != $2' : ''}`,
+          excludeUserId ? [cleanEmail, excludeUserId] : [cleanEmail]
+        );
+        if (rows && rows.length > 0) {
+          throw new BadRequestException(`El correo electrónico "${email}" ya está registrado en el sistema.`);
+        }
+      } catch (err) {
+        if (err instanceof BadRequestException) throw err;
+      }
+    }
+  }
 
   async onModuleInit() {
     try {
@@ -56,56 +93,61 @@ export class UsersService implements OnModuleInit {
 
   async findOneByEmail(email: string): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
-    if (tenantSchema === 'public') {
-      const rows = await this.dataSource.query(
-        `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE LOWER(email) = LOWER($1) AND role = 'superadmin'`,
-        [email]
-      );
-      if (rows.length > 0) return rows[0] as User;
-    } else {
+    if (tenantSchema !== 'public') {
       await this.ensureTenantUserColumns(tenantSchema);
       const rows = await this.dataSource.query(
         `SELECT id, username, email, password, role, "isActive" FROM "${tenantSchema}".users WHERE LOWER(email) = LOWER($1)`,
         [email]
       );
       if (rows.length > 0) return rows[0] as User;
-
-      const suRows = await this.dataSource.query(
-        `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE LOWER(email) = LOWER($1) AND role = 'superadmin'`,
-        [email]
-      );
-      if (suRows.length > 0) return suRows[0] as User;
     }
+
+    const suRows = await this.dataSource.query(
+      `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE LOWER(email) = LOWER($1)`,
+      [email]
+    );
+    if (suRows.length > 0) return suRows[0] as User;
+
+    const tenants = await this.dataSource.query(
+      `SELECT schema_name FROM public.tenants WHERE is_active = true`
+    ).catch(() => []);
+
+    for (const t of tenants) {
+      try {
+        const rows = await this.dataSource.query(
+          `SELECT id, username, email, password, role, "isActive" FROM "${t.schema_name}".users WHERE LOWER(email) = LOWER($1)`,
+          [email]
+        );
+        if (rows && rows.length > 0) return rows[0] as User;
+      } catch (err) {}
+    }
+
     throw new NotFoundException('Usuario no encontrado');
   }
 
   async findOneById(id: string): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
-    if (tenantSchema === 'public') {
-      const rows = await this.dataSource.query(
-        `SELECT id, username, email, role, "isActive" FROM public.users WHERE id::text = $1 AND role = 'superadmin'`,
-        [id]
-      );
-      if (rows.length > 0) return rows[0] as User;
-    } else {
+    if (tenantSchema !== 'public') {
       await this.ensureTenantUserColumns(tenantSchema);
       const rows = await this.dataSource.query(
         `SELECT id, username, email, role, "isActive", "profileImageUrl" FROM "${tenantSchema}".users WHERE id::text = $1`,
         [id]
       );
       if (rows.length > 0) return rows[0] as User;
-
-      const suRows = await this.dataSource.query(
-        `SELECT id, username, email, role, "isActive" FROM public.users WHERE id::text = $1 AND role = 'superadmin'`,
-        [id]
-      );
-      if (suRows.length > 0) return suRows[0] as User;
     }
+
+    const suRows = await this.dataSource.query(
+      `SELECT id, username, email, role, "isActive" FROM public.users WHERE id::text = $1`,
+      [id]
+    );
+    if (suRows.length > 0) return suRows[0] as User;
+
     throw new NotFoundException('Usuario no encontrado');
   }
 
   async create(userData: CreateUserDto): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    await this.checkEmailUnique(userData.email);
     const hashedPassword = await bcrypt.hash(userData.password, 10);
 
     if (tenantSchema === 'public' || userData.role === Role.SuperAdmin || (userData.role as any) === 'superadmin') {
@@ -127,6 +169,9 @@ export class UsersService implements OnModuleInit {
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    if (updateUserDto.email) {
+      await this.checkEmailUnique(updateUserDto.email, id);
+    }
     if (updateUserDto.password) {
       updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
     }

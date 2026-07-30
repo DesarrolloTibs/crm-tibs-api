@@ -263,7 +263,12 @@ export class ActivitiesService {
       throw new InternalServerErrorException('No se pudo identificar al usuario actual.');
     }
 
-    const fullCurrentUser = await this.usersService.findOneById(currentUserId);
+    let fullCurrentUser: User = currentUser;
+    try {
+      fullCurrentUser = await this.usersService.findOneById(currentUserId);
+    } catch (e) {
+      fullCurrentUser = currentUser;
+    }
 
     const options: FindManyOptions<Activity> = {
       where: {},
@@ -308,6 +313,9 @@ export class ActivitiesService {
     const results = await Promise.all(
       activities.map(async (act) => {
         const filled = this.fillDeletedType(act);
+        if (!filled.user && filled.userId) {
+          filled.user = await this.usersService.findOneById(filled.userId).catch(() => null as any);
+        }
         (filled as any).reminder = await this.remindersService.findByActivity(act.id);
         return filled;
       })

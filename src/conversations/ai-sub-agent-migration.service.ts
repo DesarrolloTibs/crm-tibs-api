@@ -178,6 +178,55 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
               await this.aiAgentConfigRepository.save(cfg);
             }
           }
+
+          // Auto-sincronizar sub-agentes en todos los esquemas de tenants activos
+          const activeTenants = await this.aiAgentConfigRepository.query(
+            `SELECT schema_name FROM public.tenants WHERE is_active = true`
+          ).catch(() => []);
+
+          // Asegurar únicamente que las herramientas del sistema estén presentes en los tenants sin sobrescribir sus prompts personalizados
+          for (const t of activeTenants) {
+            const sName = t.schema_name;
+            try {
+              // 1. Sincronizar comercial: agregar sendQuotationPdf a las herramientas si no la tiene
+              const comSub = await this.aiAgentConfigRepository.query(
+                `SELECT id, tools FROM "${sName}".ai_sub_agents WHERE key = 'comercial'`
+              );
+              if (comSub && comSub.length > 0) {
+                let tools = comSub[0].tools || [];
+                if (typeof tools === 'string') {
+                  try { tools = JSON.parse(tools); } catch(e) {}
+                }
+                if (!tools.includes('sendQuotationPdf')) {
+                  tools.push('sendQuotationPdf');
+                  await this.aiAgentConfigRepository.query(
+                    `UPDATE "${sName}".ai_sub_agents SET tools = $1::jsonb WHERE key = 'comercial'`,
+                    [JSON.stringify(tools)]
+                  );
+                }
+              }
+
+              // 2. Sincronizar soporte_atencion: agregar requestHumanHandoff a las herramientas si no la tiene
+              const sopSub = await this.aiAgentConfigRepository.query(
+                `SELECT id, tools FROM "${sName}".ai_sub_agents WHERE key = 'soporte_atencion'`
+              );
+              if (sopSub && sopSub.length > 0) {
+                let tools = sopSub[0].tools || [];
+                if (typeof tools === 'string') {
+                  try { tools = JSON.parse(tools); } catch(e) {}
+                }
+                if (!tools.includes('requestHumanHandoff')) {
+                  tools.push('requestHumanHandoff');
+                  await this.aiAgentConfigRepository.query(
+                    `UPDATE "${sName}".ai_sub_agents SET tools = $1::jsonb WHERE key = 'soporte_atencion'`,
+                    [JSON.stringify(tools)]
+                  );
+                }
+              }
+            } catch (tenantErr) {
+              // Ignorar esquemas que aún no tengan la tabla creada
+            }
+          }
         } catch (migErr) {
           this.logger.error('Error durante la auto-migración de textos en subagentes:', migErr);
         }

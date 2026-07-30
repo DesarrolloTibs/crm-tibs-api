@@ -97,19 +97,9 @@ export class TenantMiddleware implements NestMiddleware {
         );
       }
 
-      // Sincronizar usuarios SuperAdmin globales en la tabla del tenant
-      // para evitar violaciones de Foreign Key
+      // Asegurar que el esquema del tenant NO almacene usuarios SuperAdmin (los SuperAdmin residen exclusivamente en public.users)
       await this.dataSource.query(`
-        INSERT INTO "${tenantSchema}".users (id, username, email, password, role, "isActive")
-        SELECT id, username, email, password, role, "isActive"
-        FROM public.users
-        WHERE role = 'superadmin'
-        ON CONFLICT (id) DO UPDATE SET
-          username = EXCLUDED.username,
-          email = EXCLUDED.email,
-          password = EXCLUDED.password,
-          role = EXCLUDED.role,
-          "isActive" = EXCLUDED."isActive";
+        DELETE FROM "${tenantSchema}".users WHERE LOWER(role::text) = 'superadmin';
       `).catch(() => null);
     }
 

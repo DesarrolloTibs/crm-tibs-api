@@ -47,21 +47,40 @@ export class AuthService {
     }
 
 
-    // 2. Si no es SuperAdmin, validar en esquemas locales de tenant (roles: admin y executive)
+    // 2. Si no es SuperAdmin, buscar al usuario a través de los esquemas de tenants activos
     try {
-      const user = await this.usersService.findOneByEmail(email);
-      if (user && user.isActive === false) {
-        throw new BadRequestException('Su cuenta se encuentra inactiva.');
-      }
-      const isMatch = user && (await bcrypt.compare(pass, user.password));
+      const activeTenants = await this.dataSource.query(
+        `SELECT schema_name FROM public.tenants WHERE is_active = true`
+      ).catch(() => []);
 
-      if (isMatch) {
-        const { password, ...result } = user;
-        return result;
+      for (const t of activeTenants) {
+        try {
+          const rows = await this.dataSource.query(
+            `SELECT id, username, email, password, role, "isActive" FROM "${t.schema_name}".users WHERE LOWER(email) = LOWER($1)`,
+            [email]
+          );
+          if (rows && rows.length > 0) {
+            const user = rows[0];
+            if (user.isActive === false) {
+              throw new BadRequestException('Su cuenta se encuentra inactiva.');
+            }
+            if (await bcrypt.compare(pass, user.password)) {
+              return {
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                role: user.role,
+                tenant: t.schema_name,
+              };
+            }
+          }
+        } catch (tenantErr) {
+          if (tenantErr instanceof BadRequestException) throw tenantErr;
+          // Ignorar esquemas inaccesibles
+        }
       }
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
-      // Usuario local no encontrado
     }
 
     return null;
