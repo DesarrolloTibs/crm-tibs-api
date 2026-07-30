@@ -113,16 +113,30 @@ export class NotificationsSchedulerService implements OnModuleInit {
     try {
       const schemas = await this.getActiveSchemas();
       for (const schema of schemas) {
-        await TenantContextService.run({ tenantSchema: schema }, async () => {
-          await this.processExactTimeRemindersForCurrentSchema();
-        });
+        try {
+          await TenantContextService.run({ tenantSchema: schema }, async () => {
+            await this.processExactTimeRemindersForCurrentSchema();
+          });
+        } catch (schemaError: any) {
+          this.logger.error(`Error procesando recordatorios en esquema '${schema}': ${schemaError?.message || schemaError}`, schemaError?.stack);
+        }
       }
-    } catch (error) {
-      this.logger.error('Error procesando recordatorios a la hora exacta:', error);
+    } catch (error: any) {
+      this.logger.error('Error general procesando recordatorios a la hora exacta:', error);
     }
   }
 
   private async processExactTimeRemindersForCurrentSchema(): Promise<void> {
+    const currentSchema = TenantContextService.getTenantSchema() || 'public';
+    try {
+      await this.reminderRepository.query(`
+        ALTER TABLE "${currentSchema}".reminders ADD COLUMN IF NOT EXISTS "title" varchar(255);
+        ALTER TABLE "${currentSchema}".reminders ADD COLUMN IF NOT EXISTS "date" timestamptz;
+        ALTER TABLE "${currentSchema}".reminders ADD COLUMN IF NOT EXISTS "notified" boolean DEFAULT false;
+        ALTER TABLE "${currentSchema}".reminders ADD COLUMN IF NOT EXISTS "activity_id" uuid;
+      `);
+    } catch {}
+
     const now = new Date();
     const pendingReminders = await this.reminderRepository.find({
       where: {
@@ -142,11 +156,13 @@ export class NotificationsSchedulerService implements OnModuleInit {
         'activity.company.contacts',
         'activity.contacts',
       ],
+    }).catch((err) => {
+      this.logger.warn(`No se pudieron consultar recordatorios para esquema '${TenantContextService.getTenantSchema()}': ${err.message}`);
+      return [];
     });
 
     if (pendingReminders.length === 0) return;
 
-    const currentSchema = TenantContextService.getTenantSchema();
     this.logger.log(`Procesando ${pendingReminders.length} recordatorios programados a la hora exacta (Esquema: ${currentSchema}).`);
 
     for (const rem of pendingReminders) {

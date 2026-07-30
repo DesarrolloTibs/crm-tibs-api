@@ -77,7 +77,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware';
         entities: [__dirname + '/**/*.entity{.ts,.js}'],
         autoLoadEntities: true,
         // synchronize se controla con DB_SYNCHRONIZE (ver main.ts para la guardia de producción)
-        synchronize: configService.get<string>('DB_SYNCHRONIZE') === 'true' && configService.get<string>('NODE_ENV') !== 'production',
+        synchronize: configService.get<string>('DB_SYNCHRONIZE', 'true') === 'true' && configService.get<string>('NODE_ENV') !== 'production',
       }),
       inject: [ConfigService],
     }),

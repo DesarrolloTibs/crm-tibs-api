@@ -24,41 +24,45 @@ export class OpportunityCatalogsService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    // 1. Seed BusinessLineOption
-    const blCount = await this.businessLineRepository.count();
-    if (blCount === 0) {
-      await this.businessLineRepository.insert([
-        { id: 'a8b6d804-94c9-4a0b-bc77-cfc8152e93db', strname: 'Datos', blnstatus: true },
-        { id: 'b2f0a149-14a0-410a-8bf8-28564f7b60cc', strname: 'Desarrollo', blnstatus: true },
-        { id: 'c5d72bc1-12c8-47bc-8a7e-128a192bfa77', strname: 'RH', blnstatus: true },
-      ]);
-      this.logger.log('Seeded tblbusinesslines with default options.');
-    }
+    try {
+      // 1. Seed BusinessLineOption
+      const blCount = await this.businessLineRepository.count().catch(() => -1);
+      if (blCount === 0) {
+        await this.businessLineRepository.insert([
+          { id: 'a8b6d804-94c9-4a0b-bc77-cfc8152e93db', strname: 'Datos', blnstatus: true },
+          { id: 'b2f0a149-14a0-410a-8bf8-28564f7b60cc', strname: 'Desarrollo', blnstatus: true },
+          { id: 'c5d72bc1-12c8-47bc-8a7e-128a192bfa77', strname: 'RH', blnstatus: true },
+        ]).catch(() => null);
+        this.logger.log('Seeded tblbusinesslines with default options.');
+      }
 
-    // 2. Seed DeliveryTypeOption
-    const dtCount = await this.deliveryTypeRepository.count();
-    if (dtCount === 0) {
-      await this.deliveryTypeRepository.insert([
-        { id: 'd29ab9f7-7b89-4089-a299-cf9b0cb617cf', strname: 'Proyecto', blnstatus: true },
-        { id: 'e20c3a2a-43d9-482a-88cb-b09b0b4b2efc', strname: 'Licencia', blnstatus: true },
-        { id: 'f22db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Asignacion', blnstatus: true },
-        { id: '012db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Bolsa de Horas', blnstatus: true },
-      ]);
-      this.logger.log('Seeded tbldeliverytypes with default options.');
-    }
+      // 2. Seed DeliveryTypeOption
+      const dtCount = await this.deliveryTypeRepository.count().catch(() => -1);
+      if (dtCount === 0) {
+        await this.deliveryTypeRepository.insert([
+          { id: 'd29ab9f7-7b89-4089-a299-cf9b0cb617cf', strname: 'Proyecto', blnstatus: true },
+          { id: 'e20c3a2a-43d9-482a-88cb-b09b0b4b2efc', strname: 'Licencia', blnstatus: true },
+          { id: 'f22db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Asignacion', blnstatus: true },
+          { id: '012db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Bolsa de Horas', blnstatus: true },
+        ]).catch(() => null);
+        this.logger.log('Seeded tbldeliverytypes with default options.');
+      }
 
-    // 3. Seed LicensingOption
-    const lCount = await this.licensingRepository.count();
-    if (lCount === 0) {
-      await this.licensingRepository.insert([
-        { id: '112db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'No Aplica', blnstatus: true },
-        { id: '212db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Microsoft', blnstatus: true },
-        { id: '312db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'IBM', blnstatus: true },
-        { id: '412db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Qlik', blnstatus: true },
-        { id: '512db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Alteryx', blnstatus: true },
-        { id: '612db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'KNIME', blnstatus: true },
-      ]);
-      this.logger.log('Seeded tblicensings with default options.');
+      // 3. Seed LicensingOption
+      const lCount = await this.licensingRepository.count().catch(() => -1);
+      if (lCount === 0) {
+        await this.licensingRepository.insert([
+          { id: '112db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'No Aplica', blnstatus: true },
+          { id: '212db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Microsoft', blnstatus: true },
+          { id: '312db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'IBM', blnstatus: true },
+          { id: '412db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Qlik', blnstatus: true },
+          { id: '512db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'Alteryx', blnstatus: true },
+          { id: '612db2a2-4a08-410a-ba8c-b01b0b5b2efc', strname: 'KNIME', blnstatus: true },
+        ]).catch(() => null);
+        this.logger.log('Seeded tblicensings with default options.');
+      }
+    } catch (err: any) {
+      this.logger.warn(`Omite sembrado inicial de catálogos si las tablas aún se están creando: ${err.message}`);
     }
   }
 

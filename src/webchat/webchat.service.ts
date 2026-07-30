@@ -23,7 +23,7 @@ const ENTITY_SECURITY_MAP: Record<string, string | null> = {
 
 interface CubeQueryPlan {
   thought: string;
-  cubeQuery: {
+  cubeQuery?: {
     measures?: string[];
     dimensions?: string[];
     filters?: any[];
@@ -31,6 +31,14 @@ interface CubeQueryPlan {
     limit?: number;
     timeDimensions?: any[];
   };
+  cubeQueries?: Array<{
+    measures?: string[];
+    dimensions?: string[];
+    filters?: any[];
+    order?: Record<string, string> | Array<[string, string]>;
+    limit?: number;
+    timeDimensions?: any[];
+  }>;
   responseTemplate?: string;
   dashboardRedirect?: {
     tab?: string;
@@ -121,27 +129,34 @@ Genera tu respuesta JSON:`;
         return { answer: 'Lo siento, no pude procesar tu consulta. ¿Podrías reformularla?' };
       }
 
-      // 6. Si no hay cubeQuery, es una respuesta directa (saludo, aclaración, etc.)
-      if (!queryPlan.cubeQuery || Object.keys(queryPlan.cubeQuery).length === 0) {
+      // 6. Extraer y dividir consultas si la pregunta abarca múltiples temas/cubos
+      const queriesToExecute = this.extractAndSplitQueries(queryPlan);
+
+      if (queriesToExecute.length === 0) {
         return {
           answer: queryPlan.responseTemplate || queryPlan.thought || 'No entendí tu consulta. ¿Podrías ser más específico?',
           dashboardRedirect: queryPlan.dashboardRedirect,
         };
       }
 
-      // 7. Detectar entidades usadas en la query y aplicar filtros de seguridad
-      const cubeQuery = queryPlan.cubeQuery;
-      if (userRole === 'executive' || userRole === 'Ejecutivo') {
-        this.applySecurityFilters(cubeQuery, userId);
+      // 7. Ejecutar cada consulta (con filtros de seguridad) y consolidar datos
+      const allCubeData: any[] = [];
+      const allExecutedFilters: any[] = [];
+
+      for (const q of queriesToExecute) {
+        this.applySecurityFilters(q, userId, userRole);
+        this.sanitizeFilters(q, userId, userRole);
+        if (q.filters) {
+          allExecutedFilters.push(...q.filters);
+        }
+
+        const data = await this.executeCubeQuery(q);
+        if (data && data.length > 0) {
+          allCubeData.push(...data);
+        }
       }
-      this.sanitizeFilters(cubeQuery, userId, userRole);
 
-
-
-      // 8. Ejecutar query contra Cube.dev
-      const cubeData = await this.executeCubeQuery(cubeQuery);
-
-      if (!cubeData || cubeData.length === 0) {
+      if (allCubeData.length === 0) {
         return {
           answer: 'No se encontraron resultados para tu consulta. ¿Quieres intentar con otros filtros?',
           data: [],
@@ -149,19 +164,19 @@ Genera tu respuesta JSON:`;
         };
       }
 
-      // 9. Formatear la respuesta con el LLM
-      let formattedAnswer = await this.formatResults(question, cubeData, queryPlan);
+      // 8. Formatear la respuesta consolidada con el LLM
+      let formattedAnswer = await this.formatResults(question, allCubeData, queryPlan);
       formattedAnswer = this.deduplicateResponseLines(formattedAnswer);
 
-      // 10. Garantizar redirección inteligente al dashboard por defecto si es una query analítica
+      // 9. Redirección inteligente al dashboard
       let dashboardRedirect = queryPlan.dashboardRedirect;
       if (!dashboardRedirect) {
-        const allMembers = [
-          ...(cubeQuery.measures || []),
-          ...(cubeQuery.dimensions || []),
-        ];
-        const hasTickets = allMembers.some(m => m.startsWith('Tickets.'));
-        const hasCommercial = allMembers.some(m => m.startsWith('Oportunidades.') || m.startsWith('Actividades.') || m.startsWith('Gastos.'));
+        const allMembers = queriesToExecute.flatMap(q => [
+          ...(q.measures || []),
+          ...(q.dimensions || []),
+        ]);
+        const hasTickets = allMembers.some(m => typeof m === 'string' && m.startsWith('Tickets.'));
+        const hasCommercial = allMembers.some(m => typeof m === 'string' && (m.startsWith('Oportunidades.') || m.startsWith('Actividades.') || m.startsWith('Gastos.')));
 
         if (hasTickets || hasCommercial) {
           dashboardRedirect = {
@@ -170,10 +185,8 @@ Genera tu respuesta JSON:`;
         }
       }
 
-      // Si tenemos redirección (auto-generada o del LLM), la enriquecemos con los filtros reales de la consulta
       if (dashboardRedirect) {
-        // 1. Extraer ejecutivoId, pipelineId, helpdeskId de los filtros de la query
-        for (const filter of cubeQuery.filters || []) {
+        for (const filter of allExecutedFilters) {
           if (filter.operator === 'equals' && Array.isArray(filter.values) && filter.values.length > 0) {
             const val = filter.values[0];
             const member = filter.member;
@@ -184,51 +197,23 @@ Genera tu respuesta JSON:`;
               member === 'Gastos.usuarioId' ||
               member === 'Tickets.responsableId'
             ) {
-              if (!dashboardRedirect.executiveId) {
+              if (!dashboardRedirect.executiveId && val) {
                 dashboardRedirect.executiveId = val;
               }
             } else if (member === 'Oportunidades.pipelineId') {
-              if (!dashboardRedirect.pipelineId) {
+              if (!dashboardRedirect.pipelineId && val) {
                 dashboardRedirect.pipelineId = val;
               }
             } else if (member === 'Tickets.helpdeskId') {
-              if (!dashboardRedirect.helpdeskId) {
+              if (!dashboardRedirect.helpdeskId && val) {
                 dashboardRedirect.helpdeskId = val;
               }
             }
           }
         }
 
-        // 2. Si el rol es ejecutivo y no se ha definido executiveId, forzar su propio ID
-        if (userRole === 'executive' && !dashboardRedirect.executiveId) {
+        if (userRole === 'executive' && !dashboardRedirect.executiveId && userId) {
           dashboardRedirect.executiveId = userId;
-        }
-
-        // 3. Extraer filtros de fecha si faltan
-        if (!dashboardRedirect.dateStart || !dashboardRedirect.dateEnd) {
-          const timeDimension = cubeQuery.timeDimensions?.[0];
-          if (timeDimension?.dateRange) {
-            if (Array.isArray(timeDimension.dateRange) && timeDimension.dateRange.length === 2) {
-              dashboardRedirect.dateStart = dashboardRedirect.dateStart || timeDimension.dateRange[0];
-              dashboardRedirect.dateEnd = dashboardRedirect.dateEnd || timeDimension.dateRange[1];
-            } else if (typeof timeDimension.dateRange === 'string') {
-              const dates = this.parsePredefinedDateRange(timeDimension.dateRange);
-              if (dates) {
-                dashboardRedirect.dateStart = dashboardRedirect.dateStart || dates.start;
-                dashboardRedirect.dateEnd = dashboardRedirect.dateEnd || dates.end;
-              }
-            }
-          } else {
-            const dateFilters = cubeQuery.filters?.filter(
-              (f: any) => f.member.endsWith('.createdAt') || f.member.endsWith('.fecha') || f.member.endsWith('.fechaApertura')
-            );
-            for (const filter of dateFilters || []) {
-              if (filter.operator === 'inDateRange' && Array.isArray(filter.values) && filter.values.length === 2) {
-                dashboardRedirect.dateStart = dashboardRedirect.dateStart || filter.values[0];
-                dashboardRedirect.dateEnd = dashboardRedirect.dateEnd || filter.values[1];
-              }
-            }
-          }
         }
       }
 
@@ -236,7 +221,7 @@ Genera tu respuesta JSON:`;
 
       return {
         answer: formattedAnswer,
-        data: cubeData,
+        data: allCubeData,
         dashboardRedirect,
       };
 
@@ -458,9 +443,100 @@ JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas
   }
 
   /**
-   * Aplica filtros de seguridad automáticos para usuarios ejecutivos.
+   * Extrae y divide las consultas generadas por el LLM si abarcan múltiples temas/cubos primarios.
    */
-  private applySecurityFilters(cubeQuery: CubeQueryPlan['cubeQuery'], userId: string): void {
+  private extractAndSplitQueries(queryPlan: CubeQueryPlan): any[] {
+    let rawQueries: any[] = [];
+    if (queryPlan.cubeQueries && Array.isArray(queryPlan.cubeQueries) && queryPlan.cubeQueries.length > 0) {
+      rawQueries = queryPlan.cubeQueries;
+    } else if (queryPlan.cubeQuery && Object.keys(queryPlan.cubeQuery).length > 0) {
+      rawQueries = [queryPlan.cubeQuery];
+    }
+
+    if (rawQueries.length === 0) return [];
+
+    const finalQueries: any[] = [];
+    const PRIMARY_CUBES = ['Oportunidades', 'Tickets', 'Actividades', 'Gastos', 'Productos'];
+
+    for (const q of rawQueries) {
+      if (!q) continue;
+      const allMembers = [
+        ...(q.measures || []),
+        ...(q.dimensions || []),
+        ...(q.filters || []).map((f: any) => f.member),
+        ...(q.timeDimensions || []).map((td: any) => td.dimension),
+      ];
+
+      const cubesInQuery = new Set<string>();
+      for (const m of allMembers) {
+        if (typeof m === 'string' && m.includes('.')) {
+          const cubeName = m.split('.')[0];
+          if (PRIMARY_CUBES.includes(cubeName)) {
+            cubesInQuery.add(cubeName);
+          }
+        }
+      }
+
+      // Si una sola consulta involucra más de una entidad primaria no relacionada (ej. Oportunidades + Tickets), la dividimos por cubo primario
+      if (cubesInQuery.size > 1) {
+        this.logger.log(`[WebChat - MultiCube Split] Dividiendo consulta multi-cubo con entidades: ${Array.from(cubesInQuery).join(', ')}`);
+        for (const primaryCube of cubesInQuery) {
+          const splitQ: any = {};
+
+          if (q.measures) {
+            splitQ.measures = q.measures.filter((m: string) => m.startsWith(`${primaryCube}.`));
+          }
+          if (q.dimensions) {
+            splitQ.dimensions = q.dimensions.filter((m: string) =>
+              m.startsWith(`${primaryCube}.`) || !PRIMARY_CUBES.some(pc => pc !== primaryCube && m.startsWith(`${pc}.`))
+            );
+          }
+          if (q.filters) {
+            splitQ.filters = q.filters.filter((f: any) =>
+              f.member && (f.member.startsWith(`${primaryCube}.`) || !PRIMARY_CUBES.some(pc => pc !== primaryCube && f.member.startsWith(`${pc}.`)))
+            );
+          }
+          if (q.timeDimensions) {
+            splitQ.timeDimensions = q.timeDimensions.filter((td: any) =>
+              td.dimension && td.dimension.startsWith(`${primaryCube}.`)
+            );
+          }
+          if (q.order) {
+            splitQ.order = q.order;
+          }
+          if (q.limit) {
+            splitQ.limit = q.limit;
+          }
+
+          if ((splitQ.measures && splitQ.measures.length > 0) || (splitQ.dimensions && splitQ.dimensions.length > 0)) {
+            finalQueries.push(splitQ);
+          }
+        }
+      } else {
+        finalQueries.push(q);
+      }
+    }
+
+    return finalQueries;
+  }
+
+  /**
+   * Aplica filtros de seguridad automáticos según el rol.
+   * EXPLICITO: Solo SuperAdmin puede realizar consultas sin userId.
+   * Admin y Executive REQUIEREN forzosamente userId para aplicar o validar la seguridad.
+   */
+  private applySecurityFilters(cubeQuery: CubeQueryPlan['cubeQuery'], userId: string, userRole: string): void {
+    if (!cubeQuery) return;
+    const roleLower = (userRole || '').toLowerCase().trim();
+    const isSuperAdmin = roleLower === 'superadmin';
+    const isExecutive = roleLower === 'executive' || roleLower === 'ejecutivo';
+    const isAdmin = roleLower === 'admin';
+
+    // Regla estricta: Admin y Executive DEBEN tener un userId válido para realizar consultas
+    if (!isSuperAdmin && (!userId || !this.isValidUuid(userId))) {
+      throw new ForbiddenException(`Se requiere un usuario identificado y válido para realizar consultas.`);
+    }
+
     const allMembers = [
       ...(cubeQuery.measures || []),
       ...(cubeQuery.dimensions || []),
@@ -468,7 +544,6 @@ JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas
       ...(cubeQuery.timeDimensions || []).map((td: any) => td.dimension),
     ];
 
-    // Detectar qué entidades están siendo consultadas
     const entities = new Set<string>();
     for (const member of allMembers) {
       if (typeof member === 'string' && member.includes('.')) {
@@ -476,7 +551,6 @@ JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas
       }
     }
 
-    // Verificar si alguna entidad está bloqueada
     const hasTransactionalEntities = entities.has('Oportunidades') || 
                                      entities.has('Actividades') || 
                                      entities.has('Gastos') || 
@@ -486,32 +560,32 @@ JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas
     for (const entity of entities) {
       const securityField = ENTITY_SECURITY_MAP[entity];
       if (securityField === 'BLOCKED') {
-        // Bloquear solo si no se acompaña de una entidad transaccional (ej: el usuario intentó consultar la lista general de usuarios)
-        if (!hasTransactionalEntities) {
+        if (!hasTransactionalEntities && isExecutive) {
           throw new ForbiddenException(`No tienes permisos para consultar la entidad "${entity}".`);
         }
       }
     }
 
-    // Agregar filtros de seguridad por ejecutivo
     if (!cubeQuery.filters) {
       cubeQuery.filters = [];
     }
 
-    for (const entity of entities) {
-      const securityField = ENTITY_SECURITY_MAP[entity];
-      if (securityField && securityField !== 'BLOCKED') {
-        // Verificar que no exista ya un filtro para este campo
-        const alreadyFiltered = cubeQuery.filters.some(
-          (f: any) => f.member === securityField
-        );
-        if (!alreadyFiltered) {
-          cubeQuery.filters.push({
-            member: securityField,
-            operator: 'equals',
-            values: [userId],
-          });
-          this.logger.log(`[WebChat - Security] Filtro añadido: ${securityField} = ${userId}`);
+    // Para ejecutivos: Forzar estrictamente su propio userId en entidades transaccionales
+    if (isExecutive) {
+      for (const entity of entities) {
+        const securityField = ENTITY_SECURITY_MAP[entity];
+        if (securityField && securityField !== 'BLOCKED') {
+          const alreadyFiltered = cubeQuery.filters.some(
+            (f: any) => f.member === securityField
+          );
+          if (!alreadyFiltered) {
+            cubeQuery.filters.push({
+              member: securityField,
+              operator: 'equals',
+              values: [userId],
+            });
+            this.logger.log(`[WebChat - Security] Filtro añadido para ejecutivo (${userId}): ${securityField} = ${userId}`);
+          }
         }
       }
     }
@@ -519,9 +593,15 @@ JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas
 
   /**
    * Sanitiza los filtros generados por el LLM para evitar errores de sintaxis UUID en base de datos.
+   * EXPLICITO: Solo SuperAdmin puede omitting filtros de usuario cuando userId es null/undefined.
    */
   private sanitizeFilters(cubeQuery: CubeQueryPlan['cubeQuery'], userId: string, userRole: string): void {
-    if (!cubeQuery.filters) return;
+    if (!cubeQuery || !cubeQuery.filters) return;
+
+    const roleLower = (userRole || '').toLowerCase().trim();
+    const isSuperAdmin = roleLower === 'superadmin';
+    const isExecutive = roleLower === 'executive' || roleLower === 'ejecutivo';
+    const isAdmin = roleLower === 'admin';
 
     const securityFields = [
       'Oportunidades.ejecutivoId',
@@ -539,40 +619,75 @@ JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas
       'usuario_actual',
     ]);
 
-    cubeQuery.filters = cubeQuery.filters.map((filter: any) => {
-      // Si es un filtro sobre campos de ejecutivo
-      if (securityFields.includes(filter.member)) {
-        // Ejecutivos: forzar estrictamente su ID real para prevenir accesos no autorizados o fallos de placeholder
-        if (userRole === 'executive') {
-          return {
-            ...filter,
-            operator: 'equals',
-            values: [userId],
-          };
-        }
+    const sanitizedFilters: any[] = [];
 
-        // Administradores: si el LLM usó un placeholder genérico o un UUID inválido, reemplazarlo con su ID actual
-        if (Array.isArray(filter.values)) {
-          const hasInvalidOrPlaceholder = filter.values.some((v: any) =>
-            typeof v === 'string' && (placeholders.has(v.toLowerCase()) || !this.isValidUuid(v))
-          );
-          if (hasInvalidOrPlaceholder) {
-            return {
+    for (const filter of cubeQuery.filters) {
+      if (securityFields.includes(filter.member)) {
+        if (isExecutive) {
+          if (userId && this.isValidUuid(userId)) {
+            sanitizedFilters.push({
               ...filter,
               operator: 'equals',
               values: [userId],
-            };
+            });
+          } else {
+            throw new ForbiddenException(`Ejecutivo requiere un ID de usuario válido.`);
+          }
+          continue;
+        }
+
+        if (isAdmin) {
+          if (Array.isArray(filter.values)) {
+            const hasInvalidOrPlaceholder = filter.values.some((v: any) =>
+              typeof v === 'string' && (placeholders.has(v.toLowerCase()) || !this.isValidUuid(v))
+            );
+            if (hasInvalidOrPlaceholder) {
+              if (userId && this.isValidUuid(userId)) {
+                sanitizedFilters.push({
+                  ...filter,
+                  operator: 'equals',
+                  values: [userId],
+                });
+              } else {
+                throw new ForbiddenException(`El rol Admin requiere un ID de usuario válido para filtrar sus datos personales.`);
+              }
+              continue;
+            }
+          }
+        }
+
+        if (isSuperAdmin) {
+          if (Array.isArray(filter.values)) {
+            const hasInvalidOrPlaceholder = filter.values.some((v: any) =>
+              typeof v === 'string' && (placeholders.has(v.toLowerCase()) || !this.isValidUuid(v))
+            );
+            if (hasInvalidOrPlaceholder) {
+              if (userId && this.isValidUuid(userId)) {
+                sanitizedFilters.push({
+                  ...filter,
+                  operator: 'equals',
+                  values: [userId],
+                });
+              } else {
+                // EXPLICITO: Únicamente SuperAdmin sin userId omite el filtro para realizar consulta global
+                this.logger.log(`[WebChat - Sanitize] Consulta Global de SuperAdmin (sin userId) en ${filter.member}. Omitiendo filtro individual.`);
+              }
+              continue;
+            }
           }
         }
       }
-      return filter;
-    });
+      sanitizedFilters.push(filter);
+    }
+
+    cubeQuery.filters = sanitizedFilters;
   }
 
   /**
    * Valida si un string cumple con la estructura estándar de un UUID.
    */
   private isValidUuid(uuid: string): boolean {
+    if (!uuid || typeof uuid !== 'string') return false;
     const regex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     return regex.test(uuid);
   }
@@ -580,7 +695,8 @@ JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas
   /**
    * Ejecuta una query contra la REST API de la Capa Semántica (Cube.dev).
    */
-  private async executeCubeQuery(cubeQuery: CubeQueryPlan['cubeQuery']): Promise<any[]> {
+  private async executeCubeQuery(cubeQuery: any): Promise<any[]> {
+    if (!cubeQuery) return [];
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     try {
       let orderFormatted = cubeQuery.order;

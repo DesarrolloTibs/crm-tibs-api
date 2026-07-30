@@ -4,13 +4,7 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { TenantContextService } from './tenant-context.service';
 
-export class ProvisionTenantDto {
-  tenantName: string;
-  adminUsername: string;
-  adminEmail: string;
-  planId?: number;
-  billingPeriodMonths?: number;
-}
+import { ProvisionTenantDto } from '../tenants/dto/provision-tenant.dto';
 
 
 export interface ProvisionResult {
@@ -213,13 +207,6 @@ export class TenantProvisionerService {
         );
 
 
-        CREATE TABLE IF NOT EXISTS "${schemaName}".reminders (
-          id uuid NOT NULL DEFAULT gen_random_uuid(),
-          activity_id uuid NULL UNIQUE REFERENCES "${schemaName}".activities(id) ON DELETE CASCADE,
-          reminder_date timestamptz NOT NULL,
-          sent boolean NOT NULL DEFAULT false,
-          CONSTRAINT pk_reminders PRIMARY KEY (id)
-        );
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".products (
           id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -420,6 +407,9 @@ export class TenantProvisionerService {
         );
 
         ALTER TABLE "${schemaName}".reminders ADD COLUMN IF NOT EXISTS "title" varchar(255);
+        ALTER TABLE "${schemaName}".reminders ADD COLUMN IF NOT EXISTS "date" timestamptz;
+        ALTER TABLE "${schemaName}".reminders ADD COLUMN IF NOT EXISTS "notified" boolean DEFAULT false;
+        ALTER TABLE "${schemaName}".reminders ADD COLUMN IF NOT EXISTS "activity_id" uuid;
 
 
 
@@ -589,6 +579,37 @@ export class TenantProvisionerService {
         );
       }
 
+      // Mesa de Ayuda Principal por defecto
+      const helpdeskRes = await queryRunner.query(
+        `INSERT INTO "${schemaName}".helpdesks (strname, strdescription, blnstatus) 
+         VALUES ('Mesa de Ayuda Principal', 'Canal principal para soporte técnico y atención a clientes.', true) 
+         RETURNING id`
+      );
+      const helpdeskId = helpdeskRes[0].id;
+
+      const defaultTicketStages = [
+        { strname: 'Nuevo', display_order: 1, blninitial: true, strcolor: '#e74c3c', bln_show_dashboard: true },
+        { strname: 'En Proceso', display_order: 2, blninitial: false, strcolor: '#f1c40f', bln_show_dashboard: true },
+        { strname: 'En Espera', display_order: 3, blninitial: false, strcolor: '#3498db', bln_show_dashboard: true },
+        { strname: 'Resuelto', display_order: 4, blninitial: false, strcolor: '#2ecc71', bln_show_dashboard: true },
+      ];
+
+      for (const ts of defaultTicketStages) {
+        await queryRunner.query(
+          `INSERT INTO "${schemaName}".ticket_stages 
+           (strname, helpdesk_id, display_order, blninitial, strcolor, bln_show_dashboard, blnstatus) 
+           VALUES ($1, $2, $3, $4, $5, $6, true)`,
+          [ts.strname, helpdeskId, ts.display_order, ts.blninitial, ts.strcolor, ts.bln_show_dashboard]
+        );
+      }
+
+      await queryRunner.query(
+        `INSERT INTO "${schemaName}".helpdesk_cron_config 
+         (helpdesk_id, cron_mode, cron_time, blnstatus) 
+         VALUES ($1, 'fixed', '09:00', true)`,
+        [helpdeskId]
+      );
+
       // Catálogos
       await queryRunner.query(`
         INSERT INTO "${schemaName}".tblbusinesslines (id, strname, blnstatus) VALUES
@@ -654,7 +675,7 @@ Redirección: Deriva con un ejecutivo especializado si hay inconformidades, quej
 
       const comercialPrompt = `${baseCommonPrompt}\n\n[INSTRUCCIONES COMERCIALES]\n- Registra oportunidades en el CRM.\n- REGLA MANDATORIA Y OBLIGATORIA DE BÚSQUEDA EN RAG/CATÁLOGO: Para CUALQUIER pregunta del cliente sobre productos, especificaciones técnicas (RAM, memoria, procesador, modelo, almacenamiento, pantalla, etc.), catálogo, precios o compatibilidad, DEBES llamar OBLIGATORIAMENTE a la herramienta consult_product_catalog ANTES de responder al usuario. Está estrictamente PROHIBIDO responder directamente con final_answer o confiar en la memoria previa del chat para dar especificaciones sin haber llamado PRIMERO a consult_product_catalog en ese turno.\n- PROHIBIDO INVENTAR PRODUCTOS O MARCAS: Está estrictamente PROHIBIDO inventar, asumir o listar nombres de productos, marcas o precios de tu propio conocimiento. Si el cliente pregunta qué productos ofrecemos, qué catálogo tenemos, o si disponemos de algún producto específico, debes llamar obligatoriamente a la herramienta consult_product_catalog para consultar la base de datos real.\n- PRECIOS, UNIDADES DE MEDIDA Y OBSERVACIONES: Todos los productos tienen un precio base y una unidad de medida asignada (ej. pieza, servicio, licencia, hora). Muestra siempre el precio base indicando su unidad de medida. Si el producto contiene observaciones o notas de precio (ej. 'no incluye IVA', 'no incluye instalación', 'precio refleja configuración básica'), DEBES comunicar de forma explícita dichas observaciones o condicionantes al cliente al entregar la información o cotización.\n- VARIANTES DE PRODUCTO: Las variantes (como colores o modelos) se manejan como productos independientes dentro del catálogo.\n- REGLA CRÍTICA DE INVENTARIO: No manejan stock. Si el producto existe en Cube.dev/RAG, está disponible para cotización. NUNCA respondas que no hay stock en almacén.\n- Si el producto tiene manuales PDF en RAG, resume especificaciones clave.\n- Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity.\n- Para detalles de compatibilidad, especificaciones o disponibilidad del catálogo, llama a consult_product_catalog.\n- Si hay una oportunidad activa del mismo producto, actualízala con modifyOpportunity.`;
 
-      const seguimientoPrompt = `${baseCommonPrompt}\n\n[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]\n- Tu objetivo es agendar llamadas, demostraciones o reuniones con un ejecutivo especializado.\n- Consulta disponibilidad usando checkAvailability antes de agendar.\n- Si está AVAILABLE, agenda con createActivity y añade recordatorios de forma proactiva.\n- Si está UNAVAILABLE, ofrece los slots de suggestedSlots.\n- Si falta fecha u hora, pregúntala. Si da ambos datos, agenda de inmediato.\n- Vincula la actividad con el cliente. No uses UUIDs del sistema.`;
+      const seguimientoPrompt = `${baseCommonPrompt}\n\n[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]\n- Tu objetivo es agendar llamadas, demostraciones o reuniones con un ejecutivo especializado.\n- REGLA CRÍTICA MANDATORIA DE DISPONIBILIDAD DEL CLIENTE: Está ESTRICTAMENTE PROHIBIDO inventar, asertar o adivinar una fecha u hora por tu cuenta para agendar sin habérsela preguntado primero al cliente.\n- PREGUNTAR DISPONIBILIDAD PRIMERO: Si el cliente solicita o muestra interés en agendar una llamada, cita o reunión pero NO ha proporcionado explícitamente su fecha (día) y hora de preferencia, DEBES responder inmediatamente usando la herramienta 'final_answer' preguntándole amablemente cuál es su día y horario de preferencia para coordinar la llamada. Está ESTRICTAMENTE PROHIBIDO llamar a 'checkAvailability' o 'createActivity' si el cliente aún no te ha indicado qué día y hora prefiere.\n- VALIDACIÓN DE DISPONIBILIDAD: SOLO cuando el cliente te proporcione explícitamente el día y hora en que desea la cita, llamarás a 'checkAvailability' pasando la fecha indicada por el cliente.\n- Si 'checkAvailability' responde AVAILABLE para esa fecha/hora, procedes a agendar la actividad con 'createActivity' y añades recordatorios de forma proactiva.\n- Si 'checkAvailability' responde UNAVAILABLE, le ofreces los horarios alternativos de 'suggestedSlots' al cliente y le preguntas cuál prefiere.\n- Vincula siempre la actividad con el cliente. No inventes UUIDs del sistema.`;
 
       const soportePrompt = `${baseCommonPrompt}\n\n[INSTRUCCIONES DE SOPORTE Y HELPDESK]\n- Atiende incidencias, quejas y dudas de soporte técnico.\n- Si el cliente expresa molestia, urgencia o solicita hablar con un superior, indícale amablemente que lo derivarás con un ejecutivo especializado de inmediato para brindarle atención personalizada.\n- Genera un ticket en el CRM con createTicket si corresponde.\n- Campos: title (título corto), description (falla), priority (1:Bajo, 2:Medio, 3:Alto), category (ej. Soporte Técnico).`;
 

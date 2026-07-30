@@ -30,7 +30,7 @@ export class UsersService implements OnModuleInit {
         ['jonathan.amador@tibs.com.mx']
       );
       if (!adminExists || adminExists.length === 0) {
-        const hashedPassword = await bcrypt.hash('Admin2026!', 10);
+        const hashedPassword = await bcrypt.hash('12345678', 10);
         await this.dataSource.query(
           `INSERT INTO public.users (username, email, password, role, "isActive")
            VALUES ('Jonathan Amador', 'jonathan.amador@tibs.com.mx', $1, 'superadmin', true)`,

@@ -5,8 +5,8 @@ import * as bcrypt from 'bcrypt';
 import { Tenant } from './entities/tenant.entity';
 import { TenantRenewalQueue } from './entities/tenant-renewal-queue.entity';
 import { User } from '../users/entities/user.entity';
-import { Role } from '../role.enum';
-import { TenantProvisionerService, ProvisionTenantDto } from '../tenancy/tenant-provisioner.service';
+import { TenantProvisionerService } from '../tenancy/tenant-provisioner.service';
+import { ProvisionTenantDto } from './dto/provision-tenant.dto';
 
 import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';

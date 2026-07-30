@@ -99,11 +99,12 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
 
       const seguimientoInstructions = `[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]
 - Tu objetivo es agendar llamadas, demostraciones o reuniones con un ejecutivo especializado.
-- Consulta disponibilidad usando checkAvailability antes de agendar.
-- Si está AVAILABLE, agenda con createActivity y añade recordatorios de forma proactiva.
-- Si está UNAVAILABLE, ofrece los slots de suggestedSlots.
-- Si falta fecha u hora, pregúntala. Si da ambos datos, agenda de inmediato.
-- Vincula la actividad con el cliente. No uses UUIDs del sistema.`;
+- REGLA CRÍTICA MANDATORIA DE DISPONIBILIDAD DEL CLIENTE: Está ESTRICTAMENTE PROHIBIDO inventar, asertar o adivinar una fecha u hora por tu cuenta para agendar sin habérsela preguntado primero al cliente.
+- PREGUNTAR DISPONIBILIDAD PRIMERO: Si el cliente solicita o muestra interés en agendar una llamada, cita o reunión pero NO ha proporcionado explícitamente su fecha (día) y hora de preferencia, DEBES responder inmediatamente usando la herramienta 'final_answer' preguntándole amablemente cuál es su día y horario de preferencia para coordinar la llamada. Está ESTRICTAMENTE PROHIBIDO llamar a 'checkAvailability' o 'createActivity' si el cliente aún no te ha indicado qué día y hora prefiere.
+- VALIDACIÓN DE DISPONIBILIDAD: SOLO cuando el cliente te proporcione explícitamente el día y hora en que desea la cita, llamarás a 'checkAvailability' pasando la fecha indicada por el cliente.
+- Si 'checkAvailability' responde AVAILABLE para esa fecha/hora, procedes a agendar la actividad con 'createActivity' y añades recordatorios de forma proactiva.
+- Si 'checkAvailability' responde UNAVAILABLE, le ofreces los horarios alternativos de 'suggestedSlots' al cliente y le preguntas cuál prefiere.
+- Vincula siempre la actividad con el cliente. No inventes UUIDs del sistema.`;
 
       const soporteInstructions = `[INSTRUCCIONES DE SOPORTE Y HELPDESK]
 - Tu objetivo principal es atender incidencias, dudas técnicas, reportes de problemas y quejas del cliente, intentando resolver y aclarar cualquier problemática que tenga.
@@ -148,6 +149,11 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
               sa.tools = [...(sa.tools || []), 'sendQuotationPdf'];
               modified = true;
               this.logger.log('Herramienta sendQuotationPdf agregada al sub-agente comercial existente.');
+            }
+            if (sa.key === 'seguimiento' && (!sa.context || !sa.context.includes('REGLA CRÍTICA MANDATORIA DE DISPONIBILIDAD DEL CLIENTE'))) {
+              sa.context = `${baseCommonPrompt}\n\n${seguimientoInstructions}`;
+              modified = true;
+              this.logger.log('Contexto del sub-agente de seguimiento actualizado con regla mandatoria de disponibilidad del cliente.');
             }
             if (sa.key === 'soporte_atencion') {
               if (!sa.tools || !sa.tools.includes('requestHumanHandoff')) {

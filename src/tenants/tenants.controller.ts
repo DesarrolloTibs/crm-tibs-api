@@ -3,7 +3,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle } from '@nestjs/throttler';
 
 import { TenantsService } from './tenants.service';
-import { ProvisionTenantDto } from '../tenancy/tenant-provisioner.service';
+import { ProvisionTenantDto } from './dto/provision-tenant.dto';
 
 @Controller('tenants')
 
