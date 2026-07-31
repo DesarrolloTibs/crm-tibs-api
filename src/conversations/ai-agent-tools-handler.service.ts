@@ -493,7 +493,8 @@ export class AiAgentToolsHandlerService {
       const tenantSchema = TenantContextService.getTenantSchema() || 'public';
       const token = this.generateCubeToken(tenantSchema);
 
-      const response = await fetch('http://localhost:4000/cubejs-api/v1/load', {
+      const cubeApiUrl = process.env.CUBE_API_URL || 'http://localhost:4000';
+      const response = await fetch(`${cubeApiUrl}/cubejs-api/v1/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: token, 'x-tenant-schema': tenantSchema, 'x-tenant-id': tenantSchema },
         body: JSON.stringify({ query: { measures: ['Productos.count'], dimensions: ['Productos.id', 'Productos.nombre', 'Productos.descripcion', 'Productos.precioBase', 'Productos.unidadMedida', 'Productos.observaciones', 'Productos.status'], filters }, securityContext: { tenantSchema } }),
