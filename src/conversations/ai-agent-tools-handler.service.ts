@@ -478,6 +478,7 @@ export class AiAgentToolsHandlerService {
 
   /** Queries Cube.dev semantic layer for products matching a keyword. */
   async queryCubeProducts(queryText: string): Promise<any[]> {
+    const cubeApiUrl = process.env.CUBE_API_URL || 'http://localhost:4000';
     try {
       const cleanKeyword = queryText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9\s]/g, '').trim();
       const stopwords = new Set(['dame', 'quiero', 'informacion', 'del', 'producto', 'productos', 'sobre', 'que', 'empiezan', 'con', 'modelo', 'especificaciones', 'detalles', 'buscar', 'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'para', 'en', 'y', 'o', 'a', 'caracteristicas', 'tienes', 'tienen', 'disponible', 'disponibles', 'catalogo', 'precios', 'precio', 'costo', 'cotizacion', 'comprar', 'venta', 'adquirir', 'fichas', 'ficha', 'manual', 'manuales', 'disponibilidad', 'ver', 'mostrar', 'listar', 'lista', 'cuales', 'servicios', 'servicio', 'articulos', 'articulo', 'dispositivos', 'dispositivo', 'cosas']);
@@ -493,7 +494,6 @@ export class AiAgentToolsHandlerService {
       const tenantSchema = TenantContextService.getTenantSchema() || 'public';
       const token = this.generateCubeToken(tenantSchema);
 
-      const cubeApiUrl = process.env.CUBE_API_URL || 'http://localhost:4000';
       const response = await fetch(`${cubeApiUrl}/cubejs-api/v1/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: token, 'x-tenant-schema': tenantSchema, 'x-tenant-id': tenantSchema },
@@ -514,7 +514,7 @@ export class AiAgentToolsHandlerService {
       }
       return [];
     } catch (error: any) {
-      this.logger.warn(`No se pudo conectar a la capa semántica de Cube.dev en el puerto 4000: ${error.message}`);
+      this.logger.warn(`No se pudo conectar a la capa semántica de Cube.dev (${cubeApiUrl}): ${error.message}`);
       return [];
     }
   }
