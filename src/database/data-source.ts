@@ -28,10 +28,10 @@ export const AppDataSource = new DataSource({
   database: process.env.DB_DATABASE || 'crm_tibs',
   // Entidades: usa el patrón de archivos compilados y TypeScript
   entities: [join(__dirname, '/../**/*.entity{.ts,.js}')],
-  // Migraciones: directorio donde se guardan los archivos generados
-  migrations: [join(__dirname, '/migrations/*{.ts,.js}')],
-  // synchronize SIEMPRE false en este DataSource — se usan las migraciones
-  synchronize: false,
-  // logging útil al generar/verificar migraciones
-  logging: ['query', 'error', 'migration'],
+  // Migraciones desactivadas
+  // migrations: [join(__dirname, '/migrations/*{.ts,.js}')],
+  // synchronize activado para actualizar automáticamente la BD sin migraciones
+  synchronize: true,
+  // logging útil
+  logging: ['query', 'error'],
 });
