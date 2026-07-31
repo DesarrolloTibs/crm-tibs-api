@@ -77,7 +77,9 @@ export class SyncServerDB1785524345653 implements MigrationInterface {
         await queryRunner.query(`ALTER TABLE "opportunities" ALTER COLUMN "cliente_id" DROP NOT NULL`);
         await queryRunner.query(`ALTER TABLE "opportunities" ALTER COLUMN "empresa" DROP NOT NULL`);
         await queryRunner.query(`ALTER TABLE "opportunity_trackings" DROP COLUMN "stage_id"`);
-        await queryRunner.query(`ALTER TABLE "opportunity_trackings" ADD "stage_id" uuid NOT NULL`);
+        await queryRunner.query(`ALTER TABLE "opportunity_trackings" ADD "stage_id" uuid`);
+        await queryRunner.query(`UPDATE "opportunity_trackings" SET "stage_id" = '00000000-0000-0000-0000-000000000002' WHERE "stage_id" IS NULL`);
+        await queryRunner.query(`ALTER TABLE "opportunity_trackings" ALTER COLUMN "stage_id" SET NOT NULL`);
         await queryRunner.query(`ALTER TYPE "public"."users_role_enum" RENAME TO "users_role_enum_old"`);
         await queryRunner.query(`CREATE TYPE "public"."users_role_enum" AS ENUM('superadmin', 'admin', 'executive')`);
         await queryRunner.query(`ALTER TABLE "users" ALTER COLUMN "role" DROP DEFAULT`);
