@@ -719,7 +719,8 @@ JAMÁS muestres el "typeActivityId" (un número como 1, 2 o 3) en tus respuestas
 
       const token = this.aiAgentService.getCubeApiToken(tenantSchema);
 
-      const response = await fetch('http://127.0.0.1:4000/cubejs-api/v1/load', {
+      const cubeApiUrl = process.env.CUBE_API_URL || 'http://127.0.0.1:4000';
+      const response = await fetch(`${cubeApiUrl}/cubejs-api/v1/load`, {
 
         method: 'POST',
         headers: {
