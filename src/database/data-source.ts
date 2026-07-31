@@ -26,10 +26,10 @@ export const AppDataSource = new DataSource({
   username: process.env.DB_USERNAME || 'postgres',
   password: process.env.DB_PASSWORD || 'postgres',
   database: process.env.DB_DATABASE || 'crm_tibs',
-  // Entidades: usa el patrón de archivos compilados en dist/
-  entities: [join(__dirname, '/../**/*.entity.js')],
+  // Entidades: usa el patrón de archivos compilados y TypeScript
+  entities: [join(__dirname, '/../**/*.entity{.ts,.js}')],
   // Migraciones: directorio donde se guardan los archivos generados
-  migrations: [join(__dirname, '/migrations/*.js')],
+  migrations: [join(__dirname, '/migrations/*{.ts,.js}')],
   // synchronize SIEMPRE false en este DataSource — se usan las migraciones
   synchronize: false,
   // logging útil al generar/verificar migraciones
