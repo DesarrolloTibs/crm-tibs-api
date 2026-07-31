@@ -9,7 +9,7 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { Opportunity } from '../../opportunities/entities/opportunity.entity';
-import { Client } from 'src/clients/entities/client.entity';
+import { Client } from '../../clients/entities/client.entity';
 import { TypeActivity } from './type-activity.entity';
 import { Company } from '../../companies/entities/company.entity';
 
