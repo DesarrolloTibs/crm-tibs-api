@@ -108,14 +108,29 @@ export class ConversationsService {
 
 
 
+  private formatMessageContent(content: string): string {
+    if (!content) return content;
+    if (content.includes('http://') || content.includes('https://')) {
+      return content;
+    }
+    const baseUrl = (process.env.API_URL || process.env.PUBLIC_SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
+    return content.replace(/(:\s*|\(\s*|\s+)(\/)?uploads\//g, `$1${baseUrl}/uploads/`);
+  }
+
   /**
    * Obtiene los mensajes de una conversación específica.
    */
   async findMessages(conversationId: string): Promise<Message[]> {
-    return this.messageRepository.find({
+    const messages = await this.messageRepository.find({
       where: { conversationId },
       order: { createdAt: 'ASC' },
       relations: ['senderUser'],
+    });
+    return messages.map((m) => {
+      if (m.content) {
+        m.content = this.formatMessageContent(m.content);
+      }
+      return m;
     });
   }
 
@@ -947,10 +962,15 @@ export class ConversationsService {
     filename: string,
     caption?: string,
   ): Promise<void> {
-    let docMsgContent = caption ? `${caption}\n📄 [Cotización en PDF] (${filename}): /${documentUrl.replace(/\\/g, '/')}` : `📄 [Cotización en PDF] (${filename}): /${documentUrl.replace(/\\/g, '/')}`;
-    if (!docMsgContent.startsWith('/')) {
-      docMsgContent = docMsgContent.replace(': uploads/', ': /uploads/');
-    }
+    const baseUrl = (process.env.API_URL || process.env.PUBLIC_SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const cleanDocPath = documentUrl.replace(/\\/g, '/').replace(/^\//, '');
+    const fullDocumentUrl = cleanDocPath.startsWith('http://') || cleanDocPath.startsWith('https://')
+      ? cleanDocPath
+      : `${baseUrl}/${cleanDocPath}`;
+
+    let docMsgContent = caption
+      ? `${caption}\n📄 [Cotización en PDF] (${filename}): ${fullDocumentUrl}`
+      : `📄 [Cotización en PDF] (${filename}): ${fullDocumentUrl}`;
 
     try {
       const docMessage = this.messageRepository.create({
@@ -998,7 +1018,7 @@ export class ConversationsService {
           to: externalId,
           type: 'document',
           document: {
-            link: documentUrl,
+            link: fullDocumentUrl,
             filename: filename,
             caption: caption || `Cotización: ${filename}`,
           }
