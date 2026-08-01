@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 
 @WebSocketGateway({
+  namespace: 'tickets',
   transports: ['websocket', 'polling'],
   allowEIO3: true,
   cors: {

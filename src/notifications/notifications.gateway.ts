@@ -13,6 +13,7 @@ import { Logger } from '@nestjs/common';
 import { Notification } from './entities/notification.entity';
 
 @WebSocketGateway({
+  namespace: 'notifications',
   transports: ['websocket', 'polling'],
   allowEIO3: true,
   cors: {

@@ -12,6 +12,7 @@ import { Message } from './entities/message.entity';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
 
 @WebSocketGateway({
+  namespace: 'conversations',
   transports: ['websocket', 'polling'],
   allowEIO3: true,
   cors: {
