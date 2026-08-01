@@ -225,10 +225,11 @@ export class QuotationPdfService {
         // ── RESOLVER RUTA DEL LOGO DE LA EMPRESA ──
         let resolvedLogoPath: string | null = null;
         if (data.tenantLogoPath) {
+          const cleanPath = data.tenantLogoPath.replace(/\\/g, '/').replace(/^\//, '');
           const possiblePaths = [
             data.tenantLogoPath,
-            join(process.cwd(), data.tenantLogoPath),
-            join(process.cwd(), data.tenantLogoPath.replace(/^\//, '')),
+            join(process.cwd(), cleanPath),
+            join(process.cwd(), 'uploads', cleanPath.replace(/^uploads\//, '')),
           ];
           for (const p of possiblePaths) {
             if (existsSync(p)) {

@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
+import { existsSync, mkdirSync } from 'fs';
 import * as helmet from 'helmet';
 import { ValidationPipe } from '@nestjs/common';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
@@ -32,15 +33,33 @@ async function bootstrap() {
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   }));
 
+  // --- CORS: Habilitar ANTES de archivos estáticos para permitir descarga de logos/archivos ---
+  const rawOrigins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173,http://localhost:3000';
+  const allowedOrigins = rawOrigins.split(',').map((o) => o.trim());
+  app.enableCors({
+    origin: allowedOrigins,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    credentials: true,
+  });
+
   // --- Archivos estáticos desde 'uploads' ---
-  // IMPORTANTE: Esto debe ir ANTES de setGlobalPrefix
-  app.useStaticAssets(join(process.cwd(), 'uploads'), {
-    prefix: '/uploads/',
+  const uploadsDir = join(process.cwd(), 'uploads');
+  if (!existsSync(uploadsDir)) {
+    mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  app.useStaticAssets(uploadsDir, {
+    prefix: '/uploads',
   });
 
   // --- Archivos estáticos desde 'static' ---
-  app.useStaticAssets(join(process.cwd(), 'static'), {
-    prefix: '/static/',
+  const staticDir = join(process.cwd(), 'static');
+  if (!existsSync(staticDir)) {
+    mkdirSync(staticDir, { recursive: true });
+  }
+
+  app.useStaticAssets(staticDir, {
+    prefix: '/static',
   });
 
   // --- Middleware para servir desde Azure si no se encuentra localmente ---
@@ -92,14 +111,7 @@ async function bootstrap() {
   app.useGlobalFilters(new GlobalExceptionFilter());
   app.useGlobalInterceptors(new LoggingInterceptor(), new TransformInterceptor());
 
-  // --- CORS: orígenes permitidos via variable de entorno ---
-  const rawOrigins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173,http://localhost:3000';
-  const allowedOrigins = rawOrigins.split(',').map((o) => o.trim());
-  app.enableCors({
-    origin: allowedOrigins,
-    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    credentials: true,
-  });
+  // --- Pipes, Filters e Interceptors globales ---
 
   // --- Swagger / OpenAPI ---
   const config = new DocumentBuilder()
