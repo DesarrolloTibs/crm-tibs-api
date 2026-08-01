@@ -110,11 +110,29 @@ export class ConversationsService {
 
   private formatMessageContent(content: string): string {
     if (!content) return content;
-    if (content.includes('http://') || content.includes('https://')) {
-      return content;
-    }
     const baseUrl = (process.env.API_URL || process.env.PUBLIC_SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
-    return content.replace(/(:\s*|\(\s*|\s+)(\/)?uploads\//g, `$1${baseUrl}/uploads/`);
+
+    let formatted = content;
+
+    // 1. Corregir sintaxis Markdown rota '[Etiqueta] (archivo.pdf): /uploads/path' -> '[Etiqueta - archivo.pdf](https://.../uploads/path)'
+    formatted = formatted.replace(
+      /📄?\s*\[([^\]]+)\]\s*\(([^)]+)\):\s*(\/)?([^\s\n]+)/g,
+      (match, label, filename, leadSlash, urlPath) => {
+        let fullUrl = urlPath;
+        if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
+          const cleanPath = urlPath.replace(/^backend\//, '').replace(/^uploads\//, 'uploads/');
+          fullUrl = `${baseUrl}/${cleanPath}`;
+        }
+        return `📄 [${label} - ${filename}](${fullUrl})`;
+      }
+    );
+
+    // 2. Formatear cualquier otra ruta relativa a uploads
+    formatted = formatted.replace(/(:\s*|\(\s*|\s+)(\/)?uploads\//g, (match, prefix) => {
+      return `${prefix}${baseUrl}/uploads/`;
+    });
+
+    return formatted;
   }
 
   /**
@@ -969,8 +987,8 @@ export class ConversationsService {
       : `${baseUrl}/${cleanDocPath}`;
 
     let docMsgContent = caption
-      ? `${caption}\n📄 [Cotización en PDF] (${filename}): ${fullDocumentUrl}`
-      : `📄 [Cotización en PDF] (${filename}): ${fullDocumentUrl}`;
+      ? `${caption}\n📄 [Cotización en PDF - ${filename}](${fullDocumentUrl})`
+      : `📄 [Cotización en PDF - ${filename}](${fullDocumentUrl})`;
 
     try {
       const docMessage = this.messageRepository.create({
