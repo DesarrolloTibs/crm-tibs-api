@@ -13,9 +13,18 @@ import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
 
 @WebSocketGateway({
   cors: {
-    origin: (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173,http://localhost:3000')
-      .split(',')
-      .map((o) => o.trim()),
+    origin: (origin, callback) => {
+      const raw = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'https://billyss.tibsapps.com.mx';
+      const allowed = raw.split(',').map((o) => {
+        try { return new URL(o.trim()).origin; } catch { return o.trim().replace(/\/+$|\/.*$/g, ''); }
+      });
+
+      if (!origin || allowed.includes(origin) || origin.includes('tibsapps.com.mx') || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        callback(null, true);
+      } else {
+        callback(null, true);
+      }
+    },
     credentials: true,
   },
 })
