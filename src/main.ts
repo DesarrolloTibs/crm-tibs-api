@@ -3,7 +3,7 @@ import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, statSync, readdirSync } from 'fs';
 import * as helmet from 'helmet';
 import { ValidationPipe } from '@nestjs/common';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
@@ -42,7 +42,7 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // --- Archivos estáticos desde 'uploads' ---
+  // --- Archivos estáticos desde 'uploads' (rutas con y sin /backend) ---
   const uploadsDir = join(process.cwd(), 'uploads');
   if (!existsSync(uploadsDir)) {
     mkdirSync(uploadsDir, { recursive: true });
@@ -50,6 +50,10 @@ async function bootstrap() {
 
   app.useStaticAssets(uploadsDir, {
     prefix: '/uploads',
+  });
+
+  app.useStaticAssets(uploadsDir, {
+    prefix: '/backend/uploads',
   });
 
   // --- Archivos estáticos desde 'static' ---
@@ -62,8 +66,44 @@ async function bootstrap() {
     prefix: '/static',
   });
 
-  // --- Middleware para servir desde Azure si no se encuentra localmente ---
-  app.use('/uploads', async (req: any, res: any) => {
+  app.useStaticAssets(staticDir, {
+    prefix: '/backend/static',
+  });
+
+  // --- Middleware de fallback para /uploads y /backend/uploads (Servir local, Azure o fallback PDF) ---
+  app.use(['/uploads', '/backend/uploads'], async (req: any, res: any) => {
+    const rawPath = req.path || '';
+    const cleanPath = rawPath.replace(/^\/backend\/uploads/, '').replace(/^\/uploads/, '');
+    const localFile = join(uploadsDir, cleanPath.replace(/^\//, ''));
+
+    // 1. Si el archivo solicitado existe en el disco local
+    if (existsSync(localFile) && statSync(localFile).isFile()) {
+      const ext = localFile.split('.').pop()?.toLowerCase();
+      if (ext === 'pdf') res.setHeader('Content-Type', 'application/pdf');
+      else if (ext === 'png') res.setHeader('Content-Type', 'image/png');
+      else if (ext === 'jpg' || ext === 'jpeg') res.setHeader('Content-Type', 'image/jpeg');
+      else if (ext === 'webp') res.setHeader('Content-Type', 'image/webp');
+      
+      return res.sendFile(localFile);
+    }
+
+    // 2. Si es una cotización PDF (/quotations/:opportunityId/:filename) y ese archivo exacto no existe
+    const quotationMatch = cleanPath.match(/^\/quotations\/([a-f0-9\-]{36})\/([^\/]+)$/i);
+    if (quotationMatch) {
+      const opportunityId = quotationMatch[1];
+      const oppDir = join(uploadsDir, 'quotations', opportunityId);
+      
+      if (existsSync(oppDir)) {
+        const pdfFiles = readdirSync(oppDir).filter((f) => f.endsWith('.pdf'));
+        if (pdfFiles.length > 0) {
+          const newestPdf = pdfFiles.sort().pop();
+          res.setHeader('Content-Type', 'application/pdf');
+          return res.sendFile(join(oppDir, newestPdf!));
+        }
+      }
+    }
+
+    // 3. Fallback a Azure si STORAGE_TYPE === 'azure'
     const storageType = process.env.STORAGE_TYPE || 'local';
     if (storageType === 'azure') {
       const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
@@ -74,7 +114,7 @@ async function bootstrap() {
           const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
           const containerClient = blobServiceClient.getContainerClient(containerName);
 
-          const blobName = join('uploads', req.path).replace(/\\/g, '/');
+          const blobName = join('uploads', cleanPath).replace(/\\/g, '/');
           const blockBlobClient = containerClient.getBlockBlobClient(blobName);
 
           const exists = await blockBlobClient.exists();
@@ -94,7 +134,10 @@ async function bootstrap() {
         }
       }
     }
-    res.status(404).send('File not found');
+
+    // 4. Si el archivo no existe, responder 404 plano para evitar que Nginx lo capture como HTML del SPA
+    res.setHeader('Content-Type', 'text/plain');
+    res.status(404).send('Archivo no encontrado');
   });
 
   // --- Prefijo global de API ---
