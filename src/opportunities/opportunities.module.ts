@@ -22,6 +22,7 @@ import { DeliveryTypeOption } from './entities/delivery-type-option.entity';
 import { LicensingOption } from './entities/licensing-option.entity';
 import { OpportunityCatalogsService } from './opportunity-catalogs.service';
 import { OpportunityCatalogsController } from './opportunity-catalogs.controller';
+import { PublicQuotationController } from './public-quotation.controller';
 import { UsersModule } from 'src/users/users.module';
 import { OpportunityTrackingsModule } from 'src/opportunity-trackings/opportunity-trackings.module';
 import { ClientsModule } from 'src/clients/clients.module';
@@ -64,7 +65,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
       }),
     }),
   ],
-  controllers: [OpportunitiesController, OpportunityLabelsController, OpportunityCatalogsController],
+  controllers: [OpportunitiesController, PublicQuotationController, OpportunityLabelsController, OpportunityCatalogsController],
   providers: [OpportunitiesService, QuotationPdfService, OpportunityLabelsService, OpportunityCatalogsService],
   exports: [OpportunitiesService, QuotationPdfService],
 })

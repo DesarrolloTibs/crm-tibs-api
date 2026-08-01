@@ -114,20 +114,16 @@ export class ConversationsService {
 
     let formatted = content;
 
-    // 1. Corregir sintaxis Markdown rota '[Etiqueta] (archivo.pdf): /uploads/path' -> '[Etiqueta - archivo.pdf](https://.../uploads/path)'
+    // 1. Transformar cualquier ruta de cotización a la URL pública infalible de la API
     formatted = formatted.replace(
-      /📄?\s*\[([^\]]+)\]\s*\(([^)]+)\):\s*(\/)?([^\s\n]+)/g,
-      (match, label, filename, leadSlash, urlPath) => {
-        let fullUrl = urlPath;
-        if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
-          const cleanPath = urlPath.replace(/^backend\//, '').replace(/^uploads\//, 'uploads/');
-          fullUrl = `${baseUrl}/${cleanPath}`;
-        }
-        return `📄 [${label} - ${filename}](${fullUrl})`;
+      /(:\s*|\(\s*|\s+)?(\/)?(?:backend\/)?uploads\/quotations\/([a-f0-9\-]{36})\/[^\s\)\n"]+/gi,
+      (match, prefix, leadSlash, oppId) => {
+        const p = prefix || '';
+        return `${p}${baseUrl}/api/public/quotations/${oppId}`;
       }
     );
 
-    // 2. Formatear cualquier otra ruta relativa a uploads
+    // 2. Formatear cualquier otra ruta relativa de uploads
     formatted = formatted.replace(/(:\s*|\(\s*|\s+)(\/)?uploads\//g, (match, prefix) => {
       return `${prefix}${baseUrl}/uploads/`;
     });
@@ -982,9 +978,10 @@ export class ConversationsService {
   ): Promise<void> {
     const baseUrl = (process.env.API_URL || process.env.PUBLIC_SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
     const cleanDocPath = documentUrl.replace(/\\/g, '/').replace(/^\//, '');
-    const fullDocumentUrl = cleanDocPath.startsWith('http://') || cleanDocPath.startsWith('https://')
-      ? cleanDocPath
-      : `${baseUrl}/${cleanDocPath}`;
+    const oppMatch = cleanDocPath.match(/quotations\/([a-f0-9\-]{36})/i);
+    const fullDocumentUrl = oppMatch
+      ? `${baseUrl}/api/public/quotations/${oppMatch[1]}`
+      : (cleanDocPath.startsWith('http://') || cleanDocPath.startsWith('https://') ? cleanDocPath : `${baseUrl}/${cleanDocPath}`);
 
     let docMsgContent = caption
       ? `${caption}\n📄 [Cotización en PDF - ${filename}](${fullDocumentUrl})`
