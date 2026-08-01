@@ -25,6 +25,16 @@ export class TenantsService implements OnModuleInit {
     private readonly dataSource: DataSource
   ) {}
 
+  formatLogoUrl(logo: string | null): string | null {
+    if (!logo) return null;
+    if (logo.startsWith('http://') || logo.startsWith('https://')) {
+      return logo;
+    }
+    const baseUrl = (process.env.API_URL || process.env.PUBLIC_SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const cleanLogo = logo.startsWith('/') ? logo : `/${logo}`;
+    return `${baseUrl}${cleanLogo}`;
+  }
+
   async getConsumption(schemaName?: string) {
     const activeSchema = schemaName || TenantContextService.getTenantSchema() || 'public';
 
@@ -46,7 +56,7 @@ export class TenantsService implements OnModuleInit {
     if (tenantInfo?.tenant_id) {
       const fullTenant = await this.tenantRepository.findOne({ where: { id: tenantInfo.tenant_id } });
       if (fullTenant) {
-        logo = fullTenant.logo;
+        logo = this.formatLogoUrl(fullTenant.logo);
       }
     }
 
@@ -111,37 +121,52 @@ export class TenantsService implements OnModuleInit {
   async getCurrentTenant(schemaName?: string) {
     const activeSchema = schemaName || TenantContextService.getTenantSchema() || 'public';
     const tenantInfo = await this.subscriptionValidator.getTenantPlanInfo(activeSchema);
+    let tenant: Tenant | null = null;
     if (!tenantInfo) {
-      const publicTenant = await this.tenantRepository.findOne({ where: { schema_name: 'public' }, relations: ['plan'] });
-      return publicTenant || null;
+      tenant = await this.tenantRepository.findOne({ where: { schema_name: 'public' }, relations: ['plan'] });
+    } else {
+      tenant = await this.tenantRepository.findOne({ where: { id: tenantInfo.tenant_id }, relations: ['plan'] });
     }
-    const tenant = await this.tenantRepository.findOne({ where: { id: tenantInfo.tenant_id }, relations: ['plan'] });
+    if (tenant && tenant.logo) {
+      tenant.logo = this.formatLogoUrl(tenant.logo);
+    }
     return tenant;
   }
 
   async updateLogo(tenantId: number, logoUrl: string) {
-    const tenant = await this.findOne(tenantId);
+    const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
+    if (!tenant) {
+      throw new NotFoundException(`Tenant con ID ${tenantId} no encontrado.`);
+    }
     tenant.logo = logoUrl;
-    return this.tenantRepository.save(tenant);
+    await this.tenantRepository.save(tenant);
+    tenant.logo = this.formatLogoUrl(logoUrl);
+    return tenant;
   }
-
 
   async onModuleInit() {}
 
-
   async provision(dto: ProvisionTenantDto) {
-
     return this.tenantProvisioner.provisionTenant(dto);
   }
 
   async findAll() {
-    return this.tenantRepository.find({ relations: ['plan'], order: { created_at: 'DESC' } });
+    const tenants = await this.tenantRepository.find({ relations: ['plan'], order: { created_at: 'DESC' } });
+    return tenants.map((t) => {
+      if (t.logo) {
+        t.logo = this.formatLogoUrl(t.logo);
+      }
+      return t;
+    });
   }
 
   async findOne(id: number) {
     const tenant = await this.tenantRepository.findOne({ where: { id }, relations: ['plan'] });
     if (!tenant) {
       throw new NotFoundException(`Tenant con ID ${id} no encontrado.`);
+    }
+    if (tenant.logo) {
+      tenant.logo = this.formatLogoUrl(tenant.logo);
     }
     return tenant;
   }

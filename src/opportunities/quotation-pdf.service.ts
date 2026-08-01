@@ -124,6 +124,17 @@ export class QuotationPdfService {
     // 5. Subir a storage si es Azure
     const storedPath = await this.storageService.uploadFile(relativePath, relativePath);
 
+    // 6. Actualizar proposal_document_path en la oportunidad en BD
+    try {
+      const activeSchema = TenantContextService.getTenantSchema() || 'public';
+      await this.dataSource.query(
+        `UPDATE "${activeSchema}".opportunities SET proposal_document_path = $1 WHERE id = $2`,
+        [storedPath, opportunityId]
+      );
+    } catch (updateErr) {
+      this.logger.warn(`No se pudo actualizar proposal_document_path en DB: ${(updateErr as Error).message}`);
+    }
+
     this.logger.log(`PDF de cotización generado: ${storedPath}`);
 
     return {
