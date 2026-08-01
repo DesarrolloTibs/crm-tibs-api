@@ -12,6 +12,8 @@ import { Message } from './entities/message.entity';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
 
 @WebSocketGateway({
+  transports: ['websocket', 'polling'],
+  allowEIO3: true,
   cors: {
     origin: (origin, callback) => {
       const raw = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'https://billyss.tibsapps.com.mx';

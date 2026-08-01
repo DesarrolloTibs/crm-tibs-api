@@ -13,6 +13,8 @@ import { Logger } from '@nestjs/common';
 import { Notification } from './entities/notification.entity';
 
 @WebSocketGateway({
+  transports: ['websocket', 'polling'],
+  allowEIO3: true,
   cors: {
     origin: (origin, callback) => {
       const raw = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'https://billyss.tibsapps.com.mx';
