@@ -21,6 +21,8 @@ import { UpdateTypeActivityDto } from './dto/update-type-activity.dto';
 import { Client } from 'src/clients/entities/client.entity';
 import { RemindersService } from 'src/reminders/reminders.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class ActivitiesService {
@@ -37,6 +39,7 @@ export class ActivitiesService {
     private readonly interactionsService: InteractionsService,
     private readonly remindersService: RemindersService,
     private readonly notificationsService: NotificationsService,
+    private readonly eventEmitter: EventEmitter2,
   ) { }
 
 
@@ -249,6 +252,9 @@ export class ActivitiesService {
           result.opportunity.id,
         );
       }
+
+      const tenantSchema = TenantContextService.getTenantSchema();
+      this.eventEmitter.emit('activity.created', { activity: result, tenantSchema });
     }
     return this.fillDeletedType(result!);
   }
@@ -464,6 +470,9 @@ export class ActivitiesService {
           result.opportunity.id,
         );
       }
+
+      const tenantSchema = TenantContextService.getTenantSchema();
+      this.eventEmitter.emit('activity.updated', { activity: result, tenantSchema });
     }
     return this.fillDeletedType(result!);
   }
@@ -503,6 +512,15 @@ export class ActivitiesService {
         activity.opportunity.id,
       );
     }
+
+    const tenantSchema = TenantContextService.getTenantSchema();
+    this.eventEmitter.emit('activity.deleted', {
+      activityId: id,
+      externalEventId: activity.externalEventId,
+      externalProvider: activity.externalProvider,
+      userId: activity.userId,
+      tenantSchema,
+    });
 
     const result = await this.activityRepository.delete(id);
     if (result.affected === 0) {

@@ -79,6 +79,21 @@ export class CreateActivityDto {
   @Type(() => ActivityReminderDto)
   @IsOptional()
   reminder?: ActivityReminderDto;
+
+  @ApiPropertyOptional({ description: 'ID de evento externo' })
+  @IsString()
+  @IsOptional()
+  externalEventId?: string;
+
+  @ApiPropertyOptional({ description: 'Proveedor del calendario externo' })
+  @IsString()
+  @IsOptional()
+  externalProvider?: string;
+
+  @ApiPropertyOptional({ description: 'Fecha de la última sincronización externa' })
+  @IsDateString()
+  @IsOptional()
+  externalLastSyncedAt?: string;
 }
 
 

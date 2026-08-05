@@ -10,6 +10,7 @@ import { TypeActivity } from './entities/type-activity.entity';
 import { Client } from '../clients/entities/client.entity';
 import { RemindersModule } from 'src/reminders/reminders.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
+import { CalendarIntegrationsModule } from '../calendar-integrations/calendar-integrations.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
     InteractionsModule,
     RemindersModule,
     NotificationsModule,
+    CalendarIntegrationsModule,
   ],
   controllers: [ActivitiesController],
   providers: [ActivitiesService],

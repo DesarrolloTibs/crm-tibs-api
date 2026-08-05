@@ -71,4 +71,13 @@ export class Activity {
   @ManyToOne(() => User, { eager: true })
   @JoinColumn({ name: 'userId' })
   user: User;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  externalEventId: string | null;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  externalProvider: string | null;
+
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  externalLastSyncedAt: Date | null;
 }

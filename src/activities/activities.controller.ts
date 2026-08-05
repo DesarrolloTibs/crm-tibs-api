@@ -30,13 +30,18 @@ import { UpdateTypeActivityDto } from './dto/update-type-activity.dto';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { Activity } from './entities/activity.entity';
 import { User } from 'src/users/entities/user.entity';
+import { CalendarSyncCoordinatorService } from '../calendar-integrations/services/calendar-sync-coordinator.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @ApiTags('activities')
 @ApiBearerAuth()
 @UseGuards(AuthGuard('jwt'))
 @Controller('activities')
 export class ActivitiesController {
-  constructor(private readonly activitiesService: ActivitiesService) { }
+  constructor(
+    private readonly activitiesService: ActivitiesService,
+    private readonly syncCoordinator: CalendarSyncCoordinatorService,
+  ) { }
 
 
   @Get('types')
@@ -95,6 +100,10 @@ export class ActivitiesController {
     @Query('userId') userId?: string,
     @Query('opportunityId') opportunityId?: string,
   ) {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    // Lanzar sincronización en segundo plano de manera no bloqueante
+    this.syncCoordinator.syncExternalChangesToCRM(tenantSchema, user.id).catch(() => null);
+
     return this.activitiesService.findAll(user, userId, opportunityId);
   }
 

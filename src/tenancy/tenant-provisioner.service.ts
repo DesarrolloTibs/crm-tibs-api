@@ -228,6 +228,31 @@ export class TenantProvisionerService {
         ALTER TABLE "${schemaName}".products ADD COLUMN IF NOT EXISTS "observaciones" text NULL;
         ALTER TABLE "${schemaName}".products DROP COLUMN IF EXISTS "requiere_analisis";
 
+        ALTER TABLE "${schemaName}".activities ADD COLUMN IF NOT EXISTS "externalEventId" varchar(255) NULL;
+        ALTER TABLE "${schemaName}".activities ADD COLUMN IF NOT EXISTS "externalProvider" varchar(50) NULL;
+        ALTER TABLE "${schemaName}".activities ADD COLUMN IF NOT EXISTS "externalLastSyncedAt" timestamptz NULL;
+
+        CREATE TABLE IF NOT EXISTS "${schemaName}".user_calendar_integrations (
+          id uuid NOT NULL DEFAULT gen_random_uuid(),
+          "userId" uuid NOT NULL UNIQUE,
+          provider varchar(20) NOT NULL,
+          email varchar(255) NOT NULL,
+          "accessToken" text NULL,
+          "refreshToken" text NULL,
+          "expiresAt" timestamptz NULL,
+          "icloudEmail" varchar(255) NULL,
+          "icloudPassword" text NULL,
+          "calendarId" varchar(255) NULL,
+          "webhookSubscriptionId" varchar(255) NULL,
+          "webhookExpiration" timestamptz NULL,
+          "syncToken" varchar(500) NULL,
+          "createdAt" timestamptz NOT NULL DEFAULT now(),
+          "updatedAt" timestamptz NOT NULL DEFAULT now(),
+          CONSTRAINT pk_user_calendar_integrations PRIMARY KEY (id),
+          CONSTRAINT fk_calendar_user FOREIGN KEY ("userId") REFERENCES "${schemaName}".users(id) ON DELETE CASCADE
+        );
+
+
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".product_files (
           id uuid NOT NULL DEFAULT gen_random_uuid(),
