@@ -73,8 +73,7 @@ export class CalendarWebhooksController {
 
       // 2. Ejecutar lógica en el esquema del inquilino
       await TenantContextService.run({ tenantSchema, userId }, async () => {
-        const queryRunner = this.webhookMappingRepo.manager.connection.createQueryRunner();
-        const integrationRepo = queryRunner.manager.getRepository(UserCalendarIntegration);
+        const integrationRepo = this.webhookMappingRepo.manager.getRepository(UserCalendarIntegration);
 
         let oauthResult;
         if (provider === 'google') {

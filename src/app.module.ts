@@ -1,4 +1,4 @@
-import { Module, OnApplicationBootstrap, NestModule, MiddlewareConsumer, Logger } from '@nestjs/common';
+import { Module, OnApplicationBootstrap, NestModule, MiddlewareConsumer, Logger, RequestMethod } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -121,7 +121,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
   private readonly logger = new Logger('AppModule');
 
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(TenantMiddleware).forRoutes('*');
+    consumer.apply(TenantMiddleware).forRoutes({ path: '*path', method: RequestMethod.ALL });
   }
 
   constructor(private readonly dataSource: DataSource) { }

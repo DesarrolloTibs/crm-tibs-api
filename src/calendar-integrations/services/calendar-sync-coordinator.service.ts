@@ -69,9 +69,8 @@ export class CalendarSyncCoordinatorService {
 
     await TenantContextService.run({ tenantSchema }, async () => {
       try {
-        const queryRunner = this.dataSource.createQueryRunner();
-        const integrationRepo = queryRunner.manager.getRepository(UserCalendarIntegration);
-        const activityRepo = queryRunner.manager.getRepository(Activity);
+        const integrationRepo = this.dataSource.getRepository(UserCalendarIntegration);
+        const activityRepo = this.dataSource.getRepository(Activity);
 
         const integration = await integrationRepo.findOne({ where: { userId: activity.userId } });
         if (!integration) return;
@@ -132,9 +131,8 @@ export class CalendarSyncCoordinatorService {
 
     await TenantContextService.run({ tenantSchema }, async () => {
       try {
-        const queryRunner = this.dataSource.createQueryRunner();
-        const integrationRepo = queryRunner.manager.getRepository(UserCalendarIntegration);
-        const activityRepo = queryRunner.manager.getRepository(Activity);
+        const integrationRepo = this.dataSource.getRepository(UserCalendarIntegration);
+        const activityRepo = this.dataSource.getRepository(Activity);
 
         const integration = await integrationRepo.findOne({ where: { userId: activity.userId } });
         if (!integration) return;
@@ -212,8 +210,7 @@ export class CalendarSyncCoordinatorService {
 
     await TenantContextService.run({ tenantSchema }, async () => {
       try {
-        const queryRunner = this.dataSource.createQueryRunner();
-        const integrationRepo = queryRunner.manager.getRepository(UserCalendarIntegration);
+        const integrationRepo = this.dataSource.getRepository(UserCalendarIntegration);
 
         const integration = await integrationRepo.findOne({ where: { userId } });
         if (!integration) return;
@@ -243,7 +240,7 @@ export class CalendarSyncCoordinatorService {
     if (!force) {
       const now = Date.now();
       const lastSync = this.lastSyncTimeMap.get(lockKey) || 0;
-      if (now - lastSync < 60000) {
+      if (now - lastSync < 30000) {
         return; // Skip if synced in the last 60 seconds
       }
       this.lastSyncTimeMap.set(lockKey, now);
@@ -253,10 +250,9 @@ export class CalendarSyncCoordinatorService {
 
     await TenantContextService.run({ tenantSchema, userId }, async () => {
       try {
-        const queryRunner = this.dataSource.createQueryRunner();
-        const integrationRepo = queryRunner.manager.getRepository(UserCalendarIntegration);
-        const activityRepo = queryRunner.manager.getRepository(Activity);
-        const clientRepo = queryRunner.manager.getRepository(Client);
+        const integrationRepo = this.dataSource.getRepository(UserCalendarIntegration);
+        const activityRepo = this.dataSource.getRepository(Activity);
+        const clientRepo = this.dataSource.getRepository(Client);
 
         const integration = await integrationRepo.findOne({ where: { userId } });
         if (!integration) return;
@@ -341,7 +337,7 @@ export class CalendarSyncCoordinatorService {
             this.logger.log(`Creando nueva actividad en el CRM proveniente de calendario externo. Cliente asociado: ${targetClient.correo}`);
 
             // Buscamos un tipo de actividad genérico o el primero disponible
-            const types = await queryRunner.manager.query(`SELECT id FROM "${tenantSchema}".tbltypeactivities LIMIT 1`);
+            const types = await this.dataSource.query(`SELECT id FROM "${tenantSchema}".tbltypeactivities LIMIT 1`);
             const typeActivityId = types && types.length > 0 ? types[0].id : null;
 
             const newActivity = activityRepo.create({

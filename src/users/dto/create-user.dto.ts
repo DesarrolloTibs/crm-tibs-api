@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, MinLength, IsBoolean } from 'class-validator';
 import { Role } from '../../role.enum';
 
 export class CreateUserDto {
@@ -22,5 +22,16 @@ export class CreateUserDto {
   @IsEnum(Role)
   @IsOptional()
   role?: Role;
+
+  @ApiProperty({ example: true, description: 'Define si el usuario está activo o no', required: false })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @ApiProperty({ example: '/uploads/profiles/user.png', description: 'URL de la imagen de perfil del usuario', required: false })
+  @IsOptional()
+  @IsString()
+  profileImageUrl?: string;
 }
+
 
