@@ -262,6 +262,7 @@ export class ConversationsService {
    * Si el cliente envía otro mensaje dentro de los 7s, el temporizador se reinicia.
    */
   private scheduleAiReplyDebounce(conversationId: string) {
+    const tenantSchema = TenantContextService.getTenantSchema();
     const existingTimer = this.aiDebounceTimers.get(conversationId);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -273,7 +274,9 @@ export class ConversationsService {
     const timer = setTimeout(async () => {
       this.aiDebounceTimers.delete(conversationId);
       this.logger.log(`[DEBOUNCE 7s EXPIRED] Ejecutando IA para chat ${conversationId} tras 7s de inactividad.`);
-      await this.triggerAiReplyById(conversationId);
+      await TenantContextService.run({ tenantSchema }, async () => {
+        await this.triggerAiReplyById(conversationId);
+      });
     }, 7000);
 
     this.aiDebounceTimers.set(conversationId, timer);
@@ -693,19 +696,83 @@ export class ConversationsService {
 
   // ── VALIDACIÓN Y RECEPCIÓN DE WEBHOOKS DE META ─────────────────────────────
 
+  async findTenantSchemaByChannelConfig(
+    channel: string,
+    criteria: { accountId?: string; phoneNumberId?: string }
+  ): Promise<string | null> {
+    const dbChannel = (channel === 'messenger') ? 'facebook' : channel;
+    const tenants = await this.channelConfigRepository.manager.query(
+      `SELECT schema_name FROM public.tenants WHERE is_active = true`
+    );
+
+    for (const t of tenants) {
+      const schema = t.schema_name;
+      try {
+        let query = `SELECT id FROM "${schema}".channel_configs WHERE channel = $1 AND "isActive" = true`;
+        const params: any[] = [dbChannel];
+
+        if (criteria.accountId) {
+          query += ` AND "accountId" = $2`;
+          params.push(criteria.accountId);
+        } else if (criteria.phoneNumberId) {
+          query += ` AND "phoneNumberId" = $2`;
+          params.push(criteria.phoneNumberId);
+        } else {
+          continue;
+        }
+
+        const res = await this.channelConfigRepository.manager.query(query, params);
+        if (res && res.length > 0) {
+          return schema;
+        }
+      } catch (err) {
+        // En caso de que la tabla no exista en algún esquema
+      }
+    }
+    return null;
+  }
+
+  async findTenantSchemaByVerifyToken(
+    channel: string,
+    verifyToken: string
+  ): Promise<string | null> {
+    const dbChannel = (channel === 'messenger') ? 'facebook' : channel;
+    const tenants = await this.channelConfigRepository.manager.query(
+      `SELECT schema_name FROM public.tenants WHERE is_active = true`
+    );
+
+    for (const t of tenants) {
+      const schema = t.schema_name;
+      try {
+        const query = `SELECT id FROM "${schema}".channel_configs WHERE channel = $1 AND "verifyToken" = $2 AND "isActive" = true`;
+        const res = await this.channelConfigRepository.manager.query(query, [dbChannel, verifyToken]);
+        if (res && res.length > 0) {
+          return schema;
+        }
+      } catch (err) {
+        // En caso de que la tabla no exista en algún esquema
+      }
+    }
+    return null;
+  }
+
   async verifyMetaWebhook(channel: string, mode: string, token: string, challenge: string): Promise<string> {
     this.logger.log(`[Webhook ${channel.toUpperCase()}] Petición de verificación recibida. mode=${mode}, token=${token}, challenge=${challenge}`);
     
     if (mode === 'subscribe' && token) {
-      const allConfigs = await this.channelConfigRepository.find({ where: { channel } });
-      this.logger.log(`[Webhook ${channel.toUpperCase()}] Configuraciones en DB para este canal: ${JSON.stringify(allConfigs)}`);
-
-      const config = await this.channelConfigRepository.findOne({
-        where: { channel, verifyToken: token, isActive: true },
-      });
-      if (config) {
-        this.logger.log(`[Webhook ${channel.toUpperCase()}] Webhook verificado correctamente`);
-        return challenge;
+      const tenantSchema = await this.findTenantSchemaByVerifyToken(channel, token);
+      if (tenantSchema) {
+        return TenantContextService.run({ tenantSchema }, async () => {
+          const dbChannel = (channel === 'messenger') ? 'facebook' : channel;
+          const config = await this.channelConfigRepository.findOne({
+            where: { channel: dbChannel, verifyToken: token, isActive: true },
+          });
+          if (config) {
+            this.logger.log(`[Webhook ${channel.toUpperCase()}] Webhook verificado correctamente en esquema ${tenantSchema}`);
+            return challenge;
+          }
+          throw new NotFoundException('Token de verificación inválido o canal inactivo');
+        });
       }
     }
     this.logger.warn(`[Webhook ${channel.toUpperCase()}] Falló intento de verificación de webhook`);
@@ -715,122 +782,159 @@ export class ConversationsService {
   async handleIncomingWebhook(channel: string, payload: any): Promise<any> {
     this.logger.log(`[Webhook ${channel.toUpperCase()}] Recibido body: ${JSON.stringify(payload)}`);
 
-    try {
-      if (channel === 'whatsapp') {
-        const entry = payload.entry?.[0];
-        const change = entry?.changes?.[0];
-        const value = change?.value;
-        const message = value?.messages?.[0];
+    let tenantSchema = 'public';
+    let criteria: { accountId?: string; phoneNumberId?: string } = {};
 
-        if (message && message.type === 'text') {
-          const externalId = message.from;
-          const text = message.text.body;
-          const clientNickname = value.contacts?.[0]?.profile?.name || 'Cliente WhatsApp';
-          const phoneNumberId = value.metadata?.phone_number_id;
-
-          const channelConfig = await this.channelConfigRepository.findOne({
-            where: { channel: 'whatsapp', phoneNumberId, isActive: true },
-          });
-
-          await this.receiveIncomingMessage(
-            'whatsapp',
-            externalId,
-            clientNickname,
-            text,
-            channelConfig?.id,
-          );
-        }
-      } else if (channel === 'facebook' || channel === 'messenger') {
-        const entry = payload.entry?.[0];
-        const messaging = entry?.messaging?.[0];
-        const pageId = entry?.id;
-
-        if (messaging && messaging.message && messaging.message.text) {
-          if (messaging.message.is_echo) {
-            this.logger.log(`[Webhook ${channel.toUpperCase()}] Ignorando mensaje echo (is_echo: true)`);
-            return { status: 'SUCCESS' };
-          }
-          const senderId = messaging.sender.id;
-          const text = messaging.message.text;
-
-          const channelConfig = await this.channelConfigRepository.findOne({
-            where: { channel: 'facebook', accountId: pageId, isActive: true },
-          });
-
-          let clientNickname = 'Usuario de Facebook';
-          if (channelConfig && channelConfig.accessToken) {
-            try {
-              const res = await fetch(
-                `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name&access_token=${channelConfig.accessToken}`
-              );
-              if (res.ok) {
-                const data: any = await res.json();
-                if (data && data.first_name) {
-                  clientNickname = `${data.first_name} ${data.last_name || ''}`.trim();
-                }
-              }
-            } catch (err) {
-              this.logger.error(`Error obteniendo perfil de FB: ${err.message}`);
-            }
-          }
-
-          await this.receiveIncomingMessage(
-            'messenger',
-            senderId,
-            clientNickname,
-            text,
-            channelConfig?.id,
-          );
-        }
-      } else if (channel === 'instagram') {
-        const entry = payload.entry?.[0];
-        const messaging = entry?.messaging?.[0];
-        const igAccountId = entry?.id;
-
-        if (messaging && messaging.message && messaging.message.text) {
-          if (messaging.message.is_echo) {
-            this.logger.log(`[Webhook ${channel.toUpperCase()}] Ignorando mensaje echo (is_echo: true)`);
-            return { status: 'SUCCESS' };
-          }
-          const senderId = messaging.sender.id;
-          const text = messaging.message.text;
-
-          const channelConfig = await this.channelConfigRepository.findOne({
-            where: { channel: 'instagram', accountId: igAccountId, isActive: true },
-          });
-
-          let clientNickname = 'Usuario de Instagram';
-          if (channelConfig && channelConfig.accessToken) {
-            try {
-              const res = await fetch(
-                `https://graph.facebook.com/v19.0/${senderId}?fields=username&access_token=${channelConfig.accessToken}`
-              );
-              if (res.ok) {
-                const data: any = await res.json();
-                if (data && data.username) {
-                  clientNickname = data.username;
-                }
-              }
-            } catch (err) {
-              this.logger.error(`Error obteniendo perfil de IG: ${err.message}`);
-            }
-          }
-
-          await this.receiveIncomingMessage(
-            'instagram',
-            senderId,
-            clientNickname,
-            text,
-            channelConfig?.id,
-          );
-        }
+    if (channel === 'whatsapp') {
+      const entry = payload.entry?.[0];
+      const change = entry?.changes?.[0];
+      const value = change?.value;
+      const phoneNumberId = value?.metadata?.phone_number_id;
+      if (phoneNumberId) {
+        criteria = { phoneNumberId };
       }
-
-      return { status: 'SUCCESS' };
-    } catch (error) {
-      this.logger.error(`Error procesando webhook de ${channel}: ${error.message}`);
-      throw error;
+    } else if (channel === 'facebook' || channel === 'messenger') {
+      const entry = payload.entry?.[0];
+      const pageId = entry?.id;
+      if (pageId) {
+        criteria = { accountId: pageId };
+      }
+    } else if (channel === 'instagram') {
+      const entry = payload.entry?.[0];
+      const igAccountId = entry?.id;
+      if (igAccountId) {
+        criteria = { accountId: igAccountId };
+      }
     }
+
+    if (criteria.accountId || criteria.phoneNumberId) {
+      const resolvedSchema = await this.findTenantSchemaByChannelConfig(channel, criteria);
+      if (resolvedSchema) {
+        tenantSchema = resolvedSchema;
+        this.logger.log(`[Webhook ${channel.toUpperCase()}] Tenant schema detectado para el webhook: ${tenantSchema}`);
+      } else {
+        this.logger.warn(`[Webhook ${channel.toUpperCase()}] No se encontró una configuración de canal activa para criteria: ${JSON.stringify(criteria)}. Se usará el esquema public.`);
+      }
+    }
+
+    return TenantContextService.run({ tenantSchema }, async () => {
+      try {
+        if (channel === 'whatsapp') {
+          const entry = payload.entry?.[0];
+          const change = entry?.changes?.[0];
+          const value = change?.value;
+          const message = value?.messages?.[0];
+
+          if (message && message.type === 'text') {
+            const externalId = message.from;
+            const text = message.text.body;
+            const clientNickname = value.contacts?.[0]?.profile?.name || 'Cliente WhatsApp';
+            const phoneNumberId = value.metadata?.phone_number_id;
+
+            const channelConfig = await this.channelConfigRepository.findOne({
+              where: { channel: 'whatsapp', phoneNumberId, isActive: true },
+            });
+
+            await this.receiveIncomingMessage(
+              'whatsapp',
+              externalId,
+              clientNickname,
+              text,
+              channelConfig?.id,
+            );
+          }
+        } else if (channel === 'facebook' || channel === 'messenger') {
+          const entry = payload.entry?.[0];
+          const messaging = entry?.messaging?.[0];
+          const pageId = entry?.id;
+
+          if (messaging && messaging.message && messaging.message.text) {
+            if (messaging.message.is_echo) {
+              this.logger.log(`[Webhook ${channel.toUpperCase()}] Ignorando mensaje echo (is_echo: true)`);
+              return { status: 'SUCCESS' };
+            }
+            const senderId = messaging.sender.id;
+            const text = messaging.message.text;
+
+            const channelConfig = await this.channelConfigRepository.findOne({
+              where: { channel: 'facebook', accountId: pageId, isActive: true },
+            });
+
+            let clientNickname = 'Usuario de Facebook';
+            if (channelConfig && channelConfig.accessToken) {
+              try {
+                const res = await fetch(
+                  `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name&access_token=${channelConfig.accessToken}`
+                );
+                if (res.ok) {
+                  const data: any = await res.json();
+                  if (data && data.first_name) {
+                    clientNickname = `${data.first_name} ${data.last_name || ''}`.trim();
+                  }
+                }
+              } catch (err) {
+                this.logger.error(`Error obteniendo perfil de FB: ${err.message}`);
+              }
+            }
+
+            await this.receiveIncomingMessage(
+              'messenger',
+              senderId,
+              clientNickname,
+              text,
+              channelConfig?.id,
+            );
+          }
+        } else if (channel === 'instagram') {
+          const entry = payload.entry?.[0];
+          const messaging = entry?.messaging?.[0];
+          const igAccountId = entry?.id;
+
+          if (messaging && messaging.message && messaging.message.text) {
+            if (messaging.message.is_echo) {
+              this.logger.log(`[Webhook ${channel.toUpperCase()}] Ignorando mensaje echo (is_echo: true)`);
+              return { status: 'SUCCESS' };
+            }
+            const senderId = messaging.sender.id;
+            const text = messaging.message.text;
+
+            const channelConfig = await this.channelConfigRepository.findOne({
+              where: { channel: 'instagram', accountId: igAccountId, isActive: true },
+            });
+
+            let clientNickname = 'Usuario de Instagram';
+            if (channelConfig && channelConfig.accessToken) {
+              try {
+                const res = await fetch(
+                  `https://graph.facebook.com/v19.0/${senderId}?fields=username&access_token=${channelConfig.accessToken}`
+                );
+                if (res.ok) {
+                  const data: any = await res.json();
+                  if (data && data.username) {
+                    clientNickname = data.username;
+                  }
+                }
+              } catch (err) {
+                this.logger.error(`Error obteniendo perfil de IG: ${err.message}`);
+              }
+            }
+
+            await this.receiveIncomingMessage(
+              'instagram',
+              senderId,
+              clientNickname,
+              text,
+              channelConfig?.id,
+            );
+          }
+        }
+
+        return { status: 'SUCCESS' };
+      } catch (error) {
+        this.logger.error(`Error procesando webhook de ${channel}: ${error.message}`);
+        throw error;
+      }
+    });
   }
 
   // ── ENVÍO DE MENSAJES HACIA EL EXTERIOR ────────────────────────────────────
@@ -1052,7 +1156,7 @@ export class ConversationsService {
             attachment: {
               type: 'file',
               payload: {
-                url: documentUrl,
+                url: fullDocumentUrl,
                 is_reusable: true
               }
             }

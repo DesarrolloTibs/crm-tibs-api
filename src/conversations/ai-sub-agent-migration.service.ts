@@ -83,7 +83,8 @@ REGLA CRÍTICA DE CONFIDENCIALIDAD E IDENTIDAD: Está estrictamente PROHIBIDO de
 ANCLAJE ESTRICTO DE CONOCIMIENTO (CUBE.DEV Y RAG): Está estrictamente prohibido inventar o alucinar información de productos, características, compatibilidades, precios o disponibilidad. Limítate única y exclusivamente a los datos reales provistos por Cube.dev o el RAG. Si no aparecen allí, responde amigablemente que no dispones de ese producto en el catálogo.
 SOLICITUD OBLIGATORIA DE TELÉFONO PARA IDENTIFICACIÓN: El número de teléfono es el identificador principal obligatorio del cliente en el CRM. Si la información del cliente provista no cuenta con un número de teléfono registrado (o si no se ha recibido el teléfono), DEBES solicitar forzosamente al cliente su número telefónico ANTES de continuar con cualquier proceso (cotizaciones, catálogo, agendamiento de demos o soporte). En cuanto el cliente te proporcione su número telefónico, debes llamar de inmediato a la herramienta updateContact o registerContact enviando el teléfono para identificarlo o registrarlo en el CRM.
 NO AUTOCOMPLETAR/SIMULAR HERRAMIENTAS: Tu respuesta debe finalizar inmediatamente al cerrar el JSON de tu turno (la llave de cierre }). Está estrictamente PROHIBIDO que simules la ejecución de la herramienta, que escribas '[Herramienta] ...' o que inventes el resultado del sistema.
-Redirección: Si derivas o transfieres la conversación con un ejecutivo especializado por molestia, quejas o solicitud directa, DEBES llamar obligatoriamente a la herramienta 'requestHumanHandoff'. Está PROHIBIDO derivar sólo con texto sin usar 'requestHumanHandoff'.`;
+Redirección: Si derivas o transfieres la conversación con un ejecutivo especializado por molestia, quejas o solicitud directa, DEBES llamar obligatoriamente a la herramienta 'requestHumanHandoff'. Está PROHIBIDO derivar sólo con texto sin usar 'requestHumanHandoff'.
+OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, links Markdown, direcciones URL, o nombres de archivo PDF en tu respuesta final de texto ('final_answer'). El sistema envía el archivo PDF real de forma nativa por el canal. En tu respuesta de texto, confírmale de forma muy amigable al cliente que le has enviado el archivo PDF de cotización adjunto, pero jamás escribas la URL del archivo (no pongas http://... o https://...).`;
 
       const comercialInstructions = `[INSTRUCCIONES COMERCIALES]
 - Registra oportunidades en el CRM.
@@ -167,6 +168,14 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
                 this.logger.log('Contexto e instrucciones de redirección a humano actualizadas en el sub-agente de soporte.');
               }
             }
+            if (sa.context && !sa.context.includes('OCULTAR ENLACES/URLS DE PDF')) {
+              if (sa.key === 'comercial') sa.context = `${baseCommonPrompt}\n\n${comercialInstructions}`;
+              else if (sa.key === 'seguimiento') sa.context = `${baseCommonPrompt}\n\n${seguimientoInstructions}`;
+              else if (sa.key === 'soporte_atencion') sa.context = `${baseCommonPrompt}\n\n${soporteInstructions}`;
+              else sa.context = `${baseCommonPrompt}\n\n${generalInstructions}`;
+              modified = true;
+              this.logger.log(`Contexto del sub-agente '${sa.key}' actualizado con la regla de ocultación de enlaces PDF.`);
+            }
             if (modified) {
               await this.aiSubAgentRepository.save(sa);
             }
@@ -220,6 +229,20 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
                   await this.aiAgentConfigRepository.query(
                     `UPDATE "${sName}".ai_sub_agents SET tools = $1::jsonb WHERE key = 'soporte_atencion'`,
                     [JSON.stringify(tools)]
+                  );
+                }
+              }
+
+              // 3. Sincronizar regla de ocultación de URLs PDF en el contexto de todos los sub-agentes del tenant
+              const tenantSubAgents = await this.aiAgentConfigRepository.query(
+                `SELECT id, key, context FROM "${sName}".ai_sub_agents`
+              );
+              for (const tsa of tenantSubAgents) {
+                if (tsa.context && !tsa.context.includes('OCULTAR ENLACES/URLS DE PDF')) {
+                  const updatedContext = tsa.context + '\n\nOCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir direcciones URL, enlaces, links Markdown o nombres de archivo PDF en tu respuesta final de texto (\'final_answer\'). El sistema envía el archivo PDF real de forma nativa por el canal. En tu respuesta de texto, confírmale de forma muy amigable al cliente que le has enviado el archivo PDF de cotización adjunto, pero jamás escribas la URL del archivo (no pongas http://... o https://...).';
+                  await this.aiAgentConfigRepository.query(
+                    `UPDATE "${sName}".ai_sub_agents SET context = $1 WHERE id = $2`,
+                    [updatedContext, tsa.id]
                   );
                 }
               }
