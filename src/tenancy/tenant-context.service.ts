@@ -63,9 +63,7 @@ export function patchTypeORMQueryRunnerForMultiTenancy() {
     // 1. No es una query de gestión de search_path (evitar recursión).
     // 2. No es una query de sistema (SHOW, information_schema, pg_catalog).
     // 3. No es una instrucción de control de transacción (BEGIN/COMMIT/ROLLBACK/SAVEPOINT).
-    const physicalClient = (this as any).databaseConnection || (this as any).client || this;
-    const currentAttachedSchema = (physicalClient as any).__tenant_schema__;
-
+    
     if (
       !query.startsWith('SET search_path') &&
       !query.startsWith('SHOW ') &&
@@ -77,14 +75,16 @@ export function patchTypeORMQueryRunnerForMultiTenancy() {
       !query.includes('information_schema') &&
       !query.includes('pg_catalog')
     ) {
-      if (currentAttachedSchema !== targetSchema) {
+      // Para garantizar un aislamiento multitenant robusto en pools de conexión y poolers de Supabase/PgBouncer,
+      // siempre forzamos el SET search_path en cada instancia de QueryRunner. No confiamos en el estado en caché
+      // del cliente físico (physicalClient), ya que en poolers de transacción este cambia o se limpia constantemente.
+      if ((this as any).__tenant_schema__ !== targetSchema) {
         try {
           if (targetSchema === 'public') {
             await originalQuery.call(this, `SET search_path TO public`);
           } else {
             await originalQuery.call(this, `SET search_path TO "${targetSchema}", public`);
           }
-          (physicalClient as any).__tenant_schema__ = targetSchema;
           (this as any).__tenant_schema__ = targetSchema;
         } catch {
           // Si falla SET search_path (e.g., conexión aún no establecida), se continúa
