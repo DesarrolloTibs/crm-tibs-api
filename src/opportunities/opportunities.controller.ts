@@ -31,12 +31,12 @@ export class OpportunitiesController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Obtener oportunidades filtradas (etapa, archivado)' })
+  @ApiOperation({ summary: 'Obtener oportunidades filtradas (etapa, archivado, rango de fechas)' })
   findAll(
     @Query() filterDto: GetOpportunitiesFilterDto,
   ) {
-    const { stage_id, showArchived } = filterDto;
-    return this.opportunitiesService.findAll(stage_id, showArchived);
+    const { stage_id, showArchived, startDate, endDate } = filterDto;
+    return this.opportunitiesService.findAll(stage_id, showArchived, startDate, endDate);
   }
 
   @Get('all')

@@ -254,6 +254,8 @@ export class OpportunitiesService {
   findAll(
     stage_id?: string,
     showArchived = false,
+    startDate?: string,
+    endDate?: string,
   ): Promise<Opportunity[]> {
     const currentYear = new Date().getFullYear();
     const excludedStageNames = ['Ganada', 'Perdida', 'Cancelada', 'Standby'];
@@ -283,6 +285,14 @@ export class OpportunitiesService {
                  ) >= :currentYear`, { currentYear }
              );
       }));
+    }
+
+    if (startDate) {
+      qb.andWhere('opportunity.createdAt >= :startDate', { startDate });
+    }
+
+    if (endDate) {
+      qb.andWhere('opportunity.createdAt <= :endDate', { endDate: `${endDate} 23:59:59` });
     }
 
     return qb.getMany();

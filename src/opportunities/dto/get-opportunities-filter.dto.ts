@@ -1,4 +1,4 @@
-import { IsOptional, IsBoolean, IsUUID } from 'class-validator';
+import { IsOptional, IsBoolean, IsUUID, IsString } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class GetOpportunitiesFilterDto {
@@ -10,5 +10,14 @@ export class GetOpportunitiesFilterDto {
   @Transform(({ value }) => value === 'true')
   @IsBoolean()
   showArchived?: boolean;
+
+  @IsOptional()
+  @IsString()
+  startDate?: string;
+
+  @IsOptional()
+  @IsString()
+  endDate?: string;
 }
+
 
