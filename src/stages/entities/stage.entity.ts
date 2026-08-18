@@ -35,6 +35,9 @@ export class Stage {
   @Column({ type: 'integer', nullable: true, name: 'intmaxdays' })
   intmaxdays: number | null;
 
+  @Column({ type: 'integer', default: 0, nullable: false, name: 'stage_type' })
+  stage_type: number;
+
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   dtmcreated: Date;
 

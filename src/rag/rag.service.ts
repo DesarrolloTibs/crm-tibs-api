@@ -323,6 +323,10 @@ export class RagService implements OnModuleInit {
    * Busca fragmentos similares a la query utilizando filtros por metadata de producto.
    */
   async searchSimilar(query: string, limit: number = 3, productKey?: string): Promise<any[]> {
+    if (!query || query.trim() === '') {
+      return [];
+    }
+
     // ── Pre-validación de suscripción (solo esquemas tenant) ──
     const activeSchema = TenantContextService.getTenantSchema();
     if (activeSchema && activeSchema !== 'public') {

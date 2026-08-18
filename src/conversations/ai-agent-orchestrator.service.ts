@@ -314,34 +314,87 @@ export class AiAgentOrchestratorService {
     return text.trim();
   }
 
+  private watsonxIamToken: string | null = null;
+  private watsonxTokenExpiry: number = 0;
+
+  private async getWatsonxIamToken(apiKey: string): Promise<string> {
+    const now = Date.now();
+    if (this.watsonxIamToken && now < this.watsonxTokenExpiry) {
+      return this.watsonxIamToken;
+    }
+
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const tokenResponse = await fetch('https://iam.cloud.ibm.com/identity/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+          body: `grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey=${apiKey}`,
+        });
+
+        if (!tokenResponse.ok) {
+          const errText = await tokenResponse.text();
+          throw new Error(`Error en IBM IAM (${tokenResponse.status}): ${errText}`);
+        }
+
+        const tokenData: any = await tokenResponse.json();
+        this.watsonxIamToken = tokenData.access_token;
+        this.watsonxTokenExpiry = now + ((tokenData.expires_in || 3600) - 120) * 1000;
+        return this.watsonxIamToken!;
+      } catch (err: any) {
+        lastErr = err;
+        this.logger.warn(`[WatsonX IAM] Intento ${attempt} al obtener token falló: ${err.message}`);
+        if (attempt === 1) {
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
+    }
+
+    throw new Error(`No se pudo autenticar con IBM Cloud para WatsonX tras reintentos: ${lastErr?.message}`);
+  }
+
   private async callWatsonx(model: string, apiKey: string, projectId: string, region: string, prompt: string, temperature: number, maxNewTokens = 2048): Promise<string> {
-    const tokenResponse = await fetch('https://iam.cloud.ibm.com/identity/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-      body: `grant_type=urn:ibm:params:oauth:grant-type:apikey&apikey=${apiKey}`,
-    });
-    if (!tokenResponse.ok) throw new Error('No se pudo autenticar con IBM Cloud para WatsonX.');
-    const tokenData: any = await tokenResponse.json();
-    const iamToken = tokenData.access_token;
+    const iamToken = await this.getWatsonxIamToken(apiKey);
     const rawRegion = region || 'us-south';
     const baseUrl = rawRegion.startsWith('http') ? rawRegion.replace(/\/$/, '') : `https://${rawRegion}.ml.cloud.ibm.com`;
     const numericTemp = typeof temperature === 'number' ? temperature : parseFloat(String(temperature || 0.7));
     const numericMaxTokens = Number(maxNewTokens) || 2048;
-    const isGreedy = numericTemp < 0.15;
-    const parameters: Record<string, any> = { max_new_tokens: numericMaxTokens, decoding_method: isGreedy ? 'greedy' : 'sample' };
-    if (!isGreedy) parameters.temperature = numericTemp;
+    const effectiveTemp = Math.max(numericTemp, 0.1);
+    const parameters: Record<string, any> = {
+      max_new_tokens: numericMaxTokens,
+      min_new_tokens: 2,
+      decoding_method: 'sample',
+      temperature: effectiveTemp,
+    };
     let formattedInput = prompt;
     const modelLower = model.toLowerCase();
     if (modelLower.includes('mistral') && !prompt.includes('[INST]')) {
       formattedInput = `<s>[INST] ${prompt} [/INST]`;
     } else if ((modelLower.includes('llama-3') || modelLower.includes('llama3')) && !prompt.includes('<|start_header_id|>')) {
       formattedInput = `<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nResponde en formato JSON estructurado.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n${prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n`;
+    } else if (modelLower.includes('granite-3') && !prompt.includes('<|start_of_role|>')) {
+      formattedInput = `<|start_of_role|>system<|end_of_role|>\nResponde únicamente con un objeto JSON válido.<|start_of_role|>user<|end_of_role|>\n${prompt}<|start_of_role|>assistant<|end_of_role|>\n`;
     }
-    const response = await fetch(`${baseUrl}/ml/v1/text/generation?version=2023-05-29`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${iamToken}` },
-      body: JSON.stringify({ model_id: model, input: formattedInput, project_id: projectId, parameters }),
-    });
+
+    let response: any = null;
+    try {
+      response = await fetch(`${baseUrl}/ml/v1/text/generation?version=2023-05-29`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${iamToken}` },
+        body: JSON.stringify({ model_id: model, input: formattedInput, project_id: projectId, parameters }),
+      });
+    } catch (netErr: any) {
+      this.logger.warn(`[WatsonX] Error de conexión: ${netErr.message}. Reintentando con nuevo token...`);
+      this.watsonxIamToken = null;
+      this.watsonxTokenExpiry = 0;
+      const freshToken = await this.getWatsonxIamToken(apiKey);
+      response = await fetch(`${baseUrl}/ml/v1/text/generation?version=2023-05-29`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${freshToken}` },
+        body: JSON.stringify({ model_id: model, input: formattedInput, project_id: projectId, parameters }),
+      });
+    }
+
     if (!response.ok) throw new Error(`Error en API de WatsonX: status ${response.status} - ${await response.text()}`);
     const data: any = await response.json();
     const rawText = data.results?.[0]?.generated_text || '';
@@ -363,6 +416,9 @@ export class AiAgentOrchestratorService {
 
   /** Cleans LLM output so it contains exactly one balanced JSON object. */
   cleanJsonOutput(text: string): string {
+    if (!text || text.trim().length === 0) {
+      return '{}';
+    }
     let clean = text.trim();
     const firstBrace = clean.indexOf('{');
     if (firstBrace !== -1) { clean = clean.substring(firstBrace); } else { clean = `{"thought": "${clean.replace(/^"+/, '')}`; }
@@ -722,14 +778,13 @@ Genera el JSON de salida:
             return { toolCallResult: { status: 'ERROR', message: 'Esquema de datos inválido en los argumentos de la herramienta.', details: validationResult.error.format() } };
           }
           if (toolName === 'consult_product_catalog') {
-            const parsedData = validationResult.data;
-            const ragResults = await this.toolsHandler.ragService.searchSimilar(parsedData.query, 2, parsedData.productKey);
-            const detectedKeys = [...new Set(ragResults.map(r => r.metadata?.product).filter(Boolean))];
-            const cubeResults: any[] = [];
-            if (detectedKeys.length > 0) { for (const key of detectedKeys) cubeResults.push(...await this.toolsHandler.queryCubeProductsByKey(key)); }
-            else { cubeResults.push(...await this.toolsHandler.queryCubeProducts(parsedData.query)); }
-            const truncatedResults = ragResults.map(r => ({ content: r.pageContent && r.pageContent.length > 1000 ? r.pageContent.substring(0, 1000) + '... (texto truncado)' : r.pageContent, metadata: r.metadata }));
-            return { toolCallResult: { status: 'SUCCESS', data: [...cubeResults, ...truncatedResults] } };
+            const executionResult = await this.toolsHandler.executeTool(toolName, validationResult.data, conversation, config);
+            const catalogData = executionResult.catalogProducts || executionResult.data || [];
+            const ragData = (executionResult.ragDocs || []).map((r: any) => ({
+              content: r.pageContent && r.pageContent.length > 1000 ? r.pageContent.substring(0, 1000) + '... (texto truncado)' : (r.pageContent || r.content || ''),
+              metadata: r.metadata,
+            }));
+            return { toolCallResult: { status: 'SUCCESS', data: [...catalogData, ...ragData] } };
           }
           const executionResult = await this.toolsHandler.executeTool(toolName, validationResult.data, conversation, config);
           let nextState: Partial<AgentState> = { toolCallResult: executionResult };

@@ -56,8 +56,25 @@ export class AiAgentToolsHandlerService {
         case 'consultProductCatalog': {
           const queryText = input.query || input.search || input.productName || '';
           this.logger.log(`[executeTool] Ejecutando búsqueda RAG y catálogo de productos para: '${queryText}'`);
-          const ragResults = await this.ragService.searchSimilar(queryText, 3);
-          const cubeResults = await this.queryCubeProducts(queryText);
+          const ragResults = await this.ragService.searchSimilar(queryText, 3).catch(() => []);
+          let cubeResults = await this.queryCubeProducts(queryText).catch(() => []);
+
+          // Fallback directo a base de datos PostgreSQL si Cube.dev o RAG están vacíos
+          if (!cubeResults || cubeResults.length === 0) {
+            let dbProducts = await this.findProductsByKeywords(queryText);
+            if (dbProducts.length === 0) {
+              const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
+              dbProducts = await productRepo.find({ where: { status: true }, take: 15 });
+            }
+            if (dbProducts.length > 0) {
+              cubeResults = dbProducts.map(p => ({
+                content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p.observaciones?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
+                metadata: { source: 'database-fallback', productId: p.id, productName: p.nombre, precioBase: p.precioBase },
+              }));
+              this.logger.log(`[consult_product_catalog] Recuperados ${dbProducts.length} productos desde fallback de BD.`);
+            }
+          }
+
           return { status: 'SUCCESS', query: queryText, ragDocs: ragResults, catalogProducts: cubeResults };
         }
 
@@ -481,7 +498,17 @@ export class AiAgentToolsHandlerService {
     const cubeApiUrl = process.env.CUBE_API_URL || 'http://localhost:4000';
     try {
       const cleanKeyword = queryText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9\s]/g, '').trim();
-      const stopwords = new Set(['dame', 'quiero', 'informacion', 'del', 'producto', 'productos', 'sobre', 'que', 'empiezan', 'con', 'modelo', 'especificaciones', 'detalles', 'buscar', 'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'para', 'en', 'y', 'o', 'a', 'caracteristicas', 'tienes', 'tienen', 'disponible', 'disponibles', 'catalogo', 'precios', 'precio', 'costo', 'cotizacion', 'comprar', 'venta', 'adquirir', 'fichas', 'ficha', 'manual', 'manuales', 'disponibilidad', 'ver', 'mostrar', 'listar', 'lista', 'cuales', 'servicios', 'servicio', 'articulos', 'articulo', 'dispositivos', 'dispositivo', 'cosas']);
+      const stopwords = new Set([
+        'hola', 'holaa', 'buenos', 'buenas', 'dias', 'días', 'tardes', 'noches', 'saludos', 'hey', 'hi', 'hello',
+        'porfa', 'favor', 'gracias', 'porfavor', 'que', 'qué', 'tal', 'como', 'cómo', 'estas', 'estás',
+        'dame', 'quiero', 'informacion', 'información', 'del', 'producto', 'productos', 'sobre', 'empiezan', 'con',
+        'modelo', 'especificaciones', 'detalles', 'buscar', 'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas',
+        'de', 'para', 'en', 'y', 'o', 'a', 'caracteristicas', 'características', 'tienes', 'tienen', 'disponible',
+        'disponibles', 'catalogo', 'catálogo', 'precios', 'precio', 'costo', 'cotizacion', 'cotización', 'comprar',
+        'venta', 'adquirir', 'fichas', 'ficha', 'manual', 'manuales', 'disponibilidad', 'ver', 'mostrar', 'listar',
+        'lista', 'cuales', 'cuáles', 'servicios', 'servicio', 'articulos', 'artículos', 'articulo', 'artículo',
+        'dispositivos', 'dispositivo', 'cosas'
+      ]);
       const words = cleanKeyword.split(/\s+/).filter(w => w.length >= 2 && !stopwords.has(w));
       const hasSearchTerm = words.length > 0;
       const topTerms = hasSearchTerm ? words.sort((a, b) => b.length - a.length).slice(0, 3) : [];
@@ -497,7 +524,7 @@ export class AiAgentToolsHandlerService {
       const response = await fetch(`${cubeApiUrl}/cubejs-api/v1/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: token, 'x-tenant-schema': tenantSchema, 'x-tenant-id': tenantSchema },
-        body: JSON.stringify({ query: { measures: ['Productos.count'], dimensions: ['Productos.id', 'Productos.nombre', 'Productos.descripcion', 'Productos.precioBase', 'Productos.unidadMedida', 'Productos.observaciones', 'Productos.status'], filters }, securityContext: { tenantSchema } }),
+        body: JSON.stringify({ query: { measures: ['Productos.count'], dimensions: ['Productos.nombre', 'Productos.descripcion', 'Productos.precioBase', 'Productos.unidadMedida', 'Productos.observaciones', 'Productos.status'], filters }, securityContext: { tenantSchema } }),
       });
 
       if (!response.ok) {

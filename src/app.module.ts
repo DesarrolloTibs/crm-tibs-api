@@ -271,6 +271,15 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             ALTER TABLE "${schema}".activities ADD COLUMN IF NOT EXISTS "externalLastSyncedAt" timestamptz NULL;
           `);
 
+          // Alter stages and ticket_stages tables for semantic stage_type classification
+          await queryRunner.query(`
+            ALTER TABLE "${schema}".tblstagescatalog ADD COLUMN IF NOT EXISTS "stage_type" integer NOT NULL DEFAULT 0;
+            ALTER TABLE "${schema}".ticket_stages ADD COLUMN IF NOT EXISTS "stage_type" integer NOT NULL DEFAULT 0;
+            UPDATE "${schema}".tblstagescatalog SET "stage_type" = 1 WHERE "stage_type" = 0 AND (LOWER("strname") LIKE '%exito%' OR LOWER("strname") LIKE '%éxito%' OR LOWER("strname") LIKE '%ganad%' OR LOWER("strname") LIKE '%won%');
+            UPDATE "${schema}".tblstagescatalog SET "stage_type" = 2 WHERE "stage_type" = 0 AND (LOWER("strname") LIKE '%perdid%' OR LOWER("strname") LIKE '%cancelad%' OR LOWER("strname") LIKE '%lost%');
+            UPDATE "${schema}".ticket_stages SET "stage_type" = 1 WHERE "stage_type" = 0 AND (LOWER("strname") LIKE '%resuelto%' OR LOWER("strname") LIKE '%cerrad%' OR LOWER("strname") LIKE '%finaliz%');
+          `).catch(() => null);
+
           // Create user_calendar_integrations table if not exists
           await queryRunner.query(`
             CREATE TABLE IF NOT EXISTS "${schema}".user_calendar_integrations (
@@ -309,8 +318,10 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           `);
         }
 
-        // Also ensure public schema table has email and all columns
+        // Also ensure public schema tables have stage_type and calendar columns
         await queryRunner.query(`
+          ALTER TABLE public.tblstagescatalog ADD COLUMN IF NOT EXISTS "stage_type" integer NOT NULL DEFAULT 0;
+          ALTER TABLE public.ticket_stages ADD COLUMN IF NOT EXISTS "stage_type" integer NOT NULL DEFAULT 0;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "email" varchar(255) NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "accessToken" text NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "refreshToken" text NULL;

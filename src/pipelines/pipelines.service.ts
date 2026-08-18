@@ -15,6 +15,9 @@ export class PipelinesService {
   ) {}
 
   async getMainPipeline(): Promise<Pipeline> {
+    // Asegurar que la columna exista en el schema del tenant activo
+    await this.dataSource.query('ALTER TABLE tblstagescatalog ADD COLUMN IF NOT EXISTS "stage_type" integer NOT NULL DEFAULT 0;').catch(() => null);
+
     let pipeline = await this.pipelineRepository.findOne({
       where: {},
       order: { dtmcreated: 'ASC' },
@@ -33,12 +36,12 @@ export class PipelinesService {
         const savedPipeline = await manager.save(Pipeline, newPipeline);
 
         const defaultStages = [
-          { strname: 'Prospecto', display_order: 1, blninitial: true, strcolor: '#3498db', bln_show_dashboard: true },
-          { strname: 'Calificado', display_order: 2, blninitial: false, strcolor: '#f1c40f', bln_show_dashboard: true },
-          { strname: 'Propuesta', display_order: 3, blninitial: false, strcolor: '#9b59b6', bln_show_dashboard: true },
-          { strname: 'Negociación', display_order: 4, blninitial: false, strcolor: '#e67e22', bln_show_dashboard: true },
-          { strname: 'Cierre Exitoso', display_order: 5, blninitial: false, strcolor: '#2ecc71', bln_show_dashboard: true },
-          { strname: 'Cierre Perdido', display_order: 6, blninitial: false, strcolor: '#e74c3c', bln_show_dashboard: false }
+          { strname: 'Prospecto', display_order: 1, blninitial: true, strcolor: '#3498db', bln_show_dashboard: true, stage_type: 0 },
+          { strname: 'Calificado', display_order: 2, blninitial: false, strcolor: '#f1c40f', bln_show_dashboard: true, stage_type: 0 },
+          { strname: 'Propuesta', display_order: 3, blninitial: false, strcolor: '#9b59b6', bln_show_dashboard: true, stage_type: 0 },
+          { strname: 'Negociación', display_order: 4, blninitial: false, strcolor: '#e67e22', bln_show_dashboard: true, stage_type: 0 },
+          { strname: 'Cierre Exitoso', display_order: 5, blninitial: false, strcolor: '#2ecc71', bln_show_dashboard: true, stage_type: 1 },
+          { strname: 'Cierre Perdido', display_order: 6, blninitial: false, strcolor: '#e74c3c', bln_show_dashboard: false, stage_type: 2 }
         ];
 
         for (const ds of defaultStages) {
@@ -50,6 +53,7 @@ export class PipelinesService {
           stage.blnstatus = true;
           stage.strcolor = ds.strcolor;
           stage.bln_show_dashboard = ds.bln_show_dashboard;
+          stage.stage_type = ds.stage_type;
           stage.dtmcreated = new Date();
           stage.dtmlastmodified = new Date();
           await manager.save(Stage, stage);
@@ -66,6 +70,33 @@ export class PipelinesService {
 
     if (!pipeline) {
       throw new NotFoundException('El Pipeline Principal no existe.');
+    }
+
+    // Auto-backfill inteligente para stages existentes sin stage_type definido
+    for (const st of pipeline.stages) {
+      const nameLower = (st.strname || '').toLowerCase();
+      if (st.stage_type === undefined || st.stage_type === null || st.stage_type === 0) {
+        if (
+          nameLower.includes('éxito') ||
+          nameLower.includes('exito') ||
+          nameLower.includes('exitoso') ||
+          nameLower.includes('ganad') ||
+          nameLower.includes('cerrada ganada') ||
+          nameLower.includes('won')
+        ) {
+          st.stage_type = 1;
+          await this.stageRepository.update(st.id, { stage_type: 1 });
+        } else if (
+          nameLower.includes('perdid') ||
+          nameLower.includes('cancelad') ||
+          nameLower.includes('descartad') ||
+          nameLower.includes('cerrada perdida') ||
+          nameLower.includes('lost')
+        ) {
+          st.stage_type = 2;
+          await this.stageRepository.update(st.id, { stage_type: 2 });
+        }
+      }
     }
 
     // Sort stages by display_order
@@ -92,6 +123,7 @@ export class PipelinesService {
         blninitial: boolean;
         intmaxdays?: number | null;
         bln_show_dashboard?: boolean;
+        stage_type?: number;
       }>;
     }
   ): Promise<Pipeline> {
@@ -133,6 +165,16 @@ export class PipelinesService {
         throw new BadRequestException('No se permiten nombres duplicados de etapas dentro del mismo pipeline.');
       }
 
+      // Validation D: Máximo 1 etapa Ganada (1) y máximo 1 etapa Perdida (2) por pipeline
+      const wonStages = activeStages.filter(s => s.stage_type === 1);
+      if (wonStages.length > 1) {
+        throw new BadRequestException('Solo puede existir un máximo de una etapa Ganada (stage_type: 1) por pipeline.');
+      }
+      const lostStages = activeStages.filter(s => s.stage_type === 2);
+      if (lostStages.length > 1) {
+        throw new BadRequestException('Solo puede existir un máximo de una etapa Perdida (stage_type: 2) por pipeline.');
+      }
+
       // Perform updates inside a transaction
       await this.dataSource.transaction(async (manager) => {
         // Save pipeline details
@@ -164,6 +206,9 @@ export class PipelinesService {
           }
           if (stageInput.bln_show_dashboard !== undefined) {
             stage.bln_show_dashboard = stageInput.bln_show_dashboard;
+          }
+          if (stageInput.stage_type !== undefined) {
+            stage.stage_type = stageInput.stage_type;
           }
           stage.dtmlastmodified = new Date();
 

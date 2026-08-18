@@ -8,19 +8,19 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, FindManyOptions } from 'typeorm';
-import { User } from 'src/users/entities/user.entity';
+import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
-import { UsersService } from 'src/users/users.service';
+import { UsersService } from '../users/users.service';
 import { Activity } from './entities/activity.entity';
 import { CreateActivityDto } from './dto/create-activity.dto';
 import { TypeActivity } from './entities/type-activity.entity';
-import { InteractionsService } from 'src/interactions/interactions.service';
+import { InteractionsService } from '../interactions/interactions.service';
 import { UpdateActivityDto } from './dto/update-activity.dto';
 import { CreateTypeActivityDto } from './dto/create-type-activity.dto';
 import { UpdateTypeActivityDto } from './dto/update-type-activity.dto';
-import { Client } from 'src/clients/entities/client.entity';
-import { RemindersService } from 'src/reminders/reminders.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
+import { Client } from '../clients/entities/client.entity';
+import { RemindersService } from '../reminders/reminders.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 

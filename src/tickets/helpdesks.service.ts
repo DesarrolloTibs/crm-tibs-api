@@ -41,10 +41,10 @@ export class HelpdesksService {
         const savedHelpdesk = await manager.save(Helpdesk, newHelpdesk);
 
         const defaultStages = [
-          { strname: 'Nuevo', display_order: 1, blninitial: true, strcolor: '#e74c3c', bln_show_dashboard: true },
-          { strname: 'En Proceso', display_order: 2, blninitial: false, strcolor: '#f1c40f', bln_show_dashboard: true },
-          { strname: 'En Espera', display_order: 3, blninitial: false, strcolor: '#3498db', bln_show_dashboard: true },
-          { strname: 'Resuelto', display_order: 4, blninitial: false, strcolor: '#2ecc71', bln_show_dashboard: true }
+          { strname: 'Nuevo', display_order: 1, blninitial: true, strcolor: '#e74c3c', bln_show_dashboard: true, stage_type: 0 },
+          { strname: 'En Proceso', display_order: 2, blninitial: false, strcolor: '#f1c40f', bln_show_dashboard: true, stage_type: 0 },
+          { strname: 'En Espera', display_order: 3, blninitial: false, strcolor: '#3498db', bln_show_dashboard: true, stage_type: 0 },
+          { strname: 'Resuelto', display_order: 4, blninitial: false, strcolor: '#2ecc71', bln_show_dashboard: true, stage_type: 1 }
         ];
 
         for (const ds of defaultStages) {
@@ -56,6 +56,7 @@ export class HelpdesksService {
           stage.blnstatus = true;
           stage.strcolor = ds.strcolor;
           stage.bln_show_dashboard = ds.bln_show_dashboard;
+          stage.stage_type = ds.stage_type;
           stage.dtmcreated = new Date();
           stage.dtmlastmodified = new Date();
           await manager.save(TicketStage, stage);
@@ -73,10 +74,22 @@ export class HelpdesksService {
       throw new NotFoundException('La Mesa de Ayuda Principal no existe en la base de datos.');
     }
 
+    // Asegurar que la columna exista en el schema del tenant activo
+    await this.dataSource.query('ALTER TABLE ticket_stages ADD COLUMN IF NOT EXISTS "stage_type" integer NOT NULL DEFAULT 0;').catch(() => null);
+
     const stages = await this.stageRepository.find({
       where: { helpdesk_id: helpdesk.id },
       order: { display_order: 'ASC' },
     });
+
+    // Auto-backfill inteligente para stages existentes sin stage_type definido
+    for (const st of stages) {
+      const nameLower = (st.strname || '').toLowerCase();
+      if ((st.stage_type === undefined || st.stage_type === null || st.stage_type === 0) && (nameLower.includes('resuelto') || nameLower.includes('cerrad'))) {
+        st.stage_type = 1;
+        await this.stageRepository.update(st.id, { stage_type: 1 });
+      }
+    }
 
     return {
       ...helpdesk,
@@ -102,6 +115,7 @@ export class HelpdesksService {
         blninitial: boolean;
         intmaxdays?: number | null;
         bln_show_dashboard?: boolean;
+        stage_type?: number;
       }>;
     }
   ): Promise<Helpdesk & { stages: TicketStage[] }> {
@@ -143,6 +157,12 @@ export class HelpdesksService {
       // D. Nombres no vacíos
       if (stagesInput.some(s => !s.strname.trim())) {
         throw new BadRequestException('El nombre de todas las etapas debe estar completo.');
+      }
+
+      // E. Máximo 1 etapa Cerrada/Resuelta (1) por mesa de ayuda
+      const closedStages = activeStages.filter(s => s.stage_type === 1);
+      if (closedStages.length > 1) {
+        throw new BadRequestException('Solo puede existir un máximo de una etapa Cerrada/Resuelta (stage_type: 1) por mesa de ayuda.');
       }
 
       // Transacción
@@ -202,6 +222,9 @@ export class HelpdesksService {
           }
           if (stageInput.bln_show_dashboard !== undefined) {
             stage.bln_show_dashboard = stageInput.bln_show_dashboard;
+          }
+          if (stageInput.stage_type !== undefined) {
+            stage.stage_type = stageInput.stage_type;
           }
           stage.dtmlastmodified = new Date();
 

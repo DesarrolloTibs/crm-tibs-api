@@ -56,7 +56,7 @@ export const CreateTicketSchema = z.object({
 });
 
 export const ConsultProductCatalogSchema = z.object({
-  query: z.string().min(2, 'Ingresa una consulta para el catálogo de productos.'),
+  query: z.string().optional().default('todos los productos'),
   productKey: z.string().nullable().optional().describe('Filtro por identificador del producto.'),
 });
 
