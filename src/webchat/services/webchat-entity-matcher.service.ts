@@ -77,6 +77,24 @@ export class WebchatEntityMatcherService {
       limit: 5,
     });
 
+    // 1.1 Empresas (Cuentas corporativas)
+    queries.push({
+      dimensions: [
+        'Empresas.nombre',
+        'Empresas.correo',
+        'Empresas.telefono',
+        'Empresas.estatus',
+      ],
+      filters: [
+        {
+          member: 'Empresas.nombre',
+          operator: 'contains',
+          values: [cleanSearch],
+        },
+      ],
+      limit: 5,
+    });
+
     // 2. Productos (Catálogo)
     queries.push({
       dimensions: [

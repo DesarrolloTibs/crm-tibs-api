@@ -68,51 +68,58 @@ Clasifica la consulta en uno de los siguientes intents:
 
 1. **Oportunidades** (tabla: opportunities)
    - Measures: count, montoTotalSum, montoLicenciamientoSum, montoServiciosSum
-   - Dimensions: id, nombreProyecto, descripcion, clienteId, ejecutivoId, pipelineId, stageId, montoTotal, moneda, archived, estimatedClosureDate, createdAt, priority
-   - Joins: Clientes (via clienteId), Usuarios (via ejecutivoId), Etapas (via stageId)
+   - Dimensions: id, nombreProyecto, descripcion, clienteId, companyId, cuentaOCliente, ejecutivoId, pipelineId, stageId, montoTotal, moneda, archived, estimatedClosureDate, createdAt, priority
+   - Joins: Clientes (via clienteId), Empresas (via companyId), Usuarios (via ejecutivoId), Etapas (via stageId)
 
 2. **Etapas** (tabla: tblstagescatalog — Nombres y tipos semánticos de etapas de Oportunidades)
    - Measures: count
    - Dimensions: id, nombre, pipelineId, stageType (tipo numérico: 0=Abierta/En Proceso/Pipeline, 1=Ganada/Venta Concretada/Cierre Exitoso, 2=Perdida/Cancelada)
 
-3. **Actividades** (tabla: activities)
+3. **Empresas** (tabla: companies — Cuentas corporativas o Empresas vinculadas a oportunidades)
+   - Measures: count
+   - Dimensions: id, nombre, correo, telefono, website, direccion, estatus
+   - Joins: Clientes (via id de empresa)
+
+4. **Clientes** (tabla: clients — Contactos individuales o personas)
+   - Measures: count
+   - Dimensions: nombre, apellido, correo, telefono, category, estatus (Nota: NO incluyas Clientes.id en dimensions)
+   - Joins: Empresas (via companyId)
+
+5. **Actividades** (tabla: activities)
    - Measures: count
    - Dimensions: id, actividad, fecha, typeActivityId, opportunityId, clientId, userId
    - Joins: Clientes (via clientId), Oportunidades (via opportunityId), Usuarios (via userId), TiposActividad (via typeActivityId)
 
-4. **Clientes** (tabla: clients)
-   - Measures: count
-   - Dimensions: nombre, apellido, correo, telefono, category, estatus (Nota: NO incluyas Clientes.id en dimensions)
-
-5. **Productos** (tabla: products)
+6. **Productos** (tabla: products)
    - Measures: count, precioBaseMax, precioBaseMin
    - Dimensions: id, nombre, descripcion, precioBase, unidadMedida, observaciones, status
 
-6. **Gastos** (tabla: expenses)
+7. **Gastos** (tabla: expenses)
    - Measures: count, montoSum
    - Dimensions: id, concepto, monto, fecha, usuarioId, clientId, opportunityId, receiptUrl, createdAt
    - Joins: Clientes (via clientId), Oportunidades (via opportunityId), Usuarios (via usuarioId)
 
-7. **Tickets** (tabla: tickets — Mesa de Ayuda)
+8. **Tickets** (tabla: tickets — Mesa de Ayuda)
    - Measures: count
    - Dimensions: id, ticketNumber (representa el folio del ticket, ej: folio 1, ticket 1, folio 00001), titulo, tipoIncidencia, description, priority, fechaApertura, fechaCierre, notasResolucion, alertSent, archived, clienteId, responsableId, helpdeskId, stageId, stageEnteredAt, contactName, contactEmail
    - Joins: Clientes (via clienteId), Usuarios (via responsableId), EtapasTicket (via stageId)
    - Priority: 1=Bajo, 2=Medio, 3=Alto
 
-8. **EtapasTicket** (tabla: ticket_stages — Nombres y tipos semánticos de etapas de Tickets/Mesa de Ayuda)
+9. **EtapasTicket** (tabla: ticket_stages — Nombres y tipos semánticos de etapas de Tickets/Mesa de Ayuda)
    - Measures: count
    - Dimensions: id, nombre, stageType (tipo numérico: 0=Abierto/En Proceso/Pendiente, 1=Cerrado/Resuelto/Solucionado)
 
-9. **Usuarios** (tabla: users) ${roleLower === 'executive' || roleLower === 'ejecutivo' ? '— ⛔ ACCESO RESTRINGIDO para tu rol' : ''}
-   - Measures: count
-   - Dimensions: id, username, correo, role, status
+10. **Usuarios** (tabla: users) ${roleLower === 'executive' || roleLower === 'ejecutivo' ? '— ⛔ ACCESO RESTRINGIDO para tu rol' : ''}
+    - Measures: count
+    - Dimensions: id, username, correo, role, status
 
-10. **TiposActividad** (tabla: tbltypeactivities — Catálogo de tipos de actividad)
+11. **TiposActividad** (tabla: tbltypeactivities — Catálogo de tipos de actividad)
     - Measures: count
     - Dimensions: id, nombre, status
 
 [INSTRUCCIÓN CRÍTICA DE DIMENSIONS]
-NO incluyas identificadores primary key (como Clientes.id, Usuarios.id, Productos.id, Oportunidades.id, Tickets.id) en el arreglo "dimensions" de cubeQuery, ya que son campos técnicos primarios. Utiliza campos legibles como nombre, correo, username, etc.
+NO incluyas identificadores primary key (como Clientes.id, Empresas.id, Usuarios.id, Productos.id, Oportunidades.id, Tickets.id) en el arreglo "dimensions" de cubeQuery, ya que son campos técnicos primarios. Utiliza campos legibles como nombre, correo, username, etc.
+Para oportunidades, incluye siempre "Oportunidades.cuentaOCliente" (o "Empresas.nombre", "Clientes.nombre") para mostrar la cuenta o contacto correspondiente.
 
 [INSTRUCCIÓN CRÍTICA DE FECHAS Y PERIODOS TEMPORALES]
 Para consultas con rangos de tiempo (ej: "este año", "este mes", "en 2026", "hoy", "últimos 30 días"):
@@ -127,14 +134,14 @@ Para consultas con rangos de tiempo (ej: "este año", "este mes", "en 2026", "ho
 1. **Ventas Concretadas / Ganadas** (Preguntas: "cuánto he vendido", "cuánto vendí", "cuánto tengo en ventas", "mis ventas", "ventas totales", "cuánto he vendido en oportunidades", "ingresos generados", "dinero ganado", "oportunidades ganadas", "top clientes por ventas", "ventas cerradas"):
    - Entidad: Oportunidades
    - Measures: ["Oportunidades.montoTotalSum"]
-   - Dimensions sugeridas para detalle: ["Oportunidades.nombreProyecto", "Clientes.nombre", "Oportunidades.montoTotal"]
+   - Dimensions sugeridas para detalle: ["Oportunidades.nombreProyecto", "Oportunidades.cuentaOCliente", "Oportunidades.montoTotal"]
    - Filtro OBLIGATORIO: { "member": "Etapas.stageType", "operator": "equals", "values": ["1"] }
-   - Para top clientes: dimensions: ["Clientes.nombre", "Clientes.apellido"], order: { "Oportunidades.montoTotalSum": "desc" }, limit: 5
+   - Para top clientes/empresas: dimensions: ["Oportunidades.cuentaOCliente"], order: { "Oportunidades.montoTotalSum": "desc" }, limit: 5
 
 2. **Oportunidades Abiertas / Pipeline / En Proceso** (Preguntas: "cuánto tengo en pipeline", "cuánto he cotizado", "oportunidades abiertas", "dinero en juego", "cotizaciones activas", "oportunidades en curso", "cuánto tengo en oportunidades"):
    - Entidad: Oportunidades
    - Measures: ["Oportunidades.montoTotalSum"]
-   - Dimensions sugeridas: ["Oportunidades.nombreProyecto", "Clientes.nombre", "Oportunidades.montoTotal", "Etapas.nombre"]
+   - Dimensions sugeridas: ["Oportunidades.nombreProyecto", "Oportunidades.cuentaOCliente", "Oportunidades.montoTotal", "Etapas.nombre"]
    - Filtro OBLIGATORIO: { "member": "Etapas.stageType", "operator": "equals", "values": ["0"] }
 
 3. **Oportunidades Perdidas** (Preguntas: "cuánto perdí", "oportunidades perdidas", "ventas canceladas", "dinero perdido"):

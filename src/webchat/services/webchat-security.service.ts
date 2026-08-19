@@ -11,6 +11,7 @@ export const ENTITY_SECURITY_MAP: Record<string, string | null> = {
   Gastos: 'Gastos.usuarioId',
   Tickets: 'Tickets.responsableId',
   Clientes: null,       // Global dentro de la organización
+  Empresas: null,       // Cuentas / Empresas globales dentro de la organización
   Productos: null,      // Catálogo global
   Usuarios: 'BLOCKED',  // Solo admins y superadmins
 };
