@@ -5,6 +5,7 @@ import { AiAgentService } from '../../conversations/ai-agent.service';
 import { Stage } from '../../stages/entities/stage.entity';
 import { TicketStage } from '../../tickets/entities/ticket-stage.entity';
 import {
+  CubeAnnotation,
   CubeQuery,
   CubeQueryPlan,
   DashboardRedirect,
@@ -22,6 +23,91 @@ export class WebchatResponseFormatterService {
     @InjectRepository(TicketStage)
     private readonly ticketStageRepository: Repository<TicketStage>,
   ) {}
+
+  /**
+   * Determina si un campo representa un valor monetario (moneda MXN)
+   * consultando primero las anotaciones de metadatos de Cube.dev (format: 'currency')
+   * o recurriendo a heurísticas basadas en nombres de campos y medidas.
+   */
+  isCurrencyField(key: string, annotation?: CubeAnnotation): boolean {
+    if (!key) return false;
+
+    // 1. Verificación directa en anotaciones de Cube.dev
+    if (annotation) {
+      if (annotation.measures && annotation.measures[key]?.format === 'currency') {
+        return true;
+      }
+      if (annotation.dimensions && annotation.dimensions[key]?.format === 'currency') {
+        return true;
+      }
+      const cleanKey = key.split('.').pop() || key;
+      if (annotation.measures && annotation.measures[cleanKey]?.format === 'currency') {
+        return true;
+      }
+      if (annotation.dimensions && annotation.dimensions[cleanKey]?.format === 'currency') {
+        return true;
+      }
+    }
+
+    const lower = key.toLowerCase();
+    const colName = lower.split('.').pop() || lower;
+
+    // Descartar campos que contienen identificadores técnicos o métricas no monetarias
+    if (
+      colName === 'id' ||
+      colName.endsWith('id') ||
+      colName.includes('count') ||
+      colName.includes('numero') ||
+      colName.includes('cantidad') ||
+      colName.includes('folio') ||
+      colName.includes('date') ||
+      colName.includes('fecha') ||
+      colName.includes('status') ||
+      colName.includes('estatus') ||
+      colName.includes('type') ||
+      colName.includes('priority') ||
+      colName.includes('ticketnumber')
+    ) {
+      return false;
+    }
+
+    // Patrones monetarios estándar del CRM
+    return (
+      colName.includes('monto') ||
+      colName.includes('precio') ||
+      colName.includes('preciobase') ||
+      colName.includes('licenciamiento') ||
+      colName.includes('servicios') ||
+      colName.includes('costo') ||
+      colName.includes('ingreso') ||
+      colName.includes('gasto') ||
+      lower.includes('monto') ||
+      lower.includes('precio') ||
+      lower.includes('licenciamiento') ||
+      lower.includes('servicios') ||
+      lower.includes('costo') ||
+      lower.includes('ingreso') ||
+      lower.includes('gasto')
+    );
+  }
+
+  /**
+   * Formatea un valor numérico como moneda estándar (MXN o USD).
+   * Ejemplo: (125000, 'MXN') -> "$125,000.00 MXN", (100, 'USD') -> "$100.00 USD"
+   */
+  formatCurrency(val: any, currency: string = 'MXN'): string {
+    const curr = currency?.toUpperCase() === 'USD' ? 'USD' : 'MXN';
+    if (val === null || val === undefined || val === '') return `$0.00 ${curr}`;
+    const num = typeof val === 'number' ? val : parseFloat(String(val).replace(/[^0-9.-]/g, ''));
+    if (isNaN(num)) return `$0.00 ${curr}`;
+
+    const formattedNumber = new Intl.NumberFormat('es-MX', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(num);
+
+    return `$${formattedNumber} ${curr}`;
+  }
 
   /**
    * Sanitiza y embellece los datos que se enviarán a la tabla visual del frontend,
@@ -73,6 +159,7 @@ export class WebchatResponseFormatterService {
     originalQuestion: string,
     cubeData: any[],
     queryPlan: CubeQueryPlan,
+    annotation?: CubeAnnotation,
   ): Promise<string> {
     if (!cubeData || cubeData.length === 0) {
       return 'No se encontraron resultados para tu consulta. ¿Quieres intentar con otros filtros?';
@@ -80,7 +167,7 @@ export class WebchatResponseFormatterService {
 
     // Si hay exactamente 1 resultado y un template con variables interpoladas, usamos formato directo
     if (cubeData.length === 1 && queryPlan.responseTemplate && queryPlan.responseTemplate.includes('{')) {
-      return this.simpleFormat(cubeData, queryPlan.responseTemplate);
+      return this.simpleFormat(cubeData, queryPlan.responseTemplate, annotation);
     }
 
     const truncatedData = cubeData.slice(0, 20);
@@ -95,6 +182,7 @@ ${JSON.stringify(truncatedData, null, 2)}
 - Responde ÚNICAMENTE con 1 o 2 oraciones en texto plano en español dirigidas al usuario.
 - PROHIBIDO generar código de programación (NO generes JavaScript, Python, funciones ni scripts).
 - PROHIBIDO usar bloques de código con comillas invertidas.
+- Expresa los montos monetarios indicando su moneda (ej: "$300.00 MXN", "$100.00 USD").
 - Ejemplo de respuesta esperada: "Se encontraron 2 clientes en el top de ventas con un monto acumulado de $300.00 MXN."`;
 
     try {
@@ -104,7 +192,7 @@ ${JSON.stringify(truncatedData, null, 2)}
       // Si el LLM generó código o bloques de script, descartar el código y usar el generador inteligente
       if (clean.includes('```') || clean.includes('function ') || clean.includes('const ') || clean.includes('console.log')) {
         this.logger.warn(`[ResponseFormatter] El LLM generó código en lugar de texto plano. Aplicando generador inteligente.`);
-        return this.generateSmartSummary(cubeData, originalQuestion, queryPlan);
+        return this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
       }
 
       // Si el LLM copió prefijos como "Respuesta:" o "Resumen:", extraer la respuesta real
@@ -118,32 +206,44 @@ ${JSON.stringify(truncatedData, null, 2)}
         .replace(/^\[(REGLAS|INSTRUCCIONES|REGLAS ADICIONALES)[^\]]*\][\s\S]*?(?=\n\n|\n[A-Z]|$)/i, '')
         .trim();
 
-      return clean || this.generateSmartSummary(cubeData, originalQuestion, queryPlan);
+      return clean || this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
     } catch (err) {
-      return this.generateSmartSummary(cubeData, originalQuestion, queryPlan);
+      return this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
     }
   }
 
   /**
    * Genera un resumen inteligente y natural directamente a partir de los datos numéricos y entidades.
    */
-  private generateSmartSummary(cubeData: any[], originalQuestion: string, queryPlan: CubeQueryPlan): string {
+  generateSmartSummary(
+    cubeData: any[],
+    originalQuestion: string,
+    queryPlan: CubeQueryPlan,
+    annotation?: CubeAnnotation,
+  ): string {
     if (!cubeData || cubeData.length === 0) return 'No se encontraron resultados.';
 
     if (cubeData.length === 1 && queryPlan.responseTemplate) {
-      return this.simpleFormat(cubeData, queryPlan.responseTemplate);
+      return this.simpleFormat(cubeData, queryPlan.responseTemplate, annotation);
     }
 
     let totalMonto = 0;
     let hasMonto = false;
+    let detectedCurrency = 'MXN';
 
     for (const row of cubeData) {
+      const rowCurrency = row['Oportunidades.moneda'] || row['moneda'] || 'MXN';
       for (const [key, val] of Object.entries(row)) {
-        if (key.toLowerCase().includes('monto') || key.toLowerCase().includes('sum') || key.toLowerCase().includes('precio')) {
+        if (this.isCurrencyField(key, annotation)) {
           const num = typeof val === 'number' ? val : parseFloat(String(val || 0));
           if (!isNaN(num)) {
             totalMonto += num;
             hasMonto = true;
+            if (key.toLowerCase().includes('mxn')) {
+              detectedCurrency = 'MXN';
+            } else if (rowCurrency && rowCurrency.toUpperCase() === 'USD' && cubeData.length === 1) {
+              detectedCurrency = 'USD';
+            }
           }
         }
       }
@@ -154,7 +254,7 @@ ${JSON.stringify(truncatedData, null, 2)}
     const entityLabel = count === 1 ? 'registro' : 'registros';
 
     if (hasMonto && totalMonto > 0) {
-      const formattedMonto = `$${totalMonto.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN`;
+      const formattedMonto = this.formatCurrency(totalMonto, detectedCurrency);
       if (isTopQuery) {
         return `Se encontraron los ${count} clientes principales con un monto acumulado de ${formattedMonto}.`;
       }
@@ -169,7 +269,7 @@ ${JSON.stringify(truncatedData, null, 2)}
    */
   formatMultiEntitySummary(searchTerm: string, matches: EntityMatchItem[]): string {
     if (!matches || matches.length === 0) {
-      return `No se encontraron coincidencias para "${searchTerm}" en clientes, usuarios, productos ni oportunidades.`;
+      return `No se encontraron coincidencias para "${searchTerm}" en clientes, empresas, usuarios, productos ni oportunidades.`;
     }
 
     const grouped: Record<string, EntityMatchItem[]> = {};
@@ -184,7 +284,8 @@ ${JSON.stringify(truncatedData, null, 2)}
     sections.push(`Se encontraron coincidencias para "${searchTerm}":\n`);
 
     for (const [entityType, items] of Object.entries(grouped)) {
-      sections.push(`${entityType}s (${items.length}):`);
+      const headerLabel = entityType === 'Empresa' ? 'Empresas' : `${entityType}s`;
+      sections.push(`${headerLabel} (${items.length}):`);
       for (const it of items) {
         const sub = it.subtitle ? ` — ${it.subtitle}` : '';
         sections.push(`• ${it.title}${sub}`);
@@ -241,7 +342,7 @@ ${JSON.stringify(truncatedData, null, 2)}
       const hasCommercial = allMembers.some(
         m =>
           typeof m === 'string' &&
-          (m.startsWith('Oportunidades.') || m.startsWith('Actividades.') || m.startsWith('Gastos.')),
+          (m.startsWith('Oportunidades.') || m.startsWith('Actividades.') || m.startsWith('Gastos.') || m.startsWith('Empresas.')),
       );
 
       if (hasTickets || hasCommercial) {
@@ -333,16 +434,22 @@ ${JSON.stringify(truncatedData, null, 2)}
     return resultLines.join('\n');
   }
 
-  private simpleFormat(data: any[], template?: string): string {
+  /**
+   * Formateo simple basado en plantillas e interpolación de variables.
+   */
+  simpleFormat(data: any[], template?: string, annotation?: CubeAnnotation): string {
     if (data.length === 0) return 'No se encontraron resultados.';
 
     if (data.length === 1) {
       const row = data[0];
+      const rowCurrency = row['Oportunidades.moneda'] || row['moneda'] || 'MXN';
+
       if (template) {
         let formatted = template;
 
         for (const [key, val] of Object.entries(row)) {
-          const isMonto = key.toLowerCase().includes('monto') || key.toLowerCase().includes('suma') || key.toLowerCase().includes('sum');
+          const isCurrency = this.isCurrencyField(key, annotation);
+          const fieldCurrency = key.toLowerCase().includes('mxn') ? 'MXN' : rowCurrency;
           let displayVal = '';
 
           if (val === null || val === undefined || val === '') {
@@ -353,17 +460,21 @@ ${JSON.stringify(truncatedData, null, 2)}
               displayVal = 'Sin asignar';
             } else if (keyLower.includes('nombre') || keyLower.includes('name')) {
               displayVal = 'Sin nombre';
-            } else if (isMonto) {
-              displayVal = '$0';
+            } else if (isCurrency) {
+              displayVal = `$0.00 ${fieldCurrency}`;
             } else if (keyLower.includes('count') || keyLower.includes('sum')) {
               displayVal = '0';
             } else {
               displayVal = 'No especificado';
             }
           } else {
-            displayVal = typeof val === 'number'
-              ? (isMonto ? `$${val.toLocaleString('es-MX')}` : val.toLocaleString('es-MX'))
-              : String(val);
+            if (isCurrency) {
+              displayVal = this.formatCurrency(val, fieldCurrency);
+            } else if (typeof val === 'number') {
+              displayVal = val.toLocaleString('es-MX');
+            } else {
+              displayVal = String(val);
+            }
           }
 
           const placeholder = `{${key}}`;
@@ -379,7 +490,8 @@ ${JSON.stringify(truncatedData, null, 2)}
       const values = Object.entries(row)
         .map(([key, val]) => {
           const cleanKey = key.split('.').pop() || key;
-          const isMonto = key.toLowerCase().includes('monto') || key.toLowerCase().includes('suma') || key.toLowerCase().includes('sum');
+          const isCurrency = this.isCurrencyField(key, annotation);
+          const fieldCurrency = key.toLowerCase().includes('mxn') ? 'MXN' : rowCurrency;
           let displayVal = '';
 
           if (val === null || val === undefined || val === '') {
@@ -387,13 +499,17 @@ ${JSON.stringify(truncatedData, null, 2)}
             if (keyLower.includes('apellido')) return '';
             if (keyLower.includes('username') || keyLower.includes('ejecutivo') || keyLower.includes('responsable')) return 'Sin asignar';
             if (keyLower.includes('nombre') || keyLower.includes('name')) return 'Sin nombre';
-            if (isMonto) return '$0';
+            if (isCurrency) return `$0.00 ${fieldCurrency}`;
             if (keyLower.includes('count') || keyLower.includes('sum')) return '0';
             return 'No especificado';
           } else {
-            displayVal = typeof val === 'number'
-              ? (isMonto ? `$${val.toLocaleString('es-MX')}` : val.toLocaleString('es-MX'))
-              : String(val);
+            if (isCurrency) {
+              displayVal = this.formatCurrency(val, fieldCurrency);
+            } else if (typeof val === 'number') {
+              displayVal = val.toLocaleString('es-MX');
+            } else {
+              displayVal = String(val);
+            }
           }
           return displayVal !== '' ? `${cleanKey}: ${displayVal}` : '';
         })
@@ -403,21 +519,29 @@ ${JSON.stringify(truncatedData, null, 2)}
     }
 
     const rows = data.map((row, i) => {
+      const rowCurrency = row['Oportunidades.moneda'] || row['moneda'] || 'MXN';
       const vals = Object.entries(row)
         .map(([key, val]) => {
-          const isMonto = key.toLowerCase().includes('monto') || key.toLowerCase().includes('suma') || key.toLowerCase().includes('sum');
+          const cleanKey = key.split('.').pop() || key;
+          const isCurrency = this.isCurrencyField(key, annotation);
+          const fieldCurrency = key.toLowerCase().includes('mxn') ? 'MXN' : rowCurrency;
+
           if (val === null || val === undefined || val === '') {
             const keyLower = key.toLowerCase();
             if (keyLower.includes('apellido')) return '';
             if (keyLower.includes('username') || keyLower.includes('ejecutivo') || keyLower.includes('responsable')) return 'Sin asignar';
             if (keyLower.includes('nombre') || keyLower.includes('name')) return 'Sin nombre';
-            if (isMonto) return '$0';
+            if (isCurrency) return `$0.00 ${fieldCurrency}`;
             if (keyLower.includes('count') || keyLower.includes('sum')) return '0';
             return 'No especificado';
           }
-          return typeof val === 'number'
-            ? (isMonto ? `$${val.toLocaleString('es-MX')}` : val.toLocaleString('es-MX'))
-            : String(val);
+          if (isCurrency) {
+            return `${cleanKey}: ${this.formatCurrency(val, fieldCurrency)}`;
+          }
+          if (typeof val === 'number') {
+            return `${cleanKey}: ${val.toLocaleString('es-MX')}`;
+          }
+          return `${cleanKey}: ${String(val)}`;
         })
         .filter(v => v !== '')
         .join(' — ');
@@ -427,3 +551,5 @@ ${JSON.stringify(truncatedData, null, 2)}
     return template ? `${template}\n\n${rows}` : rows;
   }
 }
+
+

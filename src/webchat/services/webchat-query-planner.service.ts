@@ -74,7 +74,7 @@ export class WebchatQueryPlannerService {
 
     const finalQueries: CubeQuery[] = [];
     // Entidades raíz no vinculables entre sí en una sola agregación
-    const ROOT_CUBES = ['Oportunidades', 'Tickets', 'Actividades', 'Gastos', 'Productos'];
+    const ROOT_CUBES = ['Oportunidades', 'Tickets', 'Actividades', 'Gastos', 'Productos', 'Empresas'];
 
     for (const q of rawQueries) {
       if (!q) continue;

@@ -3,7 +3,7 @@ import { DataSource } from 'typeorm';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { WebchatCubeExecutorService } from './webchat-cube-executor.service';
 import { WebchatSecurityService } from './webchat-security.service';
-import { CubeQuery, EntityMatchItem, MultiEntitySearchResult } from '../interfaces/webchat.interfaces';
+import { CubeQuery, EntityMatchItem } from '../interfaces/webchat.interfaces';
 
 @Injectable()
 export class WebchatEntityMatcherService {
@@ -31,6 +31,7 @@ export class WebchatEntityMatcherService {
       'ingresos', 'ingreso', 'cotizado', 'cotizaciones', 'cotizacion', 'cotización',
       'tickets', 'ticket', 'oportunidades', 'oportunidad', 'actividades', 'actividad',
       'precio', 'costo', 'precios', 'costos', 'catalogo', 'catálogo', 'productos',
+      'empresas', 'empresa', 'cuentas', 'cuenta',
     ];
 
     if (analyticalKeywords.some(kw => clean.includes(kw))) {
@@ -48,7 +49,7 @@ export class WebchatEntityMatcherService {
 
   /**
    * Genera consultas para la Capa Semántica dirigidas a múltiples entidades candidatas
-   * (Clientes, Usuarios, Productos, Oportunidades, Tickets).
+   * (Clientes, Empresas, Usuarios, Productos, Oportunidades, Tickets).
    */
   buildMultiEntityCubeQueries(searchTerm: string, userRole: string, userId: string): CubeQuery[] {
     const cleanSearch = searchTerm.trim();
@@ -77,12 +78,14 @@ export class WebchatEntityMatcherService {
       limit: 5,
     });
 
-    // 1.1 Empresas (Cuentas corporativas)
+    // 2. Empresas (Cuentas corporativas)
     queries.push({
       dimensions: [
         'Empresas.nombre',
         'Empresas.correo',
         'Empresas.telefono',
+        'Empresas.website',
+        'Empresas.direccion',
         'Empresas.estatus',
       ],
       filters: [
@@ -95,7 +98,7 @@ export class WebchatEntityMatcherService {
       limit: 5,
     });
 
-    // 2. Productos (Catálogo)
+    // 3. Productos (Catálogo)
     queries.push({
       dimensions: [
         'Productos.id',
@@ -115,7 +118,7 @@ export class WebchatEntityMatcherService {
       limit: 5,
     });
 
-    // 3. Usuarios (Solo para SuperAdmin y Admin)
+    // 4. Usuarios (Solo para SuperAdmin y Admin)
     if (!isExec) {
       queries.push({
         dimensions: [
@@ -136,11 +139,12 @@ export class WebchatEntityMatcherService {
       });
     }
 
-    // 4. Oportunidades
+    // 5. Oportunidades
     const oppQuery: CubeQuery = {
       dimensions: [
         'Oportunidades.id',
         'Oportunidades.nombreProyecto',
+        'Oportunidades.cuentaOCliente',
         'Oportunidades.montoTotal',
         'Oportunidades.moneda',
         'Oportunidades.clienteId',
@@ -157,7 +161,7 @@ export class WebchatEntityMatcherService {
     this.securityService.applySecurityFilters(oppQuery, userId, userRole);
     queries.push(oppQuery);
 
-    // 5. Tickets
+    // 6. Tickets
     const ticketQuery: CubeQuery = {
       dimensions: [
         'Tickets.id',
@@ -232,7 +236,42 @@ export class WebchatEntityMatcherService {
         });
       }
 
-      // 2. Buscar en Productos (nombre, descripcion)
+      // 2. Buscar en Empresas (nombre, correo, telefono, website)
+      const compConditions = rawTerms.map((_, i) => `(nombre ILIKE $${i + 1} OR correo ILIKE $${i + 1} OR telefono ILIKE $${i + 1} OR website ILIKE $${i + 1})`).join(' AND ');
+      const compParams = rawTerms.map(t => `%${t}%`);
+      const compQuery = `
+        SELECT id, nombre, correo, telefono, website, direccion, estatus
+        FROM "${tenantSchema}".companies
+        WHERE ${compConditions}
+        LIMIT 5;
+      `;
+      const companies = await this.dataSource.query(compQuery, compParams).catch(() => []);
+      for (const comp of companies) {
+        matches.push({
+          entityType: 'Empresa',
+          id: comp.id,
+          title: comp.nombre || 'Empresa sin nombre',
+          subtitle: `Correo: ${comp.correo || 'N/A'} | Teléfono: ${comp.telefono || 'N/A'}${comp.website ? ` | Web: ${comp.website}` : ''}`,
+          details: {
+            correo: comp.correo,
+            telefono: comp.telefono,
+            website: comp.website,
+            direccion: comp.direccion,
+            estatus: comp.estatus ? 'Activo' : 'Inactivo',
+          },
+          raw: {
+            'Empresas.id': comp.id,
+            'Empresas.nombre': comp.nombre,
+            'Empresas.correo': comp.correo,
+            'Empresas.telefono': comp.telefono,
+            'Empresas.website': comp.website,
+            'Empresas.direccion': comp.direccion,
+            'Empresas.estatus': comp.estatus,
+          },
+        });
+      }
+
+      // 3. Buscar en Productos (nombre, descripcion)
       const prodConditions = rawTerms.map((_, i) => `(nombre ILIKE $${i + 1} OR descripcion ILIKE $${i + 1})`).join(' AND ');
       const prodParams = rawTerms.map(t => `%${t}%`);
       const prodQuery = `
@@ -265,7 +304,7 @@ export class WebchatEntityMatcherService {
         });
       }
 
-      // 3. Buscar en Usuarios (Solo SuperAdmin y Admin)
+      // 4. Buscar en Usuarios (Solo SuperAdmin y Admin)
       if (!isExec) {
         const userConditions = rawTerms.map((_, i) => `(username ILIKE $${i + 1} OR email ILIKE $${i + 1})`).join(' AND ');
         const userParams = rawTerms.map(t => `%${t}%`);
@@ -298,7 +337,7 @@ export class WebchatEntityMatcherService {
         }
       }
 
-      // 4. Buscar en Oportunidades
+      // 5. Buscar en Oportunidades
       const oppConditions = rawTerms.map((_, i) => `"nombreProyecto" ILIKE $${i + 1}`).join(' AND ');
       const oppParams: any[] = rawTerms.map(t => `%${t}%`);
       let oppQuery = `
@@ -332,7 +371,7 @@ export class WebchatEntityMatcherService {
         });
       }
 
-      // 5. Buscar en Tickets
+      // 6. Buscar en Tickets
       const ticketConditions = rawTerms.map((_, i) => `(titulo ILIKE $${i + 1} OR "contactName" ILIKE $${i + 1})`).join(' AND ');
       const ticketParams: any[] = rawTerms.map(t => `%${t}%`);
       let ticketQuery = `
@@ -382,42 +421,58 @@ export class WebchatEntityMatcherService {
     const items: EntityMatchItem[] = [];
 
     for (const row of cubeRows) {
-      if (row['Clientes.id']) {
+      if (row['Clientes.id'] || row['Clientes.nombre']) {
         items.push({
           entityType: 'Cliente',
-          id: row['Clientes.id'],
+          id: row['Clientes.id'] || row['Clientes.nombre'],
           title: `${row['Clientes.nombre'] || ''} ${row['Clientes.apellido'] || ''}`.trim() || 'Cliente',
           subtitle: `Correo: ${row['Clientes.correo'] || 'N/A'} | Teléfono: ${row['Clientes.telefono'] || 'N/A'}`,
           raw: row,
         });
-      } else if (row['Productos.id']) {
+      } else if (row['Empresas.id'] || row['Empresas.nombre']) {
+        items.push({
+          entityType: 'Empresa',
+          id: row['Empresas.id'] || row['Empresas.nombre'],
+          title: row['Empresas.nombre'] || 'Empresa',
+          subtitle: `Correo: ${row['Empresas.correo'] || 'N/A'} | Teléfono: ${row['Empresas.telefono'] || 'N/A'}${row['Empresas.website'] ? ` | Web: ${row['Empresas.website']}` : ''}`,
+          details: {
+            correo: row['Empresas.correo'],
+            telefono: row['Empresas.telefono'],
+            website: row['Empresas.website'],
+            direccion: row['Empresas.direccion'],
+            estatus: row['Empresas.estatus'],
+          },
+          raw: row,
+        });
+      } else if (row['Productos.id'] || row['Productos.nombre']) {
         items.push({
           entityType: 'Producto',
-          id: row['Productos.id'],
+          id: row['Productos.id'] || row['Productos.nombre'],
           title: row['Productos.nombre'] || 'Producto',
           subtitle: `Precio: $${Number(row['Productos.precioBase'] || 0).toLocaleString('es-MX')} por ${row['Productos.unidadMedida'] || 'Pieza'}`,
           raw: row,
         });
-      } else if (row['Usuarios.id']) {
+      } else if (row['Usuarios.id'] || row['Usuarios.username']) {
         items.push({
           entityType: 'Usuario',
-          id: row['Usuarios.id'],
+          id: row['Usuarios.id'] || row['Usuarios.username'],
           title: row['Usuarios.username'] || 'Usuario',
           subtitle: `Rol: ${row['Usuarios.role'] || 'N/A'} | Correo: ${row['Usuarios.correo'] || 'N/A'}`,
           raw: row,
         });
-      } else if (row['Oportunidades.id']) {
+      } else if (row['Oportunidades.id'] || row['Oportunidades.nombreProyecto']) {
+        const cuentaOCliente = row['Oportunidades.cuentaOCliente'] ? ` | Cuenta: ${row['Oportunidades.cuentaOCliente']}` : '';
         items.push({
           entityType: 'Oportunidad',
-          id: row['Oportunidades.id'],
+          id: row['Oportunidades.id'] || row['Oportunidades.nombreProyecto'],
           title: row['Oportunidades.nombreProyecto'] || 'Oportunidad',
-          subtitle: `Monto: $${Number(row['Oportunidades.montoTotal'] || 0).toLocaleString('es-MX')} ${row['Oportunidades.moneda'] || 'MXN'}`,
+          subtitle: `Monto: $${Number(row['Oportunidades.montoTotal'] || 0).toLocaleString('es-MX')} ${row['Oportunidades.moneda'] || 'MXN'}${cuentaOCliente}`,
           raw: row,
         });
-      } else if (row['Tickets.id']) {
+      } else if (row['Tickets.id'] || row['Tickets.titulo']) {
         items.push({
           entityType: 'Ticket',
-          id: row['Tickets.id'],
+          id: row['Tickets.id'] || row['Tickets.titulo'],
           title: `Folio #${row['Tickets.ticketNumber'] || row['Tickets.id']}: ${row['Tickets.titulo'] || 'Ticket'}`,
           subtitle: `Incidencia: ${row['Tickets.tipoIncidencia'] || 'General'}`,
           raw: row,
@@ -428,3 +483,4 @@ export class WebchatEntityMatcherService {
     return items;
   }
 }
+

@@ -56,7 +56,8 @@ export class WebchatSecurityService {
       entities.has('Actividades') ||
       entities.has('Gastos') ||
       entities.has('Tickets') ||
-      entities.has('Clientes');
+      entities.has('Clientes') ||
+      entities.has('Empresas');
 
     for (const entity of entities) {
       const securityField = ENTITY_SECURITY_MAP[entity];
@@ -182,7 +183,9 @@ export class WebchatSecurityService {
       const uuidFields = [
         'Oportunidades.stageId',
         'Oportunidades.clienteId',
+        'Oportunidades.companyId',
         'Oportunidades.pipelineId',
+        'Clientes.companyId',
         'Tickets.stageId',
         'Tickets.helpdeskId',
         'Tickets.clienteId',

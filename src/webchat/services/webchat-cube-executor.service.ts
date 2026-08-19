@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AiAgentService } from '../../conversations/ai-agent.service';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
-import { CubeQuery, CubeTimeDimension } from '../interfaces/webchat.interfaces';
+import { CubeExecutionResult, CubeAnnotation, CubeQuery, CubeTimeDimension } from '../interfaces/webchat.interfaces';
 
 @Injectable()
 export class WebchatCubeExecutorService {
@@ -11,9 +11,10 @@ export class WebchatCubeExecutorService {
 
   /**
    * Ejecuta una query individual contra la REST API de la Capa Semántica (Cube.dev).
+   * Retorna tanto las filas de datos como los metadatos de anotaciones (formatos, medidas, etc.).
    */
-  async executeCubeQuery(cubeQuery: CubeQuery | undefined): Promise<any[]> {
-    if (!cubeQuery) return [];
+  async executeCubeQuery(cubeQuery: CubeQuery | undefined): Promise<CubeExecutionResult> {
+    if (!cubeQuery) return { data: [] };
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
 
     try {
@@ -74,8 +75,11 @@ export class WebchatCubeExecutorService {
       });
 
       if (response.ok) {
-        const data: any = await response.json();
-        return data?.data || [];
+        const resJson: any = await response.json();
+        return {
+          data: resJson?.data || [],
+          annotation: resJson?.annotation,
+        };
       } else {
         const errText = await response.text();
         this.logger.error(`[Cube Executor - Error] Status ${response.status}: ${errText}`);
@@ -84,26 +88,42 @@ export class WebchatCubeExecutorService {
       this.logger.error(`[Cube Executor - Conexión Fallida] ${error.message}`);
     }
 
-    return [];
+    return { data: [] };
   }
 
   /**
-   * Ejecuta múltiples consultas a Cube.dev en paralelo y consolida sus resultados.
+   * Ejecuta múltiples consultas a Cube.dev en paralelo y consolida sus resultados y anotaciones.
    */
-  async executeBatchCubeQueries(cubeQueries: CubeQuery[]): Promise<any[]> {
-    if (!cubeQueries || cubeQueries.length === 0) return [];
+  async executeBatchCubeQueries(cubeQueries: CubeQuery[]): Promise<CubeExecutionResult> {
+    if (!cubeQueries || cubeQueries.length === 0) return { data: [] };
 
     const promises = cubeQueries.map(q => this.executeCubeQuery(q));
     const results = await Promise.allSettled(promises);
 
-    const consolidated: any[] = [];
+    const consolidatedData: any[] = [];
+    const mergedAnnotation: CubeAnnotation = {
+      measures: {},
+      dimensions: {},
+    };
+
     for (const res of results) {
-      if (res.status === 'fulfilled' && Array.isArray(res.value)) {
-        consolidated.push(...res.value);
+      if (res.status === 'fulfilled' && res.value?.data && Array.isArray(res.value.data)) {
+        consolidatedData.push(...res.value.data);
+        if (res.value.annotation) {
+          if (res.value.annotation.measures) {
+            Object.assign(mergedAnnotation.measures!, res.value.annotation.measures);
+          }
+          if (res.value.annotation.dimensions) {
+            Object.assign(mergedAnnotation.dimensions!, res.value.annotation.dimensions);
+          }
+        }
       }
     }
 
-    return consolidated;
+    return {
+      data: consolidatedData,
+      annotation: mergedAnnotation,
+    };
   }
 
   /**

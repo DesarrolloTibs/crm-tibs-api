@@ -31,12 +31,32 @@ export interface DashboardRedirect {
 export interface CubeQueryPlan {
   thought?: string;
   intent?: 'VAGUE_SEARCH' | 'SPECIFIC_ENTITY' | 'ANALYTICAL' | 'CONVERSATIONAL';
-  detectedEntity?: 'Clientes' | 'Usuarios' | 'Productos' | 'Oportunidades' | 'Tickets' | 'Actividades' | 'Gastos' | null;
+  detectedEntity?: 'Clientes' | 'Usuarios' | 'Productos' | 'Oportunidades' | 'Tickets' | 'Actividades' | 'Gastos' | 'Empresas' | null;
   canonicalSearchTerm?: string;
   cubeQuery?: CubeQuery;
   cubeQueries?: CubeQuery[];
   responseTemplate?: string;
   dashboardRedirect?: DashboardRedirect | null;
+}
+
+export interface CubeAnnotationMember {
+  title?: string;
+  shortTitle?: string;
+  type?: string;
+  format?: string;
+  description?: string;
+}
+
+export interface CubeAnnotation {
+  measures?: Record<string, CubeAnnotationMember>;
+  dimensions?: Record<string, CubeAnnotationMember>;
+  segments?: Record<string, CubeAnnotationMember>;
+  timeDimensions?: Record<string, CubeAnnotationMember>;
+}
+
+export interface CubeExecutionResult {
+  data: Record<string, any>[];
+  annotation?: CubeAnnotation;
 }
 
 export interface WebchatResponse {
@@ -51,7 +71,7 @@ export interface ConversationHistoryMessage {
 }
 
 export interface EntityMatchItem {
-  entityType: 'Cliente' | 'Usuario' | 'Producto' | 'Oportunidad' | 'Ticket';
+  entityType: 'Cliente' | 'Usuario' | 'Producto' | 'Oportunidad' | 'Ticket' | 'Empresa';
   id: string;
   title: string;
   subtitle?: string;
@@ -65,3 +85,4 @@ export interface MultiEntitySearchResult {
   groupedByEntity: Record<string, EntityMatchItem[]>;
   totalCount: number;
 }
+

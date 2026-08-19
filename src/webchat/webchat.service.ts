@@ -8,6 +8,7 @@ import { WebchatEntityMatcherService } from './services/webchat-entity-matcher.s
 import { WebchatResponseFormatterService } from './services/webchat-response-formatter.service';
 import {
   ConversationHistoryMessage,
+  CubeAnnotation,
   CubeQuery,
   CubeQueryPlan,
   EntityMatchItem,
@@ -124,7 +125,7 @@ Genera tu respuesta JSON:`;
 
   /**
    * Maneja consultas donde solo se proporciona un nombre o término general.
-   * Realiza búsquedas concurrentes en Clientes, Productos, Usuarios (si el rol lo permite),
+   * Realiza búsquedas concurrentes en Clientes, Empresas, Productos, Usuarios (si el rol lo permite),
    * Oportunidades y Tickets con fallback difuso (fuzzy) para errores ortográficos.
    */
   private async handleVagueSearch(
@@ -140,8 +141,8 @@ Genera tu respuesta JSON:`;
     const candidateQueries = this.entityMatcher.buildMultiEntityCubeQueries(searchTerm, userRole, userId);
 
     // 2. Ejecutar contra Cube.dev
-    const cubeRows = await this.cubeExecutor.executeBatchCubeQueries(candidateQueries);
-    let matchItems: EntityMatchItem[] = this.entityMatcher.mapCubeRowsToMatchItems(cubeRows);
+    const cubeResult = await this.cubeExecutor.executeBatchCubeQueries(candidateQueries);
+    let matchItems: EntityMatchItem[] = this.entityMatcher.mapCubeRowsToMatchItems(cubeResult.data);
 
     // 3. Si Cube.dev devolvió 0 resultados (por typos o separación de nombre/apellido), aplicar fallback en BD
     if (matchItems.length === 0) {
@@ -151,7 +152,7 @@ Genera tu respuesta JSON:`;
 
     if (matchItems.length === 0) {
       return {
-        answer: `No encontré ningún cliente, producto, usuario, oportunidad ni ticket con el nombre o término "**${searchTerm}**". ¿Deseas intentar con otro término?`,
+        answer: `No encontré ningún cliente, empresa, producto, usuario, oportunidad ni ticket con el nombre o término "**${searchTerm}**". ¿Deseas intentar con otro término?`,
         data: [],
         dashboardRedirect: queryPlan.dashboardRedirect,
       };
@@ -196,6 +197,7 @@ Genera tu respuesta JSON:`;
 
     const allCubeData: any[] = [];
     const allExecutedFilters: any[] = [];
+    const aggregatedAnnotation: CubeAnnotation = { measures: {}, dimensions: {} };
 
     for (const q of queriesToExecute) {
       this.securityService.applySecurityFilters(q, userId, userRole);
@@ -206,11 +208,20 @@ Genera tu respuesta JSON:`;
       }
 
       this.logger.log(`[WebChat - Executing Query] Filters: ${JSON.stringify(q.filters)} | Measures: ${JSON.stringify(q.measures)} | TimeDims: ${JSON.stringify(q.timeDimensions)}`);
-      const data = await this.cubeExecutor.executeCubeQuery(q);
+      const execResult = await this.cubeExecutor.executeCubeQuery(q);
+      const data = execResult.data;
       this.logger.log(`[WebChat - Cube Result] Rows: ${data?.length || 0} -> ${JSON.stringify(data)}`);
 
       if (data && data.length > 0) {
         allCubeData.push(...data);
+      }
+      if (execResult.annotation) {
+        if (execResult.annotation.measures) {
+          Object.assign(aggregatedAnnotation.measures!, execResult.annotation.measures);
+        }
+        if (execResult.annotation.dimensions) {
+          Object.assign(aggregatedAnnotation.dimensions!, execResult.annotation.dimensions);
+        }
       }
     }
 
@@ -239,7 +250,7 @@ Genera tu respuesta JSON:`;
     }
 
     // Formatear respuesta
-    let formattedAnswer = await this.responseFormatter.formatResults(question, allCubeData, queryPlan);
+    let formattedAnswer = await this.responseFormatter.formatResults(question, allCubeData, queryPlan, aggregatedAnnotation);
     formattedAnswer = this.responseFormatter.deduplicateResponseLines(formattedAnswer);
     formattedAnswer = await this.responseFormatter.resolveStageUuidsInText(formattedAnswer);
 
@@ -262,3 +273,4 @@ Genera tu respuesta JSON:`;
     };
   }
 }
+
