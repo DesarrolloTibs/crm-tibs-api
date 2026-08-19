@@ -79,12 +79,21 @@ Genera tu respuesta JSON:`;
         };
       }
 
-      // 7. FLUJO A: Consulta Vaga / Búsqueda Multi-Entidad (un solo nombre o término sin contexto explícito)
-      if (queryPlan.intent === 'VAGUE_SEARCH' || this.entityMatcher.isVagueQuery(question)) {
+      // 7. Si el LLM definió claramente una consulta analítica o específica con query estructurada
+      const isExplicitQueryPlan =
+        queryPlan.intent === 'ANALYTICAL' ||
+        queryPlan.intent === 'SPECIFIC_ENTITY' ||
+        (queryPlan.cubeQuery && (
+          (queryPlan.cubeQuery.measures && queryPlan.cubeQuery.measures.length > 0) ||
+          (queryPlan.cubeQuery.filters && queryPlan.cubeQuery.filters.length > 0)
+        ));
+
+      // 8. FLUJO A: Consulta Vaga / Búsqueda Multi-Entidad (un solo nombre o término sin contexto explícito)
+      if (!isExplicitQueryPlan && (queryPlan.intent === 'VAGUE_SEARCH' || this.entityMatcher.isVagueQuery(question))) {
         return await this.handleVagueSearch(question, queryPlan, userId, userRole);
       }
 
-      // 8. FLUJO B: Consulta Específica / Analítica
+      // 9. FLUJO B: Consulta Específica / Analítica
       return await this.handleSpecificOrAnalyticalQuery(question, queryPlan, userId, userRole);
 
     } catch (error: any) {
@@ -196,7 +205,10 @@ Genera tu respuesta JSON:`;
         allExecutedFilters.push(...q.filters);
       }
 
+      this.logger.log(`[WebChat - Executing Query] Filters: ${JSON.stringify(q.filters)} | Measures: ${JSON.stringify(q.measures)} | TimeDims: ${JSON.stringify(q.timeDimensions)}`);
       const data = await this.cubeExecutor.executeCubeQuery(q);
+      this.logger.log(`[WebChat - Cube Result] Rows: ${data?.length || 0} -> ${JSON.stringify(data)}`);
+
       if (data && data.length > 0) {
         allCubeData.push(...data);
       }

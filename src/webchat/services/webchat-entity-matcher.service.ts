@@ -22,20 +22,28 @@ export class WebchatEntityMatcherService {
     if (!question) return false;
     const clean = question.trim().toLowerCase();
 
-    // Palabras que denotan intenciones analíticas, temporales o comandos específicos
+    // Palabras que denotan intenciones analíticas, temporales, métricas o preguntas de negocio
     const analyticalKeywords = [
-      'cuantos', 'cuántos', 'cuantas', 'cuántas', 'total', 'suma', 'promedio',
+      'cuanto', 'cuánto', 'cuantos', 'cuántos', 'cuantas', 'cuántas', 'total', 'suma', 'promedio',
       'top', 'mes', 'año', 'ano', 'semana', 'dashboard', 'grafica', 'gráfica',
       'ganadas', 'perdidas', 'abiertos', 'cerrados', 'cerradas', 'reporte',
+      'vendido', 'vendi', 'vendí', 'ventas', 'venta', 'pipeline', 'gastos', 'gasto', 'gastado',
+      'ingresos', 'ingreso', 'cotizado', 'cotizaciones', 'cotizacion', 'cotización',
+      'tickets', 'ticket', 'oportunidades', 'oportunidad', 'actividades', 'actividad',
+      'precio', 'costo', 'precios', 'costos', 'catalogo', 'catálogo', 'productos',
     ];
 
     if (analyticalKeywords.some(kw => clean.includes(kw))) {
       return false;
     }
 
+    if (clean.includes('?') || clean.includes('¿')) {
+      return false;
+    }
+
     const words = clean.split(/\s+/).filter(w => w.length > 0);
-    // Consultas de 1 a 3 palabras sin operadores analíticos
-    return words.length >= 1 && words.length <= 4;
+    // Consultas de 1 a 3 palabras que correspondan únicamente a nombres propios
+    return words.length >= 1 && words.length <= 3;
   }
 
   /**

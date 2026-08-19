@@ -214,13 +214,26 @@ export class WebchatCubeExecutorService {
       '==': 'equals',
       '!=': 'notEquals',
       '<>': 'notEquals',
+      'equals': 'equals',
+      'notequals': 'notEquals',
+      'not_equals': 'notEquals',
+      'contains': 'contains',
+      'notcontains': 'notContains',
+      'not_contains': 'notContains',
+      'gt': 'gt',
+      'gte': 'gte',
+      'lt': 'lt',
+      'lte': 'lte',
+      'set': 'set',
+      'notset': 'notSet',
+      'not_set': 'notSet',
+      'indaterange': 'inDateRange',
+      'in_date_range': 'inDateRange',
+      'beforedate': 'beforeDate',
+      'before_date': 'beforeDate',
+      'afterdate': 'afterDate',
+      'after_date': 'afterDate',
     };
-
-    const VALID_OPERATORS = new Set([
-      'equals', 'notEquals', 'contains', 'notContains',
-      'gt', 'gte', 'lt', 'lte', 'set', 'notSet',
-      'inDateRange', 'beforeDate', 'afterDate',
-    ]);
 
     const sanitized: any[] = [];
 
@@ -244,14 +257,8 @@ export class WebchatCubeExecutorService {
 
       if (!f.member) continue;
 
-      let op = String(f.operator || 'equals').trim().toLowerCase();
-      if (OPERATOR_MAP[op]) {
-        op = OPERATOR_MAP[op];
-      }
-
-      if (!VALID_OPERATORS.has(op)) {
-        op = 'equals';
-      }
+      const rawOp = String(f.operator || 'equals').trim().toLowerCase().replace(/[\s_-]/g, '');
+      const op = OPERATOR_MAP[rawOp] || 'equals';
 
       if (op === 'set' || op === 'notSet') {
         sanitized.push({
