@@ -18,19 +18,23 @@ export class WebchatCubeExecutorService {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
 
     try {
-      let orderFormatted = cubeQuery.order;
-      if (orderFormatted && !Array.isArray(orderFormatted)) {
-        orderFormatted = Object.entries(orderFormatted) as any;
-      }
+      const orderFormatted = this.sanitizeOrder(cubeQuery.order);
 
       const queryPayload: any = {};
       if (cubeQuery.measures && cubeQuery.measures.length > 0) {
         queryPayload.measures = cubeQuery.measures;
       }
       if (cubeQuery.dimensions && cubeQuery.dimensions.length > 0) {
-        // Excluir primary keys (*.id) que Cube.dev oculta por defecto para evitar error 400 hidden member
-        const filteredDims = cubeQuery.dimensions.filter(
-          (d: string) => typeof d === 'string' && !d.toLowerCase().endsWith('.id') && d.toLowerCase() !== 'id'
+        let dims = [...cubeQuery.dimensions];
+        // Si se consultan actividades y no hay measures (consulta de detalle), incluir Actividades.id para evitar que GROUP BY colapse registros idénticos
+        if (dims.some(d => d.startsWith('Actividades.')) && (!cubeQuery.measures || cubeQuery.measures.length === 0)) {
+          if (!dims.includes('Actividades.id')) {
+            dims.unshift('Actividades.id');
+          }
+        }
+        // Excluir primary keys ocultas (*.id) excepto Actividades.id que es visible para unicidad
+        const filteredDims = dims.filter(
+          (d: string) => typeof d === 'string' && (d === 'Actividades.id' || (!d.toLowerCase().endsWith('.id') && d.toLowerCase() !== 'id'))
         );
         if (filteredDims.length > 0) {
           queryPayload.dimensions = filteredDims;
@@ -54,6 +58,8 @@ export class WebchatCubeExecutorService {
           queryPayload.timeDimensions = sanitizedTimeDimensions;
         }
       }
+
+      queryPayload.timezone = process.env.CUBE_TIMEZONE || 'America/Mexico_City';
 
       this.logger.log(`[Cube Executor - Query] Schema: ${tenantSchema} -> ${JSON.stringify(queryPayload)}`);
 
@@ -124,6 +130,62 @@ export class WebchatCubeExecutorService {
       data: consolidatedData,
       annotation: mergedAnnotation,
     };
+  }
+
+  /**
+   * Sanitiza y valida la cláusula de ordenamiento (order) para Cube.dev.
+   * Corrige miembros con sintaxis inválida (ej. "Empresas.nombre.length" -> "Empresas.nombre")
+   * y descarta claves que no cumplan el patrón de identificador de Cube (/^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$|^[a-zA-Z0-9_]+$/).
+   */
+  private sanitizeOrder(order: any): Array<[string, 'asc' | 'desc']> | undefined {
+    if (!order) return undefined;
+
+    let entries: Array<[string, any]> = [];
+
+    if (Array.isArray(order)) {
+      for (const item of order) {
+        if (Array.isArray(item) && item.length >= 2) {
+          entries.push([item[0], item[1]]);
+        } else if (Array.isArray(item) && item.length === 1) {
+          entries.push([item[0], 'asc']);
+        } else if (typeof item === 'string') {
+          entries.push([item, 'asc']);
+        } else if (typeof item === 'object' && item !== null) {
+          if (item.id) {
+            entries.push([item.id, item.desc ? 'desc' : 'asc']);
+          } else {
+            entries.push(...Object.entries(item));
+          }
+        }
+      }
+    } else if (typeof order === 'object' && order !== null) {
+      entries = Object.entries(order);
+    }
+
+    const validPattern = /^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$|^[a-zA-Z0-9_]+$/;
+    const sanitized: Array<[string, 'asc' | 'desc']> = [];
+
+    for (const [key, dir] of entries) {
+      if (typeof key !== 'string') continue;
+
+      let member = key.trim();
+      // Si contiene más de un punto (ej: "Empresas.nombre.length" o "Oportunidades.monto.raw"), corregir a Cubo.campo
+      if (!validPattern.test(member)) {
+        const parts = member.split('.').filter(Boolean);
+        if (parts.length >= 2) {
+          member = `${parts[0]}.${parts[1]}`;
+        }
+      }
+
+      if (validPattern.test(member)) {
+        const direction = String(dir).toLowerCase().trim() === 'desc' ? 'desc' : 'asc';
+        sanitized.push([member, direction]);
+      } else {
+        this.logger.warn(`[Cube Executor - Sanitize] Cláusula order inválida descartada: "${key}"`);
+      }
+    }
+
+    return sanitized.length > 0 ? sanitized : undefined;
   }
 
   /**

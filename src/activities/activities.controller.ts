@@ -101,8 +101,10 @@ export class ActivitiesController {
     @Query('opportunityId') opportunityId?: string,
   ) {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
-    // Lanzar sincronización en segundo plano de manera no bloqueante
-    this.syncCoordinator.syncExternalChangesToCRM(tenantSchema, user.id).catch(() => null);
+    // Lanzar sincronización en segundo plano de manera totalmente desacoplada
+    setImmediate(() => {
+      this.syncCoordinator.syncExternalChangesToCRM(tenantSchema, user.id).catch(() => null);
+    });
 
     return this.activitiesService.findAll(user, userId, opportunityId);
   }

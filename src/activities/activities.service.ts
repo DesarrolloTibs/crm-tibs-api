@@ -315,14 +315,17 @@ export class ActivitiesService {
     }
     const activities = await this.activityRepository.find(options);
 
-    // Adjuntar reminder a cada actividad
+    // Adjuntar reminders en batch para evitar N+1 queries
+    const activityIds = activities.map((a) => a.id);
+    const remindersMap = await this.remindersService.findByActivities(activityIds);
+
     const results = await Promise.all(
       activities.map(async (act) => {
         const filled = this.fillDeletedType(act);
         if (!filled.user && filled.userId) {
           filled.user = await this.usersService.findOneById(filled.userId).catch(() => null as any);
         }
-        (filled as any).reminder = await this.remindersService.findByActivity(act.id);
+        (filled as any).reminder = remindersMap.get(act.id) || null;
         return filled;
       })
     );

@@ -79,13 +79,16 @@ export class UsersService implements OnModuleInit {
     }
   }
 
+  private static checkedSchemas = new Set<string>();
+
   private async ensureTenantUserColumns(tenantSchema: string) {
-    if (tenantSchema === 'public') return;
+    if (!tenantSchema || tenantSchema === 'public' || UsersService.checkedSchemas.has(tenantSchema)) return;
     try {
       await this.dataSource.query(
         `ALTER TABLE "${tenantSchema}".users ADD COLUMN IF NOT EXISTS "isActive" boolean NOT NULL DEFAULT true;
          ALTER TABLE "${tenantSchema}".users ADD COLUMN IF NOT EXISTS "profileImageUrl" varchar(500) NULL;`
       );
+      UsersService.checkedSchemas.add(tenantSchema);
     } catch (err) {
       // Ignorar si ya existe
     }

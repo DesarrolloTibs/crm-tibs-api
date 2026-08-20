@@ -225,23 +225,202 @@ Genera tu respuesta JSON:`;
       }
     }
 
-    // Si Cube.dev no arrojó resultados y había un término canónico (ej. error ortográfico en nombre)
-    if (allCubeData.length === 0 && queryPlan.canonicalSearchTerm) {
-      this.logger.log(`[WebChat] 0 resultados en consulta específica. Probando fallback fuzzy para "${queryPlan.canonicalSearchTerm}"`);
+    // Si Cube.dev no arrojó resultados y había un término canónico o filtros con texto
+    const fallbackSearchTerm = queryPlan.canonicalSearchTerm || this.extractFallbackSearchTerm(queriesToExecute);
+
+    if (allCubeData.length === 0 && fallbackSearchTerm) {
+      this.logger.log(`[WebChat] 0 resultados en consulta específica. Probando fallback fuzzy para "${fallbackSearchTerm}"`);
       const fallbackMatches = await this.entityMatcher.fallbackFuzzyEntitySearch(
-        queryPlan.canonicalSearchTerm,
+        fallbackSearchTerm,
         userRole,
         userId,
       );
 
       if (fallbackMatches.length > 0) {
-        for (const fm of fallbackMatches) {
-          allCubeData.push(fm.raw);
+        if (
+          queryPlan.intent === 'SPECIFIC_ENTITY' ||
+          queryPlan.detectedEntity === 'Clientes' ||
+          queryPlan.detectedEntity === 'Empresas' ||
+          queryPlan.detectedEntity === 'Productos' ||
+          queryPlan.detectedEntity === 'Usuarios'
+        ) {
+          const compatibleMatches = fallbackMatches.filter(fm => {
+            if (queryPlan.detectedEntity === 'Clientes') return fm.entityType === 'Cliente';
+            if (queryPlan.detectedEntity === 'Empresas') return fm.entityType === 'Empresa';
+            if (queryPlan.detectedEntity === 'Productos') return fm.entityType === 'Producto';
+            if (queryPlan.detectedEntity === 'Usuarios') return fm.entityType === 'Usuario';
+            return true;
+          });
+          for (const fm of (compatibleMatches.length > 0 ? compatibleMatches : fallbackMatches)) {
+            allCubeData.push(fm.raw);
+          }
+        } else if (queryPlan.detectedEntity === 'Oportunidades') {
+          // Reintentar en las 3 entidades (Usuarios, Clientes, Empresas) donde haya coincidencia
+          const orFilters: any[] = [];
+          const matchedTitles: string[] = [];
+
+          const userMatch = fallbackMatches.find(fm => fm.entityType === 'Usuario');
+          if (userMatch && !this.securityService.isExecutive(userRole)) {
+            const uname = userMatch.title.split(' ')[0] || userMatch.title;
+            orFilters.push({
+              member: 'Usuarios.username',
+              operator: 'contains',
+              values: [uname],
+            });
+            matchedTitles.push(`ejecutivo **${userMatch.title}**`);
+          }
+
+          const clientOrCompMatches = fallbackMatches.filter(fm => fm.entityType === 'Cliente' || fm.entityType === 'Empresa');
+          for (const match of clientOrCompMatches) {
+            const cname = match.title.split(' ')[0] || match.title;
+            orFilters.push({
+              member: 'Oportunidades.cuentaOCliente',
+              operator: 'contains',
+              values: [cname],
+            });
+            matchedTitles.push(`${match.entityType.toLowerCase()} **${match.title}**`);
+          }
+
+          if (orFilters.length > 0) {
+            this.logger.log(`[WebChat - Fallback Requery] Reintentando oportunidades multi-entidad: ${JSON.stringify(orFilters)}`);
+            const stageFilter = allExecutedFilters.find((f: any) => f.member === 'Etapas.stageType');
+            const retryFilters: any[] = orFilters.length === 1 ? [orFilters[0]] : [{ or: orFilters }];
+            if (stageFilter) {
+              retryFilters.push(stageFilter);
+            }
+
+            const retryQuery: CubeQuery = {
+              dimensions: [
+                'Oportunidades.nombreProyecto',
+                'Oportunidades.descripcion',
+                'Usuarios.username',
+                'Oportunidades.cuentaOCliente',
+                'Oportunidades.montoTotal',
+                'Oportunidades.moneda',
+                'Etapas.nombre',
+              ],
+              filters: retryFilters,
+            };
+            this.securityService.applySecurityFilters(retryQuery, userId, userRole);
+            const retryRes = await this.cubeExecutor.executeCubeQuery(retryQuery);
+            if (retryRes.data && retryRes.data.length > 0) {
+              allCubeData.push(...retryRes.data);
+              if (retryRes.annotation) {
+                if (retryRes.annotation.measures) Object.assign(aggregatedAnnotation.measures!, retryRes.annotation.measures);
+                if (retryRes.annotation.dimensions) Object.assign(aggregatedAnnotation.dimensions!, retryRes.annotation.dimensions);
+              }
+            } else {
+              return {
+                answer: `Se encontró coincidencia con ${matchedTitles.join(' y ')}, pero no tiene oportunidades registradas en el sistema.`,
+                data: [],
+                dashboardRedirect: queryPlan.dashboardRedirect,
+              };
+            }
+          } else {
+            return {
+              answer: `No se encontraron oportunidades para "**${fallbackSearchTerm}**".`,
+              data: [],
+              dashboardRedirect: queryPlan.dashboardRedirect,
+            };
+          }
+        } else if (queryPlan.detectedEntity === 'Tickets') {
+          const orFilters: any[] = [];
+          const matchedTitles: string[] = [];
+
+          const userMatch = fallbackMatches.find(fm => fm.entityType === 'Usuario');
+          if (userMatch && !this.securityService.isExecutive(userRole)) {
+            const uname = userMatch.title.split(' ')[0] || userMatch.title;
+            orFilters.push({
+              member: 'Usuarios.username',
+              operator: 'contains',
+              values: [uname],
+            });
+            matchedTitles.push(`responsable **${userMatch.title}**`);
+          }
+
+          const clientMatches = fallbackMatches.filter(fm => fm.entityType === 'Cliente' || fm.entityType === 'Empresa');
+          for (const match of clientMatches) {
+            const cname = match.title.split(' ')[0] || match.title;
+            orFilters.push({
+              member: 'Tickets.contactName',
+              operator: 'contains',
+              values: [cname],
+            });
+            matchedTitles.push(`cliente **${match.title}**`);
+          }
+
+          if (orFilters.length > 0) {
+            const stageFilter = allExecutedFilters.find((f: any) => f.member === 'EtapasTicket.stageType');
+            const retryFilters: any[] = orFilters.length === 1 ? [orFilters[0]] : [{ or: orFilters }];
+            if (stageFilter) retryFilters.push(stageFilter);
+
+            const retryQuery: CubeQuery = {
+              dimensions: [
+                'Tickets.ticketNumber',
+                'Tickets.titulo',
+                'Tickets.description',
+                'Usuarios.username',
+                'Tickets.tipoIncidencia',
+                'Tickets.priority',
+                'EtapasTicket.nombre',
+              ],
+              filters: retryFilters,
+            };
+            this.securityService.applySecurityFilters(retryQuery, userId, userRole);
+            const retryRes = await this.cubeExecutor.executeCubeQuery(retryQuery);
+            if (retryRes.data && retryRes.data.length > 0) {
+              allCubeData.push(...retryRes.data);
+              if (retryRes.annotation) {
+                if (retryRes.annotation.measures) Object.assign(aggregatedAnnotation.measures!, retryRes.annotation.measures);
+                if (retryRes.annotation.dimensions) Object.assign(aggregatedAnnotation.dimensions!, retryRes.annotation.dimensions);
+              }
+            } else {
+              return {
+                answer: `Se encontró coincidencia con ${matchedTitles.join(' y ')}, pero no tiene tickets de soporte registrados.`,
+                data: [],
+                dashboardRedirect: queryPlan.dashboardRedirect,
+              };
+            }
+          }
         }
       }
     }
 
     if (allCubeData.length === 0) {
+      if (queryPlan.intent === 'ANALYTICAL') {
+        const hasWonStage = allExecutedFilters.some(
+          (f: any) => f.member === 'Etapas.stageType' && (f.values?.includes('1') || f.values?.includes(1))
+        );
+        const hasOpenStage = allExecutedFilters.some(
+          (f: any) => f.member === 'Etapas.stageType' && (f.values?.includes('0') || f.values?.includes(0))
+        );
+        const hasLostStage = allExecutedFilters.some(
+          (f: any) => f.member === 'Etapas.stageType' && (f.values?.includes('2') || f.values?.includes(2))
+        );
+
+        if (hasWonStage) {
+          return {
+            answer: 'No se encontraron ventas u oportunidades ganadas para tu consulta ($0.00 MXN / 0 ventas).',
+            data: [],
+            dashboardRedirect: queryPlan.dashboardRedirect,
+          };
+        }
+        if (hasOpenStage) {
+          return {
+            answer: 'No se encontraron oportunidades abiertas en pipeline para tu consulta ($0.00 MXN / 0 cotizaciones).',
+            data: [],
+            dashboardRedirect: queryPlan.dashboardRedirect,
+          };
+        }
+        if (hasLostStage) {
+          return {
+            answer: 'No se encontraron oportunidades perdidas registradas para tu consulta ($0.00 MXN).',
+            data: [],
+            dashboardRedirect: queryPlan.dashboardRedirect,
+          };
+        }
+      }
+
       return {
         answer: 'No se encontraron resultados para tu consulta. ¿Quieres intentar con otros filtros?',
         data: [],
@@ -271,6 +450,57 @@ Genera tu respuesta JSON:`;
       data: cleanTableData,
       dashboardRedirect,
     };
+  }
+
+  /**
+   * Extrae un término textual de búsqueda a partir de los filtros ejecutados si canonicalSearchTerm era nulo.
+   */
+  private extractFallbackSearchTerm(queries: CubeQuery[]): string | undefined {
+    const ignoredFields = [
+      'Oportunidades.archived',
+      'Oportunidades.moneda',
+      'Etapas.stageType',
+      'EtapasTicket.stageType',
+      'Oportunidades.priority',
+      'Tickets.priority',
+    ];
+    const ignoredValues = new Set(['false', 'true', 'usd', 'mxn', '0', '1', '2', '3']);
+
+    for (const q of queries) {
+      const extractFromFilters = (filters: any[]): string | undefined => {
+        for (const f of filters || []) {
+          if (f.or && Array.isArray(f.or)) {
+            const found = extractFromFilters(f.or);
+            if (found) return found;
+          }
+          if (f.and && Array.isArray(f.and)) {
+            const found = extractFromFilters(f.and);
+            if (found) return found;
+          }
+          if (f.member && ignoredFields.includes(f.member)) {
+            continue;
+          }
+          if (f.values && Array.isArray(f.values) && f.values.length > 0) {
+            const val = f.values[0];
+            if (
+              typeof val === 'string' &&
+              val.length >= 2 &&
+              !ignoredValues.has(val.toLowerCase().trim()) &&
+              !this.securityService.isValidUuid(val) &&
+              !/^\d+$/.test(val)
+            ) {
+              return val;
+            }
+          }
+        }
+        return undefined;
+      };
+
+      const found = extractFromFilters(q.filters || []);
+      if (found) return found;
+    }
+
+    return undefined;
   }
 }
 

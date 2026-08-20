@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { CreateReminderDto } from './dto/create-reminder.dto';
 import { UpdateReminderDto } from './dto/update-reminder.dto';
 import { Reminder } from './entities/reminder.entity';
@@ -8,6 +8,8 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class RemindersService {
+  private static checkedSchemas = new Set<string>();
+
   constructor(
     @InjectRepository(Reminder)
     private readonly reminderRepository: Repository<Reminder>,
@@ -15,6 +17,8 @@ export class RemindersService {
 
   private async ensureTableExists() {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    if (RemindersService.checkedSchemas.has(tenantSchema)) return;
+
     try {
       await this.reminderRepository.query(`
         CREATE TABLE IF NOT EXISTS "${tenantSchema}".reminders (
@@ -40,6 +44,7 @@ export class RemindersService {
           END IF;
         END $$;
       `);
+      RemindersService.checkedSchemas.add(tenantSchema);
     } catch (e) {}
   }
 
@@ -53,6 +58,21 @@ export class RemindersService {
   async findByActivity(activityId: string): Promise<Reminder | null> {
     await this.ensureTableExists();
     return this.reminderRepository.findOne({ where: { activityId } });
+  }
+
+  async findByActivities(activityIds: string[]): Promise<Map<string, Reminder>> {
+    if (!activityIds || activityIds.length === 0) return new Map();
+    await this.ensureTableExists();
+    const reminders = await this.reminderRepository.find({
+      where: { activityId: In(activityIds) },
+    });
+    const map = new Map<string, Reminder>();
+    for (const r of reminders) {
+      if (r.activityId) {
+        map.set(r.activityId, r);
+      }
+    }
+    return map;
   }
 
   async upsertForActivity(

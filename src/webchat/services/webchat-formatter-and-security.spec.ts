@@ -303,6 +303,126 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(query.filters[0].member).toBe('Clientes.companyId');
       expect(query.filters[0].values).toEqual(['22222222-2222-2222-2222-222222222222']);
     });
+
+    it('should transform string usernames in securityFields to Usuarios.username for Admin', () => {
+      const query = {
+        filters: [
+          {
+            member: 'Oportunidades.ejecutivoId',
+            operator: 'equals' as const,
+            values: ['Carlos'],
+          },
+        ],
+      };
+
+      securityService.sanitizeFilters(query, '11111111-1111-1111-1111-111111111111', 'admin');
+
+      expect(query.filters).toHaveLength(1);
+      expect(query.filters[0].member).toBe('Usuarios.username');
+      expect(query.filters[0].operator).toBe('contains');
+      expect(query.filters[0].values).toEqual(['Carlos']);
+    });
+
+    it('should replace placeholders in securityFields with admin userId when querying personal data', () => {
+      const query = {
+        filters: [
+          {
+            member: 'Oportunidades.ejecutivoId',
+            operator: 'equals' as const,
+            values: ['me'],
+          },
+        ],
+      };
+
+      securityService.sanitizeFilters(query, '11111111-1111-1111-1111-111111111111', 'admin');
+
+      expect(query.filters).toHaveLength(1);
+      expect(query.filters[0].member).toBe('Oportunidades.ejecutivoId');
+      expect(query.filters[0].values).toEqual(['11111111-1111-1111-1111-111111111111']);
+    });
+
+    it('should strip Usuarios.* filters and force executive own userId for executives', () => {
+      const query = {
+        filters: [
+          {
+            member: 'Usuarios.username',
+            operator: 'contains' as const,
+            values: ['Carlos'],
+          },
+          {
+            member: 'Oportunidades.ejecutivoId',
+            operator: 'equals' as const,
+            values: ['Carlos'],
+          },
+        ],
+      };
+
+      securityService.sanitizeFilters(query, '99999999-9999-9999-9999-999999999999', 'executive');
+
+      expect(query.filters).toHaveLength(1);
+      expect(query.filters[0].member).toBe('Oportunidades.ejecutivoId');
+      expect(query.filters[0].values).toEqual(['99999999-9999-9999-9999-999999999999']);
+    });
+
+    it('should sanitize nested OR filters and support multi-entity search', () => {
+      const query: any = {
+        filters: [
+          {
+            or: [
+              {
+                member: 'Usuarios.username',
+                operator: 'contains',
+                values: ['Valeria'],
+              },
+              {
+                member: 'Oportunidades.cuentaOCliente',
+                operator: 'contains',
+                values: ['Valeria'],
+              },
+              {
+                member: 'Oportunidades.companyId',
+                operator: 'equals',
+                values: ['invalid-company-id'],
+              },
+            ],
+          },
+        ],
+      };
+
+      securityService.sanitizeFilters(query, '11111111-1111-1111-1111-111111111111', 'admin');
+
+      expect(query.filters).toHaveLength(1);
+      expect(query.filters[0].or).toHaveLength(2);
+      expect(query.filters[0].or[0].member).toBe('Usuarios.username');
+      expect(query.filters[0].or[1].member).toBe('Oportunidades.cuentaOCliente');
+    });
+
+    it('should strip Usuarios.* from nested OR filters for executives', () => {
+      const query: any = {
+        filters: [
+          {
+            or: [
+              {
+                member: 'Usuarios.username',
+                operator: 'contains',
+                values: ['Valeria'],
+              },
+              {
+                member: 'Oportunidades.cuentaOCliente',
+                operator: 'contains',
+                values: ['Valeria'],
+              },
+            ],
+          },
+        ],
+      };
+
+      securityService.sanitizeFilters(query, '99999999-9999-9999-9999-999999999999', 'executive');
+
+      expect(query.filters).toHaveLength(1);
+      expect(query.filters[0].or).toHaveLength(1);
+      expect(query.filters[0].or[0].member).toBe('Oportunidades.cuentaOCliente');
+    });
   });
 
   describe('WebchatEntityMatcherService - Multi-Entity & Mapping', () => {

@@ -37,10 +37,21 @@ export class WebchatSecurityService {
       throw new ForbiddenException(`Se requiere un usuario identificado y válido para realizar consultas.`);
     }
 
+    const extractFilterMembers = (filters: any[]): string[] => {
+      const members: string[] = [];
+      for (const f of filters || []) {
+        if (!f) continue;
+        if (typeof f.member === 'string') members.push(f.member);
+        if (f.or && Array.isArray(f.or)) members.push(...extractFilterMembers(f.or));
+        if (f.and && Array.isArray(f.and)) members.push(...extractFilterMembers(f.and));
+      }
+      return members;
+    };
+
     const allMembers = [
       ...(cubeQuery.measures || []),
       ...(cubeQuery.dimensions || []),
-      ...(cubeQuery.filters || []).map((f: CubeQueryFilter) => f.member),
+      ...extractFilterMembers(cubeQuery.filters || []),
       ...(cubeQuery.timeDimensions || []).map((td: any) => td.dimension),
     ];
 
@@ -72,8 +83,33 @@ export class WebchatSecurityService {
       cubeQuery.filters = [];
     }
 
-    // Para ejecutivos: Forzar estrictamente su propio userId en entidades transaccionales
+    // Para ejecutivos: Eliminar cualquier filtro ajeno a Usuarios y forzar estrictamente su propio userId
     if (isExec) {
+      const cleanExecFilters = (filters: any[]): any[] => {
+        if (!filters || !Array.isArray(filters)) return [];
+        const result: any[] = [];
+        for (const f of filters) {
+          if (!f) continue;
+          if (f.or && Array.isArray(f.or)) {
+            const cleanedOr = cleanExecFilters(f.or);
+            if (cleanedOr.length > 0) result.push({ or: cleanedOr });
+            continue;
+          }
+          if (f.and && Array.isArray(f.and)) {
+            const cleanedAnd = cleanExecFilters(f.and);
+            if (cleanedAnd.length > 0) result.push({ and: cleanedAnd });
+            continue;
+          }
+          if (f.member && f.member.startsWith('Usuarios.')) {
+            continue;
+          }
+          result.push(f);
+        }
+        return result;
+      };
+
+      cubeQuery.filters = cleanExecFilters(cubeQuery.filters);
+
       for (const entity of entities) {
         const securityField = ENTITY_SECURITY_MAP[entity];
         if (securityField && securityField !== 'BLOCKED') {
@@ -95,10 +131,19 @@ export class WebchatSecurityService {
 
   /**
    * Sanitiza los filtros generados por el LLM para evitar errores de sintaxis UUID en base de datos.
-   * Maneja placeholders ("me", "yo", "usuario_actual") y consultas globales de SuperAdmin.
+   * Maneja placeholders ("me", "yo", "usuario_actual"), nombres en texto (convirtiéndolos a Usuarios.username para Admin)
+   * y consultas globales de SuperAdmin.
    */
   sanitizeFilters(cubeQuery: CubeQuery | undefined, userId: string, userRole: string): void {
     if (!cubeQuery || !cubeQuery.filters) return;
+    cubeQuery.filters = this.sanitizeFilterList(cubeQuery.filters, userId, userRole);
+  }
+
+  /**
+   * Sanitiza recursivamente una lista de filtros, soportando bloques OR y AND.
+   */
+  private sanitizeFilterList(filters: any[], userId: string, userRole: string): any[] {
+    if (!filters || !Array.isArray(filters)) return [];
 
     const roleLower = (userRole || '').toLowerCase().trim();
     const isSuper = this.isSuperAdmin(roleLower);
@@ -121,9 +166,48 @@ export class WebchatSecurityService {
       'usuario_actual',
     ]);
 
-    const sanitizedFilters: CubeQueryFilter[] = [];
+    const uuidFields = [
+      'Oportunidades.stageId',
+      'Oportunidades.clienteId',
+      'Oportunidades.companyId',
+      'Oportunidades.pipelineId',
+      'Clientes.companyId',
+      'Tickets.stageId',
+      'Tickets.helpdeskId',
+      'Tickets.clienteId',
+      'Actividades.clientId',
+      'Actividades.opportunityId',
+      'Gastos.clientId',
+      'Gastos.opportunityId',
+    ];
 
-    for (const filter of cubeQuery.filters) {
+    const sanitizedFilters: any[] = [];
+
+    for (const filter of filters) {
+      if (!filter) continue;
+
+      if (filter.or && Array.isArray(filter.or)) {
+        const sanitizedOr = this.sanitizeFilterList(filter.or, userId, userRole);
+        if (sanitizedOr.length > 0) {
+          sanitizedFilters.push({ or: sanitizedOr });
+        }
+        continue;
+      }
+
+      if (filter.and && Array.isArray(filter.and)) {
+        const sanitizedAnd = this.sanitizeFilterList(filter.and, userId, userRole);
+        if (sanitizedAnd.length > 0) {
+          sanitizedFilters.push({ and: sanitizedAnd });
+        }
+        continue;
+      }
+
+      // Para ejecutivos: Bloquear cualquier intento de filtrar por la entidad Usuarios
+      if (isExec && filter.member && filter.member.startsWith('Usuarios.')) {
+        this.logger.warn(`[WebChat - Security] Filtro descartado para ejecutivo: ${filter.member}`);
+        continue;
+      }
+
       if (securityFields.includes(filter.member)) {
         if (isExec) {
           if (userId && this.isValidUuid(userId)) {
@@ -138,41 +222,46 @@ export class WebchatSecurityService {
           continue;
         }
 
-        if (isAdminUser) {
-          if (Array.isArray(filter.values)) {
-            const hasInvalidOrPlaceholder = filter.values.some((v: any) =>
-              typeof v === 'string' && (placeholders.has(v.toLowerCase()) || !this.isValidUuid(v)),
+        if (isAdminUser || isSuper) {
+          if (Array.isArray(filter.values) && filter.values.length > 0) {
+            const hasPlaceholder = filter.values.some((v: any) =>
+              typeof v === 'string' && placeholders.has(v.toLowerCase()),
             );
-            if (hasInvalidOrPlaceholder) {
+
+            if (hasPlaceholder) {
               if (userId && this.isValidUuid(userId)) {
                 sanitizedFilters.push({
                   ...filter,
                   operator: 'equals',
                   values: [userId],
                 });
+              } else if (isSuper) {
+                this.logger.log(`[WebChat - Sanitize] Consulta Global de SuperAdmin (sin userId) en ${filter.member}. Omitiendo filtro individual.`);
               } else {
                 throw new ForbiddenException(`El rol Admin requiere un ID de usuario válido para filtrar sus datos personales.`);
               }
               continue;
             }
-          }
-        }
 
-        if (isSuper) {
-          if (Array.isArray(filter.values)) {
-            const hasInvalidOrPlaceholder = filter.values.some((v: any) =>
-              typeof v === 'string' && (placeholders.has(v.toLowerCase()) || !this.isValidUuid(v)),
-            );
-            if (hasInvalidOrPlaceholder) {
-              if (userId && this.isValidUuid(userId)) {
-                sanitizedFilters.push({
-                  ...filter,
-                  operator: 'equals',
-                  values: [userId],
-                });
-              } else {
-                this.logger.log(`[WebChat - Sanitize] Consulta Global de SuperAdmin (sin userId) en ${filter.member}. Omitiendo filtro individual.`);
-              }
+            const validUuids = filter.values.filter((v: any) => typeof v === 'string' && this.isValidUuid(v));
+            if (validUuids.length > 0) {
+              sanitizedFilters.push({
+                ...filter,
+                operator: 'equals',
+                values: validUuids,
+              });
+              continue;
+            }
+
+            // Si el valor es un string de nombre (ej. "Carlos" o "Juan"), transformarlo a filtro de Usuarios.username
+            const nonUuidStrings = filter.values.filter((v: any) => typeof v === 'string' && v.trim().length > 0);
+            if (nonUuidStrings.length > 0) {
+              this.logger.log(`[WebChat - Sanitize] Nombre de usuario detectado en ${filter.member} ("${nonUuidStrings.join(', ')}"). Redirigiendo a Usuarios.username.`);
+              sanitizedFilters.push({
+                member: 'Usuarios.username',
+                operator: 'contains',
+                values: nonUuidStrings,
+              });
               continue;
             }
           }
@@ -180,21 +269,6 @@ export class WebchatSecurityService {
       }
 
       // Sanitizar cualquier otro campo UUID (*Id) para remover valores inventados que rompen PostgreSQL
-      const uuidFields = [
-        'Oportunidades.stageId',
-        'Oportunidades.clienteId',
-        'Oportunidades.companyId',
-        'Oportunidades.pipelineId',
-        'Clientes.companyId',
-        'Tickets.stageId',
-        'Tickets.helpdeskId',
-        'Tickets.clienteId',
-        'Actividades.clientId',
-        'Actividades.opportunityId',
-        'Gastos.clientId',
-        'Gastos.opportunityId',
-      ];
-
       if (filter.member && uuidFields.includes(filter.member)) {
         if (Array.isArray(filter.values)) {
           const validUuids = filter.values.filter((v: any) => typeof v === 'string' && this.isValidUuid(v));
@@ -213,7 +287,7 @@ export class WebchatSecurityService {
       sanitizedFilters.push(filter);
     }
 
-    cubeQuery.filters = sanitizedFilters;
+    return sanitizedFilters;
   }
 
   /**

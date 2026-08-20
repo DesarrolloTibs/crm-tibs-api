@@ -135,16 +135,51 @@ export class WebchatResponseFormatterService {
       /stage_type/i,
     ];
 
-    const isExcluded = (key: string): boolean => {
+    const hasDescriptiveColumns = data.some(row =>
+      Object.keys(row).some(k => {
+        const lower = k.toLowerCase();
+        return (
+          lower.includes('nombre') ||
+          lower.includes('proyecto') ||
+          lower.includes('cuenta') ||
+          lower.includes('cliente') ||
+          lower.includes('titulo') ||
+          lower.includes('folio') ||
+          lower.includes('ticketnumber') ||
+          lower.includes('actividad') ||
+          lower.includes('concepto') ||
+          lower.includes('empresa') ||
+          lower.includes('correo')
+        );
+      }),
+    );
+
+    const isExcluded = (key: string, row: Record<string, any>): boolean => {
       const lower = key.trim().toLowerCase();
-      return EXCLUDED_KEY_PATTERNS.some(pattern => pattern.test(lower));
+      if (EXCLUDED_KEY_PATTERNS.some(pattern => pattern.test(lower))) {
+        return true;
+      }
+      // Excluir count/conteo si hay columnas descriptivas de registros individuales o vale 1 en todas las filas
+      if (lower === 'count' || lower.endsWith('.count') || lower === 'conteo' || lower.endsWith('.conteo')) {
+        if (hasDescriptiveColumns || data.every(r => Number(r[key]) === 1 || Number(r[key]) === 0)) {
+          return true;
+        }
+      }
+      // Excluir montoTotalMxnSum si ya existe montoTotal en la fila para no duplicar montos
+      if (
+        (lower === 'montototalmxnsum' || lower.endsWith('.montototalmxnsum')) &&
+        (row['Oportunidades.montoTotal'] !== undefined || row['montoTotal'] !== undefined)
+      ) {
+        return true;
+      }
+      return false;
     };
 
     return data.map(row => {
       const cleanRow: Record<string, any> = {};
 
       for (const [key, val] of Object.entries(row)) {
-        if (isExcluded(key)) continue;
+        if (isExcluded(key, row)) continue;
         cleanRow[key] = val;
       }
 
@@ -165,28 +200,26 @@ export class WebchatResponseFormatterService {
       return 'No se encontraron resultados para tu consulta. ¿Quieres intentar con otros filtros?';
     }
 
-    // Si hay exactamente 1 resultado y un template con variables interpoladas, usamos formato directo
+    // Si hay un template definido por el planificador sin placeholders o con placeholders resueltos
+    if (queryPlan.responseTemplate && !queryPlan.responseTemplate.includes('{')) {
+      return queryPlan.responseTemplate;
+    }
     if (cubeData.length === 1 && queryPlan.responseTemplate && queryPlan.responseTemplate.includes('{')) {
       return this.simpleFormat(cubeData, queryPlan.responseTemplate, annotation);
     }
 
-    const truncatedData = cubeData.slice(0, 20);
-    const formatPrompt = `Eres el asistente del CRM. El usuario preguntó: "${originalQuestion}".
-
-[DATOS OBTENIDOS DE LA BASE DE DATOS]
-Número de registros: ${truncatedData.length}
+    const totalCount = cubeData.length;
+    const sampleData = cubeData.slice(0, 30);
+    const formatPrompt = `Contexto: Asistente del CRM.
+Pregunta del usuario: "${originalQuestion}".
+Total de registros en base de datos: ${totalCount}.
 Datos:
-${JSON.stringify(truncatedData, null, 2)}
+${JSON.stringify(sampleData, null, 2)}
 
-[REGLAS ESTRICTAS]
-- Responde ÚNICAMENTE con 1 o 2 oraciones en texto plano en español dirigidas al usuario.
-- PROHIBIDO generar código de programación (NO generes JavaScript, Python, funciones ni scripts).
-- PROHIBIDO usar bloques de código con comillas invertidas.
-- Expresa los montos monetarios indicando su moneda (ej: "$300.00 MXN", "$100.00 USD").
-- Ejemplo de respuesta esperada: "Se encontraron 2 clientes en el top de ventas con un monto acumulado de $300.00 MXN."`;
+Instrucción: Escribe directamente 1 oración en español resumiendo los datos para el usuario sin introducciones, sin encabezados, sin código y sin repetir instrucciones.`;
 
     try {
-      const formatted = await this.aiAgentService.invokeLanguageModel(formatPrompt, 0.3);
+      const formatted = await this.aiAgentService.invokeLanguageModel(formatPrompt, 0.2);
       let clean = (formatted || '').trim();
 
       // Si el LLM generó código o bloques de script, descartar el código y usar el generador inteligente
@@ -195,18 +228,36 @@ ${JSON.stringify(truncatedData, null, 2)}
         return this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
       }
 
-      // Si el LLM copió prefijos como "Respuesta:" o "Resumen:", extraer la respuesta real
-      if (clean.includes('Respuesta:')) {
-        clean = clean.split(/Respuesta:/i).pop()!.trim();
-      } else if (clean.includes('Resumen:')) {
-        clean = clean.split(/Resumen:/i).pop()!.trim();
+      // Limpiar tokens especiales del modelo (ej: <|python_end|>, <|header_start|>assistant<|header_end|>)
+      clean = clean.replace(/<\|[^|>]*\|>/g, '').trim();
+
+      // Si el LLM incluyó encabezados como "### Respuesta", "## Respuesta:", "Respuesta:", "### Resumen", etc.
+      if (/(?:^|\n)\s*#{1,4}\s*(?:Respuesta|Resumen):?/i.test(clean)) {
+        clean = clean.split(/(?:^|\n)\s*#{1,4}\s*(?:Respuesta|Resumen):?/i).pop()!.trim();
+      } else if (/(?:^|\n)\s*(?:Respuesta|Resumen):/i.test(clean)) {
+        clean = clean.split(/(?:^|\n)\s*(?:Respuesta|Resumen):/i).pop()!.trim();
       }
 
+      // Remover cualquier residuo de instrucciones, preámbulo o boilerplate del prompt
       clean = clean
-        .replace(/^\[(REGLAS|INSTRUCCIONES|REGLAS ADICIONALES)[^\]]*\][\s\S]*?(?=\n\n|\n[A-Z]|$)/i, '')
+        .replace(/^[.\s\-_*#]+/g, '')
+        .replace(/^(?:Se te pide responder|Como asistente del CRM|A continuación|Basado en los datos|De acuerdo a la información|Instrucción)[^\n:]*[:\n]+/i, '')
+        .replace(/^\[(REGLAS|INSTRUCCIONES|REGLAS ADICIONALES|DATOS)[^\]]*\][\s\S]*?(?=\n\n|\n[A-Z]|$)/i, '')
         .trim();
 
-      return clean || this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
+      // Si el texto resultante es un eco de la instrucción o está vacío, usar el generador inteligente
+      const lowerClean = clean.toLowerCase();
+      if (
+        !clean ||
+        lowerClean.startsWith('se te pide') ||
+        lowerClean.startsWith('escribe directamente') ||
+        lowerClean.startsWith('contexto:') ||
+        lowerClean.includes('solicitada por el usuario')
+      ) {
+        return this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
+      }
+
+      return clean;
     } catch (err) {
       return this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
     }
@@ -222,6 +273,10 @@ ${JSON.stringify(truncatedData, null, 2)}
     annotation?: CubeAnnotation,
   ): string {
     if (!cubeData || cubeData.length === 0) return 'No se encontraron resultados.';
+
+    if (queryPlan.responseTemplate && !queryPlan.responseTemplate.includes('{')) {
+      return queryPlan.responseTemplate;
+    }
 
     if (cubeData.length === 1 && queryPlan.responseTemplate) {
       return this.simpleFormat(cubeData, queryPlan.responseTemplate, annotation);
@@ -250,15 +305,26 @@ ${JSON.stringify(truncatedData, null, 2)}
     }
 
     const count = cubeData.length;
-    const isTopQuery = originalQuestion.toLowerCase().includes('top');
-    const entityLabel = count === 1 ? 'registro' : 'registros';
+    const qLower = (originalQuestion || '').toLowerCase();
+    const isTopQuery = qLower.includes('top') || qLower.includes('antiguas') || qLower.includes('recientes') || qLower.includes('primeras') || qLower.includes('últimas') || qLower.includes('ultimas');
+    const entityType = queryPlan.detectedEntity || 'registro';
+    const entityLabel = entityType === 'Oportunidades' ? (count === 1 ? 'oportunidad' : 'oportunidades')
+      : entityType === 'Tickets' ? (count === 1 ? 'ticket' : 'tickets')
+      : entityType === 'Clientes' ? (count === 1 ? 'cliente' : 'clientes')
+      : entityType === 'Empresas' ? (count === 1 ? 'empresa' : 'empresas')
+      : entityType === 'Productos' ? (count === 1 ? 'producto' : 'productos')
+      : (count === 1 ? 'registro' : 'registros');
 
     if (hasMonto && totalMonto > 0) {
       const formattedMonto = this.formatCurrency(totalMonto, detectedCurrency);
       if (isTopQuery) {
-        return `Se encontraron los ${count} clientes principales con un monto acumulado de ${formattedMonto}.`;
+        return `Se encontraron las ${count} ${entityLabel} principales con un monto acumulado de ${formattedMonto}.`;
       }
       return `Se encontraron ${count} ${entityLabel} con un monto total de ${formattedMonto}.`;
+    }
+
+    if (isTopQuery) {
+      return `Se encontraron las ${count} ${entityLabel} solicitadas:`;
     }
 
     return `Se encontraron ${count} ${entityLabel} para tu consulta.`;
@@ -484,6 +550,19 @@ ${JSON.stringify(truncatedData, null, 2)}
           const cleanPlaceholder = `{${cleanKey}}`;
           formatted = formatted.replace(new RegExp(cleanPlaceholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), displayVal);
         }
+
+        // Si aún quedan placeholders sin resolver (ej. {Oportunidades.montoTotal} porque los datos corresponden a otra entidad o columnas faltantes)
+        const unassignedPlaceholders = formatted.match(/\{[a-zA-Z0-9_.]+\}/g);
+        if (unassignedPlaceholders && unassignedPlaceholders.length > 0) {
+          const totalOriginalPlaceholders = (template.match(/\{[a-zA-Z0-9_.]+\}/g) || []).length;
+          // Si ninguno de los placeholders se pudo resolver, descartar la plantilla rota y usar resumen inteligente
+          if (totalOriginalPlaceholders > 0 && unassignedPlaceholders.length >= totalOriginalPlaceholders) {
+            return this.generateSmartSummary(data, '', { responseTemplate: '' }, annotation);
+          }
+          // Limpiar placeholders residuales para no mostrarlos al usuario
+          formatted = formatted.replace(/\{[a-zA-Z0-9_.]+\}/g, '').replace(/\s{2,}/g, ' ').trim();
+        }
+
         return formatted;
       }
 
