@@ -8,6 +8,8 @@ import { UpdateUserDto, UpdateUserStatusDto } from './dto/update-user.dto';
 import { Role } from '../role.enum';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 
+type UserWithTenantSchema = User & { tenantSchema?: string };
+
 @Injectable()
 export class UsersService implements OnModuleInit {
   constructor(
@@ -102,14 +104,14 @@ export class UsersService implements OnModuleInit {
         `SELECT id, username, email, password, role, "isActive" FROM "${tenantSchema}".users WHERE LOWER(email) = LOWER($1)`,
         [email]
       );
-      if (rows.length > 0) return rows[0] as User;
+      if (rows.length > 0) return this.withTenantSchema(rows[0], tenantSchema);
     }
 
     const suRows = await this.dataSource.query(
       `SELECT id, username, email, password, role, "isActive" FROM public.users WHERE LOWER(email) = LOWER($1)`,
       [email]
     );
-    if (suRows.length > 0) return suRows[0] as User;
+    if (suRows.length > 0) return this.withTenantSchema(suRows[0], 'public');
 
     const tenants = await this.dataSource.query(
       `SELECT schema_name FROM public.tenants WHERE is_active = true`
@@ -121,7 +123,7 @@ export class UsersService implements OnModuleInit {
           `SELECT id, username, email, password, role, "isActive" FROM "${t.schema_name}".users WHERE LOWER(email) = LOWER($1)`,
           [email]
         );
-        if (rows && rows.length > 0) return rows[0] as User;
+        if (rows && rows.length > 0) return this.withTenantSchema(rows[0], t.schema_name);
       } catch (err) {}
     }
 
@@ -297,15 +299,36 @@ export class UsersService implements OnModuleInit {
 
   async findOneByResetToken(token: string): Promise<User | null> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
-    const rows = await this.dataSource.query(
-      `SELECT id, username, email, role, "isActive" FROM "${tenantSchema}".users WHERE reset_password_token = $1`,
-      [token]
-    );
-    return rows.length > 0 ? rows[0] : null;
+    // Los aliases son necesarios porque esta consulta se ejecuta con dataSource.query(),
+    // que devuelve los nombres de PostgreSQL tal cual y no aplica el mapeo de TypeORM.
+    const userColumns = 'id, username, email, password, role, "isActive", reset_password_token AS "resetPasswordToken", reset_password_expires AS "resetPasswordExpires"';
+
+    // El enlace de recuperación no contiene el tenant; primero usamos el contexto
+    // actual y después buscamos en el resto de tenants activos.
+    const schemasToSearch = new Set<string>([tenantSchema, 'public']);
+    const tenants = await this.dataSource.query(
+      `SELECT schema_name FROM public.tenants WHERE is_active = true`
+    ).catch(() => []);
+    for (const tenant of tenants) {
+      if (TenantContextService.validateSchemaName(tenant.schema_name)) {
+        schemasToSearch.add(tenant.schema_name);
+      }
+    }
+
+    for (const schema of schemasToSearch) {
+      if (!TenantContextService.validateSchemaName(schema)) continue;
+      const rows = await this.dataSource.query(
+        `SELECT ${userColumns} FROM "${schema}".users WHERE reset_password_token = $1`,
+        [token]
+      );
+      if (rows.length > 0) return this.withTenantSchema(rows[0], schema);
+    }
+
+    return null;
   }
 
   async save(user: User): Promise<User> {
-    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const tenantSchema = (user as UserWithTenantSchema).tenantSchema || TenantContextService.getTenantSchema() || 'public';
     const userId = user.id;
 
     if (!userId) return user;
@@ -335,6 +358,10 @@ export class UsersService implements OnModuleInit {
     }
 
     return user;
+  }
+
+  private withTenantSchema(user: User, tenantSchema: string): UserWithTenantSchema {
+    return { ...user, tenantSchema };
   }
 }
 
