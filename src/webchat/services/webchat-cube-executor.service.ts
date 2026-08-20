@@ -26,16 +26,75 @@ export class WebchatCubeExecutorService {
       }
       if (cubeQuery.dimensions && cubeQuery.dimensions.length > 0) {
         let dims = [...cubeQuery.dimensions];
-        // Si se consultan actividades y no hay measures (consulta de detalle), incluir Actividades.id para evitar que GROUP BY colapse registros idénticos
-        if (dims.some(d => d.startsWith('Actividades.')) && (!cubeQuery.measures || cubeQuery.measures.length === 0)) {
-          if (!dims.includes('Actividades.id')) {
-            dims.unshift('Actividades.id');
+
+        // Detectar si la consulta incluye campos descriptivos de elementos individuales (listado/agenda/detalle)
+        const hasDescriptiveItemDimensions = dims.some((d: string) => {
+          if (typeof d !== 'string') return false;
+          const lower = d.toLowerCase();
+          return (
+            lower.includes('.actividad') ||
+            lower.includes('.nombreproyecto') ||
+            lower.includes('.descripcion') ||
+            lower.includes('.titulo') ||
+            lower.includes('.ticketnumber') ||
+            lower.includes('.folio') ||
+            lower.includes('.concepto') ||
+            lower.includes('.fecha') ||
+            lower.includes('.createdat')
+          );
+        });
+
+        // Una consulta es de detalle si no tiene measures, O si tiene campos descriptivos de registros individuales
+        const isDetailQuery = (!cubeQuery.measures || cubeQuery.measures.length === 0) || hasDescriptiveItemDimensions;
+
+        // Si es una consulta de detalle y measures solo traía conteos simples (ej. Actividades.count),
+        // removemos el count de measures para evitar que Cube.dev agrupe y colapse filas con mismos valores
+        if (isDetailQuery && queryPayload.measures && queryPayload.measures.length > 0) {
+          const nonCountMeasures = queryPayload.measures.filter(
+            (m: string) => typeof m === 'string' && !m.toLowerCase().endsWith('.count') && m.toLowerCase() !== 'count'
+          );
+          if (nonCountMeasures.length === 0) {
+            delete queryPayload.measures;
+          } else {
+            queryPayload.measures = nonCountMeasures;
           }
         }
-        // Excluir primary keys ocultas (*.id) excepto Actividades.id que es visible para unicidad
-        const filteredDims = dims.filter(
-          (d: string) => typeof d === 'string' && (d === 'Actividades.id' || (!d.toLowerCase().endsWith('.id') && d.toLowerCase() !== 'id'))
-        );
+
+        // En consultas de detalle, asegurar que el primary key del cubo principal esté en dimensions
+        // para garantizar que cada registro (incluso con el mismo nombre/fecha) sea una fila independiente
+        if (isDetailQuery) {
+          const primaryCube = dims.find(d => typeof d === 'string' && d.includes('.'))?.split('.')[0];
+          if (primaryCube) {
+            const primaryIdDim = `${primaryCube}.id`;
+            if (!dims.includes(primaryIdDim)) {
+              dims.unshift(primaryIdDim);
+            }
+          }
+        }
+
+        // En consultas de detalle permitimos <Cubo>.id para mantener unicidad.
+        // En consultas de agregación pura (con measures y sin dimensiones descriptivas), excluimos primary keys para permitir el agrupamiento correcto.
+        const filteredDims = dims.filter((d: string) => {
+          if (typeof d !== 'string') return false;
+          if (isDetailQuery) return true;
+          return !d.toLowerCase().endsWith('.id') && d.toLowerCase() !== 'id';
+        });
+
+        // Asegurar que cualquier dimensión utilizada en la cláusula 'order' esté presente en dimensions
+        // para evitar el error de Cube/Postgres: "ORDER BY position N is not in select list"
+        if (orderFormatted) {
+          for (const [orderMember] of orderFormatted) {
+            if (
+              typeof orderMember === 'string' &&
+              orderMember.includes('.') &&
+              !filteredDims.includes(orderMember) &&
+              (!queryPayload.measures || !queryPayload.measures.includes(orderMember))
+            ) {
+              filteredDims.push(orderMember);
+            }
+          }
+        }
+
         if (filteredDims.length > 0) {
           queryPayload.dimensions = filteredDims;
         }
@@ -339,19 +398,88 @@ export class WebchatCubeExecutorService {
 
       if (!f.member) continue;
 
+      let member = String(f.member).trim();
+      let vals = Array.isArray(f.values) ? f.values : (f.values !== undefined ? [f.values] : []);
+      const lowerMem = member.toLowerCase();
+
+      // Remapear miembros de etapas para basarse ÚNICAMENTE en stageType
+      if (
+        lowerMem === 'oportunidades.etapa' ||
+        lowerMem === 'oportunidades.stage' ||
+        lowerMem === 'oportunidades.stagetype' ||
+        lowerMem === 'etapas.etapa' ||
+        lowerMem === 'etapas.nombre' ||
+        lowerMem === 'etapas.stagetype' ||
+        lowerMem === 'etapas.type'
+      ) {
+        const valStr = vals.map((v: any) => String(v).toLowerCase()).join(' ');
+        if (
+          valStr.includes('ganada') ||
+          valStr.includes('ganado') ||
+          valStr.includes('venta') ||
+          valStr.includes('exitosa') ||
+          valStr.includes('exitoso') ||
+          valStr === '1'
+        ) {
+          member = 'Etapas.stageType';
+          vals = ['1'];
+        } else if (
+          valStr.includes('perdida') ||
+          valStr.includes('perdido') ||
+          valStr === '2'
+        ) {
+          member = 'Etapas.stageType';
+          vals = ['2'];
+        } else if (
+          valStr.includes('abierta') ||
+          valStr.includes('abierto') ||
+          valStr.includes('proceso') ||
+          valStr === '0'
+        ) {
+          member = 'Etapas.stageType';
+          vals = ['0'];
+        } else {
+          member = 'Etapas.stageType';
+        }
+      } else if (
+        lowerMem === 'tickets.etapa' ||
+        lowerMem === 'tickets.stage' ||
+        lowerMem === 'tickets.estado' ||
+        lowerMem === 'tickets.stagetype' ||
+        lowerMem === 'etapasticket.etapa' ||
+        lowerMem === 'etapasticket.nombre' ||
+        lowerMem === 'etapasticket.stagetype'
+      ) {
+        const valStr = vals.map((v: any) => String(v).toLowerCase()).join(' ');
+        if (valStr.includes('abierto') || valStr.includes('abierta') || valStr === '0') {
+          member = 'EtapasTicket.stageType';
+          vals = ['0'];
+        } else if (valStr.includes('cerrado') || valStr.includes('cerrada') || valStr.includes('resuelto') || valStr === '1') {
+          member = 'EtapasTicket.stageType';
+          vals = ['1'];
+        } else {
+          member = 'EtapasTicket.stageType';
+        }
+      } else if (lowerMem === 'actividades.tipo' || lowerMem === 'actividades.tipoactividad') {
+        member = 'TiposActividad.nombre';
+      } else if (lowerMem === 'oportunidades.ejecutivo' || lowerMem === 'clientes.ejecutivo' || lowerMem === 'empresas.ejecutivo') {
+        member = 'Usuarios.username';
+      } else if (lowerMem === 'oportunidades.empresa' || lowerMem === 'clientes.empresa') {
+        member = 'Empresas.nombre';
+      }
+
       const rawOp = String(f.operator || 'equals').trim().toLowerCase().replace(/[\s_-]/g, '');
       const op = OPERATOR_MAP[rawOp] || 'equals';
 
       if (op === 'set' || op === 'notSet') {
         sanitized.push({
-          member: f.member,
+          member,
           operator: op,
           values: [],
         });
       } else {
-        const vals = Array.isArray(f.values) ? f.values : (f.values !== undefined ? [f.values] : []);
         sanitized.push({
-          member: f.member,
+          member,
           operator: op,
           values: vals,
         });

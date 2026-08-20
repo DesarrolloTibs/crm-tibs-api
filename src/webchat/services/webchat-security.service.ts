@@ -10,8 +10,8 @@ export const ENTITY_SECURITY_MAP: Record<string, string | null> = {
   Actividades: 'Actividades.userId',
   Gastos: 'Gastos.usuarioId',
   Tickets: 'Tickets.responsableId',
-  Clientes: null,       // Global dentro de la organización
-  Empresas: null,       // Cuentas / Empresas globales dentro de la organización
+  Clientes: 'Clientes.ejecutivoId', // Asignación a ejecutivo en clientes
+  Empresas: 'Empresas.ejecutivoId', // Asignación a ejecutivo en empresas/cuentas
   Productos: null,      // Catálogo global
   Usuarios: 'BLOCKED',  // Solo admins y superadmins
 };
@@ -155,6 +155,8 @@ export class WebchatSecurityService {
       'Actividades.userId',
       'Gastos.usuarioId',
       'Tickets.responsableId',
+      'Clientes.ejecutivoId',
+      'Empresas.ejecutivoId',
     ];
 
     const placeholders = new Set([
@@ -172,6 +174,8 @@ export class WebchatSecurityService {
       'Oportunidades.companyId',
       'Oportunidades.pipelineId',
       'Clientes.companyId',
+      'Clientes.ejecutivoId',
+      'Empresas.ejecutivoId',
       'Tickets.stageId',
       'Tickets.helpdeskId',
       'Tickets.clienteId',
@@ -200,6 +204,20 @@ export class WebchatSecurityService {
           sanitizedFilters.push({ and: sanitizedAnd });
         }
         continue;
+      }
+
+      // Descartar filtros inexistentes o inventados en catálogos globales como Productos
+      if (filter.member) {
+        const lowerMem = filter.member.toLowerCase();
+        if (
+          lowerMem.startsWith('productos.ejecutivoid') ||
+          lowerMem.startsWith('productos.userid') ||
+          lowerMem.startsWith('productos.responsableid') ||
+          lowerMem.startsWith('productos.usuarioid')
+        ) {
+          this.logger.warn(`[WebChat - Sanitize] Filtro descartado por no existir en el catálogo de productos: ${filter.member}`);
+          continue;
+        }
       }
 
       // Para ejecutivos: Bloquear cualquier intento de filtrar por la entidad Usuarios

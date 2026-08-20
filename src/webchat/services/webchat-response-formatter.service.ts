@@ -110,6 +110,31 @@ export class WebchatResponseFormatterService {
   }
 
   /**
+   * Formatea un timestamp ISO UTC a la zona horaria local de México (ej. 20/01/2023, 12:00 p.m.).
+   */
+  formatDateTime(val: any, timezone: string = 'America/Mexico_City'): string {
+    if (!val) return '';
+    try {
+      const strVal = String(val).trim();
+      const utcStr = strVal.endsWith('Z') || strVal.includes('+') ? strVal : `${strVal}Z`;
+      const d = new Date(utcStr);
+      if (isNaN(d.getTime())) return strVal;
+
+      return d.toLocaleString('es-MX', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      });
+    } catch {
+      return String(val);
+    }
+  }
+
+  /**
    * Sanitiza y embellece los datos que se enviarán a la tabla visual del frontend,
    * eliminando IDs técnicos (UUIDs), estatus internos y columnas irrelevantes.
    */
@@ -180,7 +205,13 @@ export class WebchatResponseFormatterService {
 
       for (const [key, val] of Object.entries(row)) {
         if (isExcluded(key, row)) continue;
-        cleanRow[key] = val;
+
+        // Normalizar fechas UTC agregando 'Z' si viene en formato ISO sin zona horaria
+        if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val) && !val.endsWith('Z') && !val.includes('+')) {
+          cleanRow[key] = `${val}Z`;
+        } else {
+          cleanRow[key] = val;
+        }
       }
 
       return cleanRow;
@@ -188,7 +219,7 @@ export class WebchatResponseFormatterService {
   }
 
   /**
-   * Formatea los resultados crudos en una respuesta amigable usando el LLM o plantillas directas.
+   * Formatea los resultados crudos en una respuesta amigable usando plantillas directas y el generador inteligente (cero tokens extra).
    */
   async formatResults(
     originalQuestion: string,
@@ -200,67 +231,116 @@ export class WebchatResponseFormatterService {
       return 'No se encontraron resultados para tu consulta. ¿Quieres intentar con otros filtros?';
     }
 
-    // Si hay un template definido por el planificador sin placeholders o con placeholders resueltos
-    if (queryPlan.responseTemplate && !queryPlan.responseTemplate.includes('{')) {
-      return queryPlan.responseTemplate;
-    }
-    if (cubeData.length === 1 && queryPlan.responseTemplate && queryPlan.responseTemplate.includes('{')) {
+    // 1. Si hay un template con placeholders {campo}, interpolarlo
+    if (queryPlan.responseTemplate && queryPlan.responseTemplate.includes('{')) {
       return this.simpleFormat(cubeData, queryPlan.responseTemplate, annotation);
     }
 
-    const totalCount = cubeData.length;
-    const sampleData = cubeData.slice(0, 30);
-    const formatPrompt = `Contexto: Asistente del CRM.
-Pregunta del usuario: "${originalQuestion}".
-Total de registros en base de datos: ${totalCount}.
-Datos:
-${JSON.stringify(sampleData, null, 2)}
-
-Instrucción: Escribe directamente 1 oración en español resumiendo los datos para el usuario sin introducciones, sin encabezados, sin código y sin repetir instrucciones.`;
-
-    try {
-      const formatted = await this.aiAgentService.invokeLanguageModel(formatPrompt, 0.2);
-      let clean = (formatted || '').trim();
-
-      // Si el LLM generó código o bloques de script, descartar el código y usar el generador inteligente
-      if (clean.includes('```') || clean.includes('function ') || clean.includes('const ') || clean.includes('console.log')) {
-        this.logger.warn(`[ResponseFormatter] El LLM generó código en lugar de texto plano. Aplicando generador inteligente.`);
-        return this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
+    // 2. Si hay un template que es un encabezado (termina en ':') y hay datos, adjuntar la lista de registros
+    if (queryPlan.responseTemplate && queryPlan.responseTemplate.trim().endsWith(':')) {
+      const header = queryPlan.responseTemplate.trim();
+      const listContent = this.formatDataRowsAsList(cubeData, annotation);
+      if (listContent) {
+        return `${header}\n\n${listContent}`;
       }
-
-      // Limpiar tokens especiales del modelo (ej: <|python_end|>, <|header_start|>assistant<|header_end|>)
-      clean = clean.replace(/<\|[^|>]*\|>/g, '').trim();
-
-      // Si el LLM incluyó encabezados como "### Respuesta", "## Respuesta:", "Respuesta:", "### Resumen", etc.
-      if (/(?:^|\n)\s*#{1,4}\s*(?:Respuesta|Resumen):?/i.test(clean)) {
-        clean = clean.split(/(?:^|\n)\s*#{1,4}\s*(?:Respuesta|Resumen):?/i).pop()!.trim();
-      } else if (/(?:^|\n)\s*(?:Respuesta|Resumen):/i.test(clean)) {
-        clean = clean.split(/(?:^|\n)\s*(?:Respuesta|Resumen):/i).pop()!.trim();
-      }
-
-      // Remover cualquier residuo de instrucciones, preámbulo o boilerplate del prompt
-      clean = clean
-        .replace(/^[.\s\-_*#]+/g, '')
-        .replace(/^(?:Se te pide responder|Como asistente del CRM|A continuación|Basado en los datos|De acuerdo a la información|Instrucción)[^\n:]*[:\n]+/i, '')
-        .replace(/^\[(REGLAS|INSTRUCCIONES|REGLAS ADICIONALES|DATOS)[^\]]*\][\s\S]*?(?=\n\n|\n[A-Z]|$)/i, '')
-        .trim();
-
-      // Si el texto resultante es un eco de la instrucción o está vacío, usar el generador inteligente
-      const lowerClean = clean.toLowerCase();
-      if (
-        !clean ||
-        lowerClean.startsWith('se te pide') ||
-        lowerClean.startsWith('escribe directamente') ||
-        lowerClean.startsWith('contexto:') ||
-        lowerClean.includes('solicitada por el usuario')
-      ) {
-        return this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
-      }
-
-      return clean;
-    } catch (err) {
-      return this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
+      return header;
     }
+
+    // 3. Generador determinista inteligente con listado adjunto si aplica
+    const summary = this.generateSmartSummary(cubeData, originalQuestion, queryPlan, annotation);
+    const qLower = (originalQuestion || '').toLowerCase();
+    const shouldAttachList = qLower.includes('top') || qLower.includes('lista') || qLower.includes('cuales') || qLower.includes('cuáles') || cubeData.length <= 10;
+    if (shouldAttachList) {
+      const listContent = this.formatDataRowsAsList(cubeData, annotation);
+      if (listContent) {
+        return `${summary}\n\n${listContent}`;
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * Formatea un arreglo de datos de Cube.dev como una lista legible y numerada en markdown.
+   */
+  formatDataRowsAsList(data: any[], annotation?: CubeAnnotation): string {
+    if (!data || !Array.isArray(data) || data.length === 0) return '';
+
+    return data
+      .map((row, idx) => {
+        const rowCurrency = row['Oportunidades.moneda'] || row['moneda'] || 'MXN';
+
+        // 1. Oportunidades
+        const nombreProyecto = row['Oportunidades.nombreProyecto'] || row['nombreProyecto'];
+        if (nombreProyecto) {
+          const cuenta = row['Oportunidades.cuentaOCliente'] || row['cuentaOCliente'] || row['Empresas.nombre'] || '';
+          const cuentaStr = cuenta ? ` (${cuenta})` : '';
+          const montoVal = row['Oportunidades.montoTotal'] ?? row['montoTotal'] ?? row['Oportunidades.montoTotalMxnSum'] ?? row['montoTotalMxnSum'];
+          const montoStr = montoVal !== undefined && montoVal !== null && montoVal !== '' ? ` — ${this.formatCurrency(montoVal, rowCurrency)}` : '';
+          const etapa = row['Etapas.nombre'] || row['etapa'];
+          const etapaStr = etapa ? ` [${etapa}]` : '';
+          return `${idx + 1}. ${nombreProyecto}${cuentaStr}${montoStr}${etapaStr}`;
+        }
+
+        // 2. Clientes con monto/empresa (ej. Top Clientes por ventas)
+        const nombreCliente = row['Clientes.nombreCompleto'] || (row['Clientes.nombre'] ? `${row['Clientes.nombre']} ${row['Clientes.apellido'] || ''}`.trim() : '');
+        if (nombreCliente) {
+          const empresa = row['Empresas.nombre'] || row['empresa'] || '';
+          const empresaStr = empresa ? ` (${empresa})` : '';
+          const montoVal = row['Oportunidades.montoTotalMxnSum'] ?? row['montoTotalMxnSum'] ?? row['Oportunidades.montoTotal'] ?? row['montoTotal'];
+          const montoStr = montoVal !== undefined && montoVal !== null && montoVal !== '' ? ` — Total: ${this.formatCurrency(montoVal, 'MXN')}` : '';
+          const asesor = row['Usuarios.username'] || row['asesor'];
+          const asesorStr = asesor ? ` — Asesor: ${asesor}` : '';
+          return `${idx + 1}. ${nombreCliente}${empresaStr}${montoStr}${asesorStr}`;
+        }
+
+        // 3. Empresas
+        const nombreEmpresa = row['Empresas.nombre'] || row['nombreEmpresa'];
+        if (nombreEmpresa) {
+          const montoVal = row['Oportunidades.montoTotalMxnSum'] ?? row['montoTotalMxnSum'] ?? row['Oportunidades.montoTotal'] ?? row['montoTotal'];
+          const montoStr = montoVal !== undefined && montoVal !== null && montoVal !== '' ? ` — Total: ${this.formatCurrency(montoVal, 'MXN')}` : '';
+          const telefono = row['Empresas.telefono'] ? ` — Tel: ${row['Empresas.telefono']}` : '';
+          const asesorStr = row['Usuarios.username'] ? ` — Asesor: ${row['Usuarios.username']}` : '';
+          return `${idx + 1}. ${nombreEmpresa}${montoStr}${telefono}${asesorStr}`;
+        }
+
+        // 4. Tickets
+        const tituloTicket = row['Tickets.titulo'] || row['titulo'];
+        if (tituloTicket) {
+          const ticketNum = row['Tickets.ticketNumber'] ? `Ticket #${row['Tickets.ticketNumber']}: ` : '';
+          const etapa = row['EtapasTicket.nombre'] ? ` [${row['EtapasTicket.nombre']}]` : '';
+          const responsable = row['Usuarios.username'] ? ` — Responsable: ${row['Usuarios.username']}` : '';
+          return `${idx + 1}. ${ticketNum}${tituloTicket}${etapa}${responsable}`;
+        }
+
+        // 5. Actividades
+        const actividad = row['Actividades.actividad'] || row['actividad'];
+        if (actividad) {
+          const rawFecha = row['Actividades.fecha'] || row['fecha'];
+          const fecha = rawFecha ? ` (${this.formatDateTime(rawFecha)})` : '';
+          const tipo = row['TiposActividad.nombre'] ? ` [${row['TiposActividad.nombre']}]` : '';
+          const asesor = row['Usuarios.username'] ? ` — Asesor: ${row['Usuarios.username']}` : '';
+          return `${idx + 1}. ${actividad}${tipo}${fecha}${asesor}`;
+        }
+
+        // 6. Productos
+        const nombreProducto = row['Productos.nombre'] || row['nombreProducto'];
+        if (nombreProducto) {
+          const precio = row['Productos.precioBase'] !== undefined ? ` — ${this.formatCurrency(row['Productos.precioBase'], 'MXN')}` : '';
+          const unidad = row['Productos.unidadMedida'] ? ` por ${row['Productos.unidadMedida']}` : '';
+          return `${idx + 1}. ${nombreProducto}${precio}${unidad}`;
+        }
+
+        // Fallback genérico para cualquier fila
+        const parts = Object.entries(row)
+          .filter(([k]) => !k.toLowerCase().endsWith('id'))
+          .map(([k, v]) => {
+            if (this.isCurrencyField(k, annotation)) return this.formatCurrency(v, rowCurrency);
+            return String(v);
+          });
+        return `${idx + 1}. ${parts.join(' — ')}`;
+      })
+      .join('\n');
   }
 
   /**
@@ -477,12 +557,13 @@ Instrucción: Escribe directamente 1 oración en español resumiendo los datos p
         continue;
       }
 
-      if (seen.has(cleanLine)) {
+      // No eliminar elementos de lista duplicados si corresponden a registros válidos (ej. oportunidades con el mismo nombre)
+      if (seen.has(cleanLine) && !isListItem) {
         continue;
       }
 
       const isHeader = cleanLine.endsWith(':') || cleanLine.includes('aquí tiene') || cleanLine.includes('top');
-      if (!isHeader) {
+      if (!isHeader && !isListItem) {
         seen.add(cleanLine);
       }
 
@@ -562,6 +643,12 @@ Instrucción: Escribe directamente 1 oración en español resumiendo los datos p
           // Limpiar placeholders residuales para no mostrarlos al usuario
           formatted = formatted.replace(/\{[a-zA-Z0-9_.]+\}/g, '').replace(/\s{2,}/g, ' ').trim();
         }
+
+        formatted = formatted
+          .replace(/\b(MXN|USD)\s+\1\b/gi, '$1')
+          .replace(/\b(MXN|USD)\s+(pesos|dólares|dolares)\b/gi, '$1')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
 
         return formatted;
       }

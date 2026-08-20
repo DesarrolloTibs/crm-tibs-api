@@ -28,6 +28,26 @@ export interface DashboardRedirect {
   helpdeskId?: string;
 }
 
+export type WebchatDomain =
+  | 'OPORTUNIDADES'
+  | 'TICKETS'
+  | 'CLIENTES_EMPRESAS'
+  | 'ACTIVIDADES'
+  | 'GASTOS'
+  | 'PRODUCTOS'
+  | 'VAGUE_SEARCH'
+  | 'CONVERSATIONAL'
+  | 'MULTI_DOMAIN';
+
+export interface RouterClassification {
+  thought?: string;
+  intent: 'VAGUE_SEARCH' | 'SPECIFIC_ENTITY' | 'ANALYTICAL' | 'CONVERSATIONAL';
+  domain: WebchatDomain;
+  canonicalSearchTerm?: string;
+  responseTemplate?: string;
+  dashboardRedirect?: DashboardRedirect | null;
+}
+
 export interface CubeQueryPlan {
   thought?: string;
   intent?: 'VAGUE_SEARCH' | 'SPECIFIC_ENTITY' | 'ANALYTICAL' | 'CONVERSATIONAL';

@@ -228,6 +228,51 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       promptBuilder = new WebchatPromptBuilderService();
     });
 
+    it('should build lightweight router prompt with all available domains', () => {
+      const routerPrompt = promptBuilder.buildRouterPrompt('user-1', 'admin', 'Admin User');
+
+      expect(routerPrompt).toContain('Agente Orquestador y Clasificador');
+      expect(routerPrompt).toContain('"OPORTUNIDADES"');
+      expect(routerPrompt).toContain('"TICKETS"');
+      expect(routerPrompt).toContain('"CLIENTES_EMPRESAS"');
+      expect(routerPrompt).toContain('"ACTIVIDADES"');
+      expect(routerPrompt).toContain('"GASTOS"');
+      expect(routerPrompt).toContain('"PRODUCTOS"');
+      expect(routerPrompt).toContain('"VAGUE_SEARCH"');
+      expect(routerPrompt).toContain('"CONVERSATIONAL"');
+      expect(routerPrompt.length).toBeLessThan(4000); // Verify it is lightweight
+    });
+
+    it('should build specialized domain prompts without losing schema rules', () => {
+      const oppPrompt = promptBuilder.buildDomainPrompt('OPORTUNIDADES', 'user-1', 'admin', 'Admin User');
+      expect(oppPrompt).toContain('Sub-Agente Especialista en Ventas y Oportunidades');
+      expect(oppPrompt).toContain('montoTotalMxnSum');
+      expect(oppPrompt).toContain('Etapas.stageType');
+
+      const ticketPrompt = promptBuilder.buildDomainPrompt('TICKETS', 'user-1', 'admin', 'Admin User');
+      expect(ticketPrompt).toContain('Sub-Agente Especialista en Mesa de Ayuda y Soporte');
+      expect(ticketPrompt).toContain('Tickets.ticketNumber');
+      expect(ticketPrompt).toContain('EtapasTicket.stageType');
+
+      const clientPrompt = promptBuilder.buildDomainPrompt('CLIENTES_EMPRESAS', 'user-1', 'admin', 'Admin User');
+      expect(clientPrompt).toContain('Sub-Agente Especialista en Directorio de Clientes y Empresas');
+      expect(clientPrompt).toContain('Empresas.nombre');
+      expect(clientPrompt).toContain('Clientes.nombre');
+
+      const actPrompt = promptBuilder.buildDomainPrompt('ACTIVIDADES', 'user-1', 'admin', 'Admin User');
+      expect(actPrompt).toContain('Sub-Agente Especialista en Agenda y Actividades');
+      expect(actPrompt).toContain('Actividades.actividad');
+      expect(actPrompt).toContain('TiposActividad.nombre');
+
+      const expPrompt = promptBuilder.buildDomainPrompt('GASTOS', 'user-1', 'admin', 'Admin User');
+      expect(expPrompt).toContain('Sub-Agente Especialista en Finanzas y Gastos');
+      expect(expPrompt).toContain('Gastos.montoSum');
+
+      const prodPrompt = promptBuilder.buildDomainPrompt('PRODUCTOS', 'user-1', 'admin', 'Admin User');
+      expect(prodPrompt).toContain('Sub-Agente Especialista en Catálogo de Productos y Servicios');
+      expect(prodPrompt).toContain('Productos.precioBase');
+    });
+
     it('should include Empresas schema and relationships in prompt', () => {
       const prompt = promptBuilder.buildSystemPrompt('user-1', 'admin', 'Admin User');
 

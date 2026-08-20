@@ -33,8 +33,11 @@ export class WebchatService {
 
   /**
    * Procesa una consulta de lenguaje natural del usuario autenticado del CRM.
-   * Coordina análisis de intención, búsquedas multi-entidad (para consultas vagas),
-   * tolerancia a faltas de ortografía, filtros de seguridad por rol y ejecución en Capa Semántica.
+   * Arquitectura jerárquica:
+   * 1. Agente Orquestador / Router (~350 tokens): Clasifica intención y dominio.
+   * 2. Si es conversacional o búsqueda vaga, resuelve de inmediato (0 tokens de subagente).
+   * 3. Sub-Agente Especializado por Dominio (~600-1800 tokens): Genera CubeQueryPlan específico.
+   * 4. Ejecución en Capa Semántica con filtros de seguridad y formateo inteligente.
    */
   async processQuery(
     question: string,
@@ -44,20 +47,18 @@ export class WebchatService {
     conversationHistory?: ConversationHistoryMessage[],
   ): Promise<WebchatResponse> {
     try {
-      // 1. Generar system prompt con schemas de Cube.dev y reglas de roles/intenciones
-      const systemPrompt = this.promptBuilder.buildSystemPrompt(userId, userRole, username);
-
-      // 2. Construir historial de conversación reciente para contexto
+      // 1. Construir historial de conversación reciente para contexto
       let historyText = '';
       if (conversationHistory && conversationHistory.length > 0) {
         historyText = conversationHistory
-          .slice(-6)
+          .slice(-4)
           .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
           .join('\n');
       }
 
-      // 3. Prompt completo para Text-to-CubeQuery
-      const fullPrompt = `${systemPrompt}
+      // 2. PASO 1: Invocación del Agente Orquestador / Router (ligero: ~350-450 tokens)
+      const routerPrompt = this.promptBuilder.buildRouterPrompt(userId, userRole, username);
+      const fullRouterPrompt = `${routerPrompt}
 
 ${historyText ? `[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n` : ''}
 [CONSULTA DEL USUARIO]
@@ -65,14 +66,53 @@ ${question}
 
 Genera tu respuesta JSON:`;
 
-      // 4. Invocar el LLM para generar el plan
-      const rawLlmResponse = await this.aiAgentService.invokeLanguageModel(fullPrompt, 0.2);
-      this.logger.log(`[WebChat - LLM Raw] ${rawLlmResponse.substring(0, 300)}`);
+      const rawRouterResponse = await this.aiAgentService.invokeLanguageModel(fullRouterPrompt, 0.1);
+      this.logger.log(`[WebChat - Router Raw] ${rawRouterResponse.substring(0, 250)}`);
 
-      // 5. Parsear y estructurar el plan de consulta
-      const queryPlan = this.queryPlanner.parsePlanFromLlm(rawLlmResponse, question);
+      const classification = this.queryPlanner.parseRouterClassification(rawRouterResponse, question);
+      this.logger.log(`[WebChat - Router Classification] Domain: ${classification.domain} | Intent: ${classification.intent}`);
 
-      // 6. Si es puramente conversacional (saludo, despedida) o no requiere datos
+      // 3. Si el Orquestador determina que es CONVERSACIONAL (saludo, despedida, qué puedes hacer)
+      if (classification.intent === 'CONVERSATIONAL' || classification.domain === 'CONVERSATIONAL') {
+        return {
+          answer: classification.responseTemplate || '¡Hola! Soy tu asistente del CRM. ¿En qué puedo ayudarte hoy?',
+          dashboardRedirect: classification.dashboardRedirect,
+        };
+      }
+
+      // 4. Si el Orquestador determina BÚSQUEDA VAGA de 1 o 2 palabras aisladas (persona, empresa, marca)
+      if (classification.intent === 'VAGUE_SEARCH' || classification.domain === 'VAGUE_SEARCH' || this.entityMatcher.isVagueQuery(question)) {
+        const vaguePlan: CubeQueryPlan = {
+          intent: 'VAGUE_SEARCH',
+          canonicalSearchTerm: classification.canonicalSearchTerm || question.trim(),
+          dashboardRedirect: classification.dashboardRedirect,
+        };
+        return await this.handleVagueSearch(question, vaguePlan, userId, userRole);
+      }
+
+      // 5. PASO 2: Invocación del Sub-Agente Especializado del Dominio detectado
+      const subAgentPrompt = this.promptBuilder.buildDomainPrompt(classification.domain, userId, userRole, username);
+      const fullSubAgentPrompt = `${subAgentPrompt}
+
+${historyText ? `[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n` : ''}
+[CONSULTA DEL USUARIO]
+${question}
+
+Genera tu respuesta JSON:`;
+
+      const rawSubAgentResponse = await this.aiAgentService.invokeLanguageModel(fullSubAgentPrompt, 0.2);
+      this.logger.log(`[WebChat - SubAgent (${classification.domain}) Raw] ${rawSubAgentResponse.substring(0, 300)}`);
+
+      // 6. Parsear y estructurar el plan de consulta del sub-agente
+      const queryPlan = this.queryPlanner.parsePlanFromLlm(rawSubAgentResponse, question);
+      if (classification.dashboardRedirect && !queryPlan.dashboardRedirect) {
+        queryPlan.dashboardRedirect = classification.dashboardRedirect;
+      }
+      if (classification.canonicalSearchTerm && !queryPlan.canonicalSearchTerm) {
+        queryPlan.canonicalSearchTerm = classification.canonicalSearchTerm;
+      }
+
+      // 7. Si el sub-agente respondió conversacional sin consulta
       if (queryPlan.intent === 'CONVERSATIONAL' && (!queryPlan.cubeQuery || Object.keys(queryPlan.cubeQuery).length === 0)) {
         return {
           answer: queryPlan.responseTemplate || queryPlan.thought || '¡Hola! ¿En qué puedo ayudarte hoy?',
@@ -80,7 +120,7 @@ Genera tu respuesta JSON:`;
         };
       }
 
-      // 7. Si el LLM definió claramente una consulta analítica o específica con query estructurada
+      // 8. Si el sub-agente detectó búsqueda vaga
       const isExplicitQueryPlan =
         queryPlan.intent === 'ANALYTICAL' ||
         queryPlan.intent === 'SPECIFIC_ENTITY' ||
@@ -89,12 +129,11 @@ Genera tu respuesta JSON:`;
           (queryPlan.cubeQuery.filters && queryPlan.cubeQuery.filters.length > 0)
         ));
 
-      // 8. FLUJO A: Consulta Vaga / Búsqueda Multi-Entidad (un solo nombre o término sin contexto explícito)
       if (!isExplicitQueryPlan && (queryPlan.intent === 'VAGUE_SEARCH' || this.entityMatcher.isVagueQuery(question))) {
         return await this.handleVagueSearch(question, queryPlan, userId, userRole);
       }
 
-      // 9. FLUJO B: Consulta Específica / Analítica
+      // 9. Ejecutar consulta analítica / específica
       return await this.handleSpecificOrAnalyticalQuery(question, queryPlan, userId, userRole);
 
     } catch (error: any) {
@@ -284,10 +323,16 @@ Genera tu respuesta JSON:`;
           if (orFilters.length > 0) {
             this.logger.log(`[WebChat - Fallback Requery] Reintentando oportunidades multi-entidad: ${JSON.stringify(orFilters)}`);
             const stageFilter = allExecutedFilters.find((f: any) => f.member === 'Etapas.stageType');
+            const archivedFilter = allExecutedFilters.find((f: any) => f.member === 'Oportunidades.archived');
             const retryFilters: any[] = orFilters.length === 1 ? [orFilters[0]] : [{ or: orFilters }];
             if (stageFilter) {
               retryFilters.push(stageFilter);
             }
+            if (archivedFilter) {
+              retryFilters.push(archivedFilter);
+            }
+
+            const originalTimeDims = queriesToExecute.find(q => q.timeDimensions && q.timeDimensions.length > 0)?.timeDimensions;
 
             const retryQuery: CubeQuery = {
               dimensions: [
@@ -300,6 +345,7 @@ Genera tu respuesta JSON:`;
                 'Etapas.nombre',
               ],
               filters: retryFilters,
+              timeDimensions: originalTimeDims,
             };
             this.securityService.applySecurityFilters(retryQuery, userId, userRole);
             const retryRes = await this.cubeExecutor.executeCubeQuery(retryQuery);
@@ -351,8 +397,12 @@ Genera tu respuesta JSON:`;
 
           if (orFilters.length > 0) {
             const stageFilter = allExecutedFilters.find((f: any) => f.member === 'EtapasTicket.stageType');
+            const archivedFilter = allExecutedFilters.find((f: any) => f.member === 'Tickets.archived');
             const retryFilters: any[] = orFilters.length === 1 ? [orFilters[0]] : [{ or: orFilters }];
             if (stageFilter) retryFilters.push(stageFilter);
+            if (archivedFilter) retryFilters.push(archivedFilter);
+
+            const originalTimeDims = queriesToExecute.find(q => q.timeDimensions && q.timeDimensions.length > 0)?.timeDimensions;
 
             const retryQuery: CubeQuery = {
               dimensions: [
@@ -365,6 +415,7 @@ Genera tu respuesta JSON:`;
                 'EtapasTicket.nombre',
               ],
               filters: retryFilters,
+              timeDimensions: originalTimeDims,
             };
             this.securityService.applySecurityFilters(retryQuery, userId, userRole);
             const retryRes = await this.cubeExecutor.executeCubeQuery(retryQuery);
