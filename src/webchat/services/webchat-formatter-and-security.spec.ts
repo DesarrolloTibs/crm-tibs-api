@@ -2,6 +2,7 @@ import { WebchatResponseFormatterService } from './webchat-response-formatter.se
 import { WebchatPromptBuilderService } from './webchat-prompt-builder.service';
 import { WebchatSecurityService } from './webchat-security.service';
 import { WebchatEntityMatcherService } from './webchat-entity-matcher.service';
+import { WebchatCubeExecutorService } from './webchat-cube-executor.service';
 import { CubeAnnotation, CubeQueryPlan } from '../interfaces/webchat.interfaces';
 
 describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
@@ -540,6 +541,148 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(items[0].title).toBe('Comentario prueba');
       expect(items[0].subtitle).toContain('Monto: $100 USD');
       expect(items[0].subtitle).toContain('Cuenta: Acme Corp');
+    });
+  });
+
+  describe('WebchatCubeExecutorService - Natural Language & Relative Date Ranges', () => {
+    let cubeExecutor: WebchatCubeExecutorService;
+    const mockAiAgentService: any = {
+      getCubeApiToken: jest.fn().mockReturnValue('mock-token'),
+    };
+
+    beforeEach(() => {
+      cubeExecutor = new WebchatCubeExecutorService(mockAiAgentService);
+    });
+
+    it('should resolve standard Cube.dev predefined ranges', () => {
+      expect(cubeExecutor.resolveDateRange('Today')).toBe('Today');
+      expect(cubeExecutor.resolveDateRange('yesterday')).toBe('Yesterday');
+      expect(cubeExecutor.resolveDateRange('This week')).toBe('This week');
+      expect(cubeExecutor.resolveDateRange('last week')).toBe('Last week');
+      expect(cubeExecutor.resolveDateRange('This month')).toBe('This month');
+      expect(cubeExecutor.resolveDateRange('last month')).toBe('Last month');
+      expect(cubeExecutor.resolveDateRange('This year')).toBe('This year');
+      expect(cubeExecutor.resolveDateRange('last year')).toBe('Last year');
+      expect(cubeExecutor.resolveDateRange('last 30 days')).toBe('last 30 days');
+    });
+
+    it('should resolve tomorrow, mañana, and future single days', () => {
+      const tomorrowRes = cubeExecutor.resolveDateRange('Tomorrow');
+      expect(Array.isArray(tomorrowRes)).toBe(true);
+      expect(tomorrowRes).toHaveLength(2);
+      expect(tomorrowRes![0]).toBe(tomorrowRes![1]);
+      expect(tomorrowRes![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const mananaRes = cubeExecutor.resolveDateRange('mañana');
+      expect(mananaRes).toEqual(tomorrowRes);
+
+      const pasadoMananaRes = cubeExecutor.resolveDateRange('pasado mañana');
+      expect(Array.isArray(pasadoMananaRes)).toBe(true);
+      expect(pasadoMananaRes![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('should resolve relative offsets (dentro de N días, hace N días)', () => {
+      const in2Days = cubeExecutor.resolveDateRange('dentro de 2 días');
+      expect(Array.isArray(in2Days)).toBe(true);
+      expect(in2Days![0]).toBe(in2Days![1]);
+
+      const hace3Days = cubeExecutor.resolveDateRange('hace 3 días');
+      expect(Array.isArray(hace3Days)).toBe(true);
+      expect(hace3Days![0]).toBe(hace3Days![1]);
+
+      const next7Days = cubeExecutor.resolveDateRange('próximos 7 días');
+      expect(Array.isArray(next7Days)).toBe(true);
+      expect(next7Days![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(next7Days![1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('should resolve future weeks, months, and years', () => {
+      const nextWeek = cubeExecutor.resolveDateRange('próxima semana');
+      expect(Array.isArray(nextWeek)).toBe(true);
+      expect(nextWeek).toHaveLength(2);
+      expect(nextWeek![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(nextWeek![1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const nextMonth = cubeExecutor.resolveDateRange('próximo mes');
+      expect(Array.isArray(nextMonth)).toBe(true);
+      expect(nextMonth![0]).toMatch(/^\d{4}-\d{2}-01$/);
+
+      const nextYear = cubeExecutor.resolveDateRange('próximo año');
+      expect(Array.isArray(nextYear)).toBe(true);
+      expect(nextYear![0]).toMatch(/^\d{4}-01-01$/);
+      expect(nextYear![1]).toMatch(/^\d{4}-12-31$/);
+    });
+
+    it('should resolve Spanish textual dates and date arrays', () => {
+      const resText = cubeExecutor.resolveDateRange('25 de agosto');
+      expect(Array.isArray(resText)).toBe(true);
+      expect(resText![0]).toMatch(/^\d{4}-08-25$/);
+
+      const resArray = cubeExecutor.resolveDateRange(['2026-08-25', '2026-08-28']);
+      expect(resArray).toEqual(['2026-08-25', '2026-08-28']);
+
+      const resArrayTomorrow = cubeExecutor.resolveDateRange(['Tomorrow', 'Tomorrow']);
+      expect(Array.isArray(resArrayTomorrow)).toBe(true);
+      expect(resArrayTomorrow![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('should resolve textual numbers (hace dos días, hace tres semanas, dentro de dos días)', () => {
+      const haceDosDias = cubeExecutor.resolveDateRange('hace dos días');
+      expect(Array.isArray(haceDosDias)).toBe(true);
+      expect(haceDosDias![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const haceTresSemanas = cubeExecutor.resolveDateRange('hace tres semanas');
+      expect(Array.isArray(haceTresSemanas)).toBe(true);
+      expect(haceTresSemanas![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const dentroDeDosDias = cubeExecutor.resolveDateRange('dentro de dos días');
+      expect(Array.isArray(dentroDeDosDias)).toBe(true);
+      expect(dentroDeDosDias![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('should resolve past days of the week (el miércoles pasado, el viernes pasado)', () => {
+      const miercolesPasado = cubeExecutor.resolveDateRange('el miércoles pasado');
+      expect(Array.isArray(miercolesPasado)).toBe(true);
+      expect(miercolesPasado![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(miercolesPasado![0]).toBe(miercolesPasado![1]);
+
+      const viernesPasado = cubeExecutor.resolveDateRange('el viernes pasado');
+      expect(Array.isArray(viernesPasado)).toBe(true);
+      expect(viernesPasado![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const juevesSemanaPasada = cubeExecutor.resolveDateRange('jueves de la semana pasada');
+      expect(Array.isArray(juevesSemanaPasada)).toBe(true);
+      expect(juevesSemanaPasada![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('should resolve days from N weeks ago (el lunes de hace 2 semanas, el miércoles de hace dos semanas)', () => {
+      const lunes2Semanas = cubeExecutor.resolveDateRange('el lunes de hace 2 semanas');
+      expect(Array.isArray(lunes2Semanas)).toBe(true);
+      expect(lunes2Semanas![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(lunes2Semanas![0]).toBe(lunes2Semanas![1]);
+
+      const miercolesDosSemanas = cubeExecutor.resolveDateRange('el miércoles de hace dos semanas');
+      expect(Array.isArray(miercolesDosSemanas)).toBe(true);
+      expect(miercolesDosSemanas![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const semanaHace2Semanas = cubeExecutor.resolveDateRange('la semana de hace 2 semanas');
+      expect(Array.isArray(semanaHace2Semanas)).toBe(true);
+      expect(semanaHace2Semanas![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(semanaHace2Semanas![1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('should resolve past months and years (hace 2 meses, el mes de hace 2 meses, hace un año)', () => {
+      const hace2Meses = cubeExecutor.resolveDateRange('hace 2 meses');
+      expect(Array.isArray(hace2Meses)).toBe(true);
+      expect(hace2Meses![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const mesHace2Meses = cubeExecutor.resolveDateRange('el mes de hace 2 meses');
+      expect(Array.isArray(mesHace2Meses)).toBe(true);
+      expect(mesHace2Meses![0]).toMatch(/^\d{4}-\d{2}-01$/);
+
+      const haceUnAno = cubeExecutor.resolveDateRange('hace un año');
+      expect(Array.isArray(haceUnAno)).toBe(true);
+      expect(haceUnAno![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
   });
 });

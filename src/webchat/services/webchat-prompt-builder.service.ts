@@ -9,12 +9,12 @@ export class WebchatPromptBuilderService {
    * y responder directamente si la consulta es puramente conversacional.
    */
   buildRouterPrompt(userId: string, userRole: string, username: string): string {
-    const { roleDescription, fechaHoy, horaActual } = this.getUserContext(userId, userRole, username);
+    const { roleDescription, fechaHoy, todayISO, horaActual } = this.getUserContext(userId, userRole, username);
 
     return `Eres el Agente Orquestador y Clasificador de Inteligencia del CRM. Tu tarea es analizar la consulta del usuario, detectar la intención, normalizar el término de búsqueda si aplica, y clasificarla en el dominio temático adecuado.
 
 [USUARIO ACTUAL]
-Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} ${horaActual} (CDMX)
+Nombre: ${username} | Rol: ${roleDescription} | Fecha actual: ${fechaHoy} (${todayISO}) ${horaActual} (CDMX)
 
 [DOMINIOS DISPONIBLES]
 1. "OPORTUNIDADES": Ventas ganadas, cotizaciones, montos, pipeline, proyectos comerciales, marcas, líneas de negocio, monedas (USD/MXN).
@@ -341,36 +341,45 @@ ${sharedRules}
    - Dimensions: id, username, correo, role, status
 
 [GUÍA DE CLASIFICACIÓN SEMÁNTICA PARA ACTIVIDADES]
-1. **Actividades y Agenda** (Preguntas: "actividades de esta semana", "mis actividades de hoy", "agenda de Mario", "actividades para esta semana", "cuántas actividades tengo", "reuniones de Carlos", "mis eventos"):
+1. **Actividades y Agenda** (Preguntas: "actividades de esta semana", "mis actividades de hoy", "agenda de Juan", "actividades para esta semana", "cuántas actividades tengo", "reuniones de Carlos", "mis eventos"):
    - Entidad: Actividades
    - Measures: ["Actividades.count"] (únicamente si piden conteo general cuantitativo sin ver el detalle; al listar actividades o ver agenda, NO uses measures)
    - Dimensions sugeridas para detalle: ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"]
    - TimeDimensions: [{ "dimension": "Actividades.fecha", "dateRange": "This week" }] (o "Today", "This month")
 
-2. **Siguiente / Próxima Actividad** (Preguntas: "cuál es la siguiente actividad de Mario", "próxima actividad", "mis siguientes eventos"):
+2. **Siguiente / Próxima Actividad** (Preguntas: "cuál es la siguiente actividad de Juan", "próxima actividad", "mis siguientes eventos"):
    - Filtrar con { "member": "Actividades.fecha", "operator": "gte", "values": ["${todayISO}"] } para buscar únicamente hacia el futuro a partir de hoy.
    - Ordenar por { "Actividades.fecha": "asc" } y limit: 1 (o el número solicitado).
 
-3. **Última Actividad / Más Reciente** (Preguntas: "última actividad de Mario", "actividad más reciente"):
+3. **Última Actividad / Más Reciente** (Preguntas: "última actividad de Juan", "actividad más reciente"):
    - Ordenar por { "Actividades.fecha": "desc" } y limit: 1.
 
 ${this.buildResponseJsonSchema()}
 
 [EJEMPLOS DE ENTENDIMIENTO NATURAL]
-- "cual es la siguiente actividad de mario" / "próxima actividad de Carlos" →
-  {"thought": "El usuario consulta la siguiente actividad futura de un asesor a partir de la fecha actual. Se filtra por Usuarios.username, Actividades.fecha >= hoy, orden asc y limit 1.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["mario"]}, {"member": "Actividades.fecha", "operator": "gte", "values": ["${todayISO}"]}], "order": {"Actividades.fecha": "asc"}, "limit": 1}, "responseTemplate": "La siguiente actividad de Mario es:"}
+- "actividades de juan para mañana" / "mis actividades de mañana" →
+  {"thought": "El usuario consulta las actividades programadas para mañana. Se filtra por Usuarios.username y timeDimension en Actividades.fecha con dateRange 'Tomorrow'.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "Tomorrow"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Actividades de Juan para mañana:"}
+
+- "actividades de juan de ayer" / "actividades pasadas de Carlos" →
+  {"thought": "El usuario consulta actividades de ayer. Se filtra por Usuarios.username y dateRange 'Yesterday'.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "Yesterday"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Actividades de Juan de ayer:"}
+
+- "actividades de la próxima semana" / "actividades para la siguiente semana" →
+  {"thought": "El usuario consulta actividades programadas para la próxima semana.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "Next week"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Actividades programadas para la próxima semana:"}
+
+- "cual es la siguiente actividad de Juan" / "próxima actividad de Carlos" →
+  {"thought": "El usuario consulta la siguiente actividad futura de un asesor a partir de la fecha actual. Se filtra por Usuarios.username, Actividades.fecha >= hoy, orden asc y limit 1.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}, {"member": "Actividades.fecha", "operator": "gte", "values": ["${todayISO}"]}], "order": {"Actividades.fecha": "asc"}, "limit": 1}, "responseTemplate": "La siguiente actividad de Juan es:"}
 
 - "mis siguientes actividades" / "mis próximas actividades" →
   {"thought": "El usuario consulta en primera persona sus próximas actividades programadas a partir de hoy. Se filtra por su userId, Actividades.fecha >= hoy, orden asc y limit 5.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Actividades.userId", "operator": "equals", "values": ["${userId}"]}, {"member": "Actividades.fecha", "operator": "gte", "values": ["${todayISO}"]}], "order": {"Actividades.fecha": "asc"}, "limit": 5}, "responseTemplate": "Tus próximas actividades programadas:"}
 
-- "actividades de mario para esta semana" / "actividades de esta semana de Carlos" →
-  {"thought": "El usuario consulta las actividades programadas para un asesor durante esta semana. Se filtra por Usuarios.username y timeDimension en Actividades.fecha.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["mario"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "This week"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Actividades de Mario para esta semana:"}
+- "actividades de Juan para esta semana" / "actividades de esta semana de Carlos" →
+  {"thought": "El usuario consulta las actividades programadas para un asesor durante esta semana. Se filtra por Usuarios.username y timeDimension en Actividades.fecha.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "This week"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Actividades de Juan para esta semana:"}
 
 - "mis actividades de esta semana" / "mis actividades de hoy" →
   {"thought": "El usuario consulta en primera persona sus actividades asignadas para esta semana. Se filtra por su userId y timeDimension.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Actividades.userId", "operator": "equals", "values": ["${userId}"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "This week"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Tus actividades programadas para esta semana:"}
 
-- "última actividad de mario" / "actividad más reciente de Carlos" →
-  {"thought": "El usuario consulta la actividad más reciente registrada. Se ordena por fecha desc con limit 1.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["mario"]}], "order": {"Actividades.fecha": "desc"}, "limit": 1}, "responseTemplate": "La última actividad registrada de Mario es:"}`;
+- "última actividad de Juan" / "actividad más reciente de Carlos" →
+  {"thought": "El usuario consulta la actividad más reciente registrada. Se ordena por fecha desc con limit 1.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}], "order": {"Actividades.fecha": "desc"}, "limit": 1}, "responseTemplate": "La última actividad registrada de Juan es:"}`;
 
       case 'GASTOS':
         return `${baseHeader}
@@ -583,7 +592,7 @@ Clasifica la consulta en uno de los siguientes intents:
    - Measures: ["Empresas.count"]
    - Dimensions sugeridas: ["Empresas.nombre", "Empresas.correo", "Empresas.telefono", "Empresas.website"]
 
-9. **Actividades y Agenda** (Preguntas: "actividades de esta semana", "mis actividades de hoy", "agenda de Mario", "actividades para esta semana", "cuántas actividades tengo", "reuniones de Carlos", "mis eventos"):
+9. **Actividades y Agenda** (Preguntas: "actividades de esta semana", "mis actividades de hoy", "agenda de Juan", "actividades para esta semana", "cuántas actividades tengo", "reuniones de Carlos", "mis eventos"):
    - Entidad: Actividades
    - Measures: ["Actividades.count"] (si piden conteo general o resumen cuantitativo)
    - Dimensions sugeridas para detalle: ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"]
@@ -655,8 +664,8 @@ ${this.buildResponseJsonSchema()}
 - "Acme" (Consulta Vaga de Empresa / Nombre) →
   {"thought": "Consulta vaga con término 'Acme'. Se busca en empresas, clientes, productos, oportunidades y usuarios.", "intent": "VAGUE_SEARCH", "canonicalSearchTerm": "Acme", "cubeQueries": [{"dimensions": ["Empresas.nombre", "Empresas.correo", "Empresas.telefono", "Empresas.website"], "filters": [{"member": "Empresas.nombre", "operator": "contains", "values": ["Acme"]}], "limit": 5}, {"dimensions": ["Clientes.nombre", "Clientes.apellido", "Clientes.correo", "Clientes.telefono"], "filters": [{"member": "Clientes.nombre", "operator": "contains", "values": ["Acme"]}], "limit": 5}, {"dimensions": ["Productos.nombre", "Productos.precioBase"], "filters": [{"member": "Productos.nombre", "operator": "contains", "values": ["Acme"]}], "limit": 5}, {"dimensions": ["Oportunidades.nombreProyecto", "Oportunidades.descripcion", "Usuarios.username", "Oportunidades.cuentaOCliente", "Oportunidades.montoTotal", "Oportunidades.moneda"], "filters": [{"member": "Oportunidades.nombreProyecto", "operator": "contains", "values": ["Acme"]}], "limit": 5}], "responseTemplate": "Resultados encontrados para 'Acme':"}
 
-- "actividades de mario para esta semana" / "actividades de esta semana de Carlos" →
-  {"thought": "El usuario consulta las actividades programadas para un asesor durante esta semana. Se filtra por Usuarios.username y timeDimension en Actividades.fecha.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["mario"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "This week"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Actividades de Mario para esta semana:"}
+- "actividades de Juan para esta semana" / "actividades de esta semana de Carlos" →
+  {"thought": "El usuario consulta las actividades programadas para un asesor durante esta semana. Se filtra por Usuarios.username y timeDimension en Actividades.fecha.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "This week"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Actividades de Juan para esta semana:"}
 
 - "mis actividades de esta semana" / "mis actividades de hoy" →
   {"thought": "El usuario consulta en primera persona sus actividades asignadas para esta semana. Se filtra por su userId y timeDimension.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Actividades.userId", "operator": "equals", "values": ["${userId}"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "This week"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Tus actividades programadas para esta semana:"}
@@ -678,7 +687,9 @@ ${this.buildResponseJsonSchema()}
       'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
       'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
     ];
-    const fechaHoy = `${diasSemana[mexicoCityISO.getDay()]} ${mexicoCityISO.getDate()} de ${meses[mexicoCityISO.getMonth()]} de ${meses[mexicoCityISO.getFullYear()]}`;
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    const todayISO = `${mexicoCityISO.getFullYear()}-${pad(mexicoCityISO.getMonth() + 1)}-${pad(mexicoCityISO.getDate())}`;
+    const fechaHoy = `${diasSemana[mexicoCityISO.getDay()]} ${mexicoCityISO.getDate()} de ${meses[mexicoCityISO.getMonth()]} de ${mexicoCityISO.getFullYear()}`;
     const horaActual = mexicoCityISO.toTimeString().slice(0, 5);
 
     const roleLower = (userRole || '').toLowerCase().trim();
@@ -691,16 +702,16 @@ ${this.buildResponseJsonSchema()}
       roleDescription = `EJECUTIVO (ID: ${userId}) — Solo puede ver datos vinculados a él en oportunidades, actividades, gastos y tickets. Los filtros de seguridad se aplican automáticamente.`;
     }
 
-    return { roleDescription, fechaHoy, horaActual, roleLower };
+    return { roleDescription, fechaHoy, todayISO, horaActual, roleLower };
   }
 
   private buildBaseHeader(userId: string, userRole: string, username: string): string {
-    const { roleDescription, fechaHoy, horaActual } = this.getUserContext(userId, userRole, username);
+    const { roleDescription, fechaHoy, todayISO, horaActual } = this.getUserContext(userId, userRole, username);
 
     return `[USUARIO ACTUAL]
 Nombre: ${username}
 Rol: ${roleDescription}
-Fecha: ${fechaHoy} — Hora: ${horaActual} (Ciudad de México)`;
+Fecha actual: ${fechaHoy} (${todayISO}) — Hora: ${horaActual} (Ciudad de México)`;
   }
 
   private buildSharedRules(userId: string, userRole: string): string {
@@ -767,12 +778,26 @@ El filtrado de etapas para Oportunidades y Tickets DEBE basarse ÚNICAMENTE en e
      Usa SIEMPRE: { "member": "EtapasTicket.stageType", "operator": "equals", "values": ["1"] }
 
 [INSTRUCCIÓN CRÍTICA DE FECHAS Y PERIODOS TEMPORALES]
-Para consultas con rangos de tiempo (ej: "este año", "este mes", "en 2026", "hoy", "últimos 30 días", "esta semana"):
-- Usa SIEMPRE el bloque "timeDimensions":
-  * Para este año: timeDimensions: [{ "dimension": "Entidad.createdAt", "dateRange": "This year" }]
-  * Para este mes: timeDimensions: [{ "dimension": "Entidad.createdAt", "dateRange": "This month" }]
-  * Para hoy: timeDimensions: [{ "dimension": "Entidad.createdAt", "dateRange": "Today" }]
-  * Para esta semana: timeDimensions: [{ "dimension": "Actividades.fecha", "dateRange": "This week" }]`;
+Para consultas con rangos de tiempo (ej: "este año", "este mes", "esta semana", "hoy", "ayer", "mañana", "hace 2 días", "el miércoles pasado", "el lunes de hace 2 semanas", "próxima semana", "últimos 30 días", etc.):
+- Usa SIEMPRE el bloque "timeDimensions" con la dimensión temporal de la entidad:
+  * Para hoy: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Today" }]
+  * Para ayer: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Yesterday" }]
+  * Para hace N días (ej. hace 2 días, hace 3 días): timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "hace 2 días" }]
+  * Para un día de la semana pasada (ej. el miércoles pasado, el viernes pasado): timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "el miércoles pasado" }]
+  * Para un día de hace N semanas (ej. el lunes de hace 2 semanas): timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "el lunes de hace 2 semanas" }]
+  * Para mañana: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Tomorrow" }]
+  * Para pasado mañana: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Pasado mañana" }]
+  * Para dentro de N días: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "dentro de N días" }]
+  * Para esta semana: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "This week" }]
+  * Para la semana pasada: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Last week" }]
+  * Para la próxima semana: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Next week" }]
+  * Para este mes: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "This month" }]
+  * Para el mes pasado: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Last month" }]
+  * Para el próximo mes: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Next month" }]
+  * Para este año: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "This year" }]
+  * Para el año pasado: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Last year" }]
+  * Para los últimos N días: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "last 30 days" }]
+  * Para fechas exactas o intervalos específicos: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": ["YYYY-MM-DD", "YYYY-MM-DD"] }]`;
   }
 
   private buildResponseJsonSchema(): string {
