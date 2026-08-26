@@ -92,18 +92,57 @@ export class AiAgentToolsHandlerService {
             }
           }
 
-          const finalProductIds: string[] = input.productIds || [];
-          let matchedProducts: Array<{ id: string; nombre: string }> = [];
-          if (input.nombreProducto) {
-            matchedProducts = await this.findProductsFromSemanticLayer(input.nombreProducto);
+          // Parsear nombres de productos múltiples si vienen separados por coma o array
+          const rawProductNames = input.nombreProducto
+            ? (Array.isArray(input.nombreProducto) ? input.nombreProducto : String(input.nombreProducto).split(','))
+            : [];
+          const cleanProductNames = rawProductNames.map((s: any) => String(s).trim()).filter((s: string) => s.length > 0);
+
+          // Parsear cantidades múltiples correspondientes
+          const rawQuantities = input.cantidad !== undefined && input.cantidad !== null
+            ? (Array.isArray(input.cantidad) ? input.cantidad : String(input.cantidad).split(','))
+            : [1];
+          const cleanQuantities = rawQuantities.map((q: any) => {
+            const num = Number(String(q).trim());
+            return isNaN(num) || num <= 0 ? 1 : num;
+          });
+
+          const finalProductIds: string[] = [...(input.productIds || [])];
+          const productItems: Array<{ productId: string; cantidad: number }> = [];
+
+          if (cleanProductNames.length > 0) {
+            for (let i = 0; i < cleanProductNames.length; i++) {
+              const pName = cleanProductNames[i];
+              const qty = cleanQuantities[i] ?? cleanQuantities[0] ?? 1;
+              const matched = await this.findProductsFromSemanticLayer(pName);
+              if (matched.length > 0) {
+                for (const p of matched) {
+                  if (!finalProductIds.includes(p.id)) {
+                    finalProductIds.push(p.id);
+                  }
+                  if (!productItems.some(pi => pi.productId === p.id)) {
+                    productItems.push({ productId: p.id, cantidad: qty });
+                  }
+                }
+              }
+            }
           }
-          if (matchedProducts.length === 0 && input.nombreProyecto) {
-            matchedProducts = await this.findProductsFromSemanticLayer(input.nombreProyecto);
-          }
-          if (matchedProducts.length > 0) {
-            this.logger.log(`Productos asociados automáticamente vía Capa Semántica Cube.dev: ${matchedProducts.map(p => p.nombre).join(', ')}`);
-            for (const p of matchedProducts) {
+
+          if (finalProductIds.length === 0 && input.nombreProyecto) {
+            const matched = await this.findProductsFromSemanticLayer(input.nombreProyecto);
+            for (const p of matched) {
               if (!finalProductIds.includes(p.id)) finalProductIds.push(p.id);
+              if (!productItems.some(pi => pi.productId === p.id)) {
+                productItems.push({ productId: p.id, cantidad: cleanQuantities[0] || 1 });
+              }
+            }
+          }
+
+          // Asegurar que todos los finalProductIds tengan un elemento en productItems
+          for (let i = 0; i < finalProductIds.length; i++) {
+            const id = finalProductIds[i];
+            if (!productItems.some(pi => pi.productId === id)) {
+              productItems.push({ productId: id, cantidad: cleanQuantities[i] ?? cleanQuantities[0] ?? 1 });
             }
           }
 
@@ -164,8 +203,6 @@ export class AiAgentToolsHandlerService {
             }
           }
 
-          const productItems = finalProductIds.map((id) => ({ productId: id, cantidad: input.cantidad || 1 }));
-
           const opp = await this.opportunitiesService.create({
             nombre_proyecto: input.nombreProyecto,
             description: input.descripcion || 'Creado por Agente IA',
@@ -215,17 +252,30 @@ export class AiAgentToolsHandlerService {
             }
           }
 
-          // 2. Si la IA envía un producto específico a agregar/actualizar
-          const targetProductName = input.nombreProducto || input.nombreProyecto;
-          const targetQty = Number(input.cantidad) > 0 ? Number(input.cantidad) : 1;
+          // 2. Si la IA envía producto(s) específico(s) a agregar/actualizar
+          const rawProductNames = input.nombreProducto
+            ? (Array.isArray(input.nombreProducto) ? input.nombreProducto : String(input.nombreProducto).split(','))
+            : (input.nombreProyecto ? [input.nombreProyecto] : []);
+          const cleanProductNames = rawProductNames.map((s: any) => String(s).trim()).filter((s: string) => s.length > 0);
 
-          if (targetProductName) {
-            const matchedProducts = await this.findProductsFromSemanticLayer(targetProductName);
-            if (matchedProducts.length > 0) {
-              for (const p of matchedProducts) {
-                // Agregar el producto sin borrar los existentes (o actualizar cantidad si ya estaba)
-                itemMap.set(p.id, targetQty);
-                this.logger.log(`[modifyOpportunity] Añadido/Actualizado producto '${p.nombre}' (ID: ${p.id}) con cantidad ${targetQty} en oportunidad ${input.id}`);
+          const rawQuantities = input.cantidad !== undefined && input.cantidad !== null
+            ? (Array.isArray(input.cantidad) ? input.cantidad : String(input.cantidad).split(','))
+            : [1];
+          const cleanQuantities = rawQuantities.map((q: any) => {
+            const num = Number(String(q).trim());
+            return isNaN(num) || num <= 0 ? 1 : num;
+          });
+
+          if (cleanProductNames.length > 0) {
+            for (let i = 0; i < cleanProductNames.length; i++) {
+              const pName = cleanProductNames[i];
+              const qty = cleanQuantities[i] ?? cleanQuantities[0] ?? 1;
+              const matchedProducts = await this.findProductsFromSemanticLayer(pName);
+              if (matchedProducts.length > 0) {
+                for (const p of matchedProducts) {
+                  itemMap.set(p.id, qty);
+                  this.logger.log(`[modifyOpportunity] Añadido/Actualizado producto '${p.nombre}' (ID: ${p.id}) con cantidad ${qty} en oportunidad ${input.id}`);
+                }
               }
             }
           }

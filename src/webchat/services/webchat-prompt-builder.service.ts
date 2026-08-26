@@ -152,9 +152,19 @@ ${sharedRules}
    - Measures: ["Oportunidades.montoPromedioMxn"]
    - Filtro sugerido si es sobre ganadas: { "member": "Etapas.stageType", "operator": "equals", "values": ["1"] }
 
+5. **Comparativa entre Estados / Embudo (Abiertas vs Ganadas / Comparativa)** (Preguntas: "comparativa entre oportunidades abiertas y ganadas", "abiertas vs ganadas", "comparar ventas con pipeline", "resumen de embudo"):
+   - Entidad: Oportunidades
+   - Measures: ["Oportunidades.count", "Oportunidades.montoTotalMxnSum"]
+   - Dimensions OBLIGATORIAS (ÚNICAMENTE): ["Etapas.stageType"] (¡JAMÁS incluyas createdAt, nombreProyecto ni IDs que fragmenten la agregación!)
+   - Filtro OBLIGATORIO: { "member": "Oportunidades.archived", "operator": "equals", "values": ["false"] }
+   - Order sugerido: { "Etapas.stageType": "asc" }
+
 ${this.buildResponseJsonSchema()}
 
 [EJEMPLOS DE ENTENDIMIENTO NATURAL]
+- "comparativa entre oportunidades abiertas y ganadas" / "abiertas vs ganadas" / "comparativa de oportunidades" →
+  {"thought": "El usuario solicita una comparativa consolidada entre oportunidades abiertas y ganadas. Se agrupa EXCLUSIVAMENTE por Etapas.stageType midiendo count y montoTotalMxnSum sin dimensiones individuales ni createdAt.", "intent": "ANALYTICAL", "detectedEntity": "Oportunidades", "cubeQuery": {"measures": ["Oportunidades.count", "Oportunidades.montoTotalMxnSum"], "dimensions": ["Etapas.stageType"], "filters": [{"member": "Oportunidades.archived", "operator": "equals", "values": ["false"]}], "order": {"Etapas.stageType": "asc"}}, "responseTemplate": "Comparativa de oportunidades por etapa:"}
+
 - "cuantas oportunidades tengo" / "cuantas oportunidades tengo yo" / "mis oportunidades" →
   {"thought": "El usuario consulta en primera persona ('tengo') la cantidad de oportunidades activas que tiene asignadas. Se mide Oportunidades.count filtrando por su propio ejecutivoId y archived=false.", "intent": "ANALYTICAL", "detectedEntity": "Oportunidades", "cubeQuery": {"measures": ["Oportunidades.count"], "dimensions": ["Oportunidades.nombreProyecto", "Oportunidades.descripcion", "Usuarios.username", "Oportunidades.cuentaOCliente", "Oportunidades.montoTotal", "Oportunidades.moneda", "Etapas.nombre"], "filters": [{"member": "Oportunidades.archived", "operator": "equals", "values": ["false"]}, {"member": "Oportunidades.ejecutivoId", "operator": "equals", "values": ["${userId}"]}]}, "responseTemplate": "Tienes {Oportunidades.count} oportunidades asignadas:"}
 
@@ -754,11 +764,13 @@ Fecha actual: ${fechaHoy} (${todayISO}) — Hora: ${horaActual} (Ciudad de Méxi
    - En Clientes existe la dimensión "Clientes.nombreCompleto" que concatena nombre y apellido. Usa { "member": "Clientes.nombreCompleto", "operator": "contains", "values": ["Nombre Completo"] } para obtener la coincidencia exacta sin generar coincidencias parciales innecesarias.
 
 [INSTRUCCIÓN CRÍTICA DE DIMENSIONS]
-NO incluyas identificadores primary key (como Clientes.id, Empresas.id, Usuarios.id, Productos.id, Oportunidades.id, Tickets.id, LineasNegocio.id, TiposEntrega.id, Licenciamientos.id) en el arreglo "dimensions" de cubeQuery. Utiliza campos legibles como nombre, correo, username, etc.
+1. NO incluyas identificadores primary key (como Clientes.id, Empresas.id, Usuarios.id, Productos.id, Oportunidades.id, Tickets.id, LineasNegocio.id, TiposEntrega.id, Licenciamientos.id) en el arreglo "dimensions" de cubeQuery. Utiliza campos legibles como nombre, correo, username, etc.
+2. REGLA CRÍTICA DE AGREGACIONES Y COMPARATIVAS: Para consultas cuantitativas de totales agregados, comparativas entre estados/etapas (ej: "abiertas vs ganadas", "tickets abiertos vs cerrados") o desgloses por categoría (ej: "por moneda", "por línea"), la lista "dimensions" DEBE contener EXCLUSIVAMENTE la dimensión de agrupación (ej: "Etapas.stageType", "Oportunidades.moneda"). JAMÁS incluyas dimensiones de elementos individuales ni timestamps como "Oportunidades.createdAt", "Oportunidades.nombreProyecto", "Actividades.fecha" ni claves primarias en consultas agregadas o comparativas.
 
 [INSTRUCCIÓN CRÍTICA DE ORDENAMIENTO (ORDER)]
 - En el campo "order", usa ÚNICAMENTE dimensiones o medidas existentes definidas en los schemas (formato "Cubo.campo"), por ejemplo: {"Oportunidades.montoTotalMxnSum": "desc"} o {"Empresas.nombre": "asc"}.
 - NUNCA agregues propiedades de JavaScript como ".length", ".size", ".count" ni subpropiedades no definidas en el schema.
+- En consultas agregadas o comparativas por etapa/estado, ordena por la medida ("Oportunidades.montoTotalMxnSum": "desc") o por la dimensión de estado ("Etapas.stageType": "asc"). JAMÁS agregues "Oportunidades.createdAt" en order si no estás listando registros individuales detallados.
 
 [INSTRUCCIÓN OBLIGATORIA: FILTRADO DE ETAPAS BASADO ÚNICAMENTE EN stageType]
 El filtrado de etapas para Oportunidades y Tickets DEBE basarse ÚNICAMENTE en el campo "stageType":

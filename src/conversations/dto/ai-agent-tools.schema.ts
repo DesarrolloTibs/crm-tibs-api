@@ -15,11 +15,15 @@ export const UpdateContactSchema = z.object({
 export const CreateOpportunitySchema = z.object({
   nombreProyecto: z.string().min(3, 'El nombre del proyecto debe tener al menos 3 caracteres.'),
   descripcion: z.string().optional().default('Creado por Agente IA'),
-  montoTotal: z.number().nonnegative().nullable().optional().default(null), // Nullable para desarrollos a la medida
+  montoTotal: z.union([z.number(), z.string()]).nullable().optional().default(null), // Nullable para desarrollos a la medida
   moneda: z.enum(['MXN', 'USD']).optional().default('MXN'),
   productIds: z.array(z.string()).optional(),
-  nombreProducto: z.string().optional(), // Nombre del producto del catálogo que le interesa
-  cantidad: z.number().positive().optional().default(1), // Cantidad solicitada por el cliente
+  nombreProducto: z.union([z.string(), z.array(z.string())]).optional(), // Nombre(s) de producto(s)
+  cantidad: z.union([
+    z.number(),
+    z.string(),
+    z.array(z.union([z.number(), z.string()])),
+  ]).optional().default(1), // Cantidad(es) solicitada(s)
   lineaNegocio: z.string().optional(), // 'Datos', 'Desarrollo', 'RH', etc.
   tipoEntrega: z.string().optional(), // 'Proyecto', 'Licencia', 'Asignacion', 'Bolsa de Horas', etc.
   licenciamiento: z.string().optional(), // 'Microsoft', 'IBM', 'Qlik', 'Alteryx', 'KNIME', etc.
@@ -29,10 +33,15 @@ export const ModifyOpportunitySchema = z.object({
   id: z.string().uuid('ID de oportunidad no válido (debe ser UUID).'),
   nombreProyecto: z.string().min(3).optional(),
   descripcion: z.string().optional(),
-  montoTotal: z.number().nonnegative().nullable().optional(),
+  montoTotal: z.union([z.number(), z.string()]).nullable().optional(),
   moneda: z.enum(['MXN', 'USD']).optional(),
-  cantidad: z.number().positive().optional(),
-  nombreProducto: z.string().optional(),
+  cantidad: z.union([
+    z.number(),
+    z.string(),
+    z.array(z.union([z.number(), z.string()])),
+  ]).optional(),
+  nombreProducto: z.union([z.string(), z.array(z.string())]).optional(),
+  productItems: z.array(z.any()).optional(),
 });
 
 export const CheckAvailabilitySchema = z.object({

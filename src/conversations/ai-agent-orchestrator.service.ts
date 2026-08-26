@@ -732,30 +732,89 @@ Genera el JSON de salida:
           }
         }
 
-        agentResponse = this.cleanJsonOutput(agentResponse);
-        try {
-          const action = JSON.parse(agentResponse);
-          const toolAliases: Record<string, string> = { getProductCatalog: 'consult_product_catalog', consultCatalog: 'consult_product_catalog', catalogSearch: 'consult_product_catalog', searchCatalog: 'consult_product_catalog', getProducts: 'consult_product_catalog', queryCatalog: 'consult_product_catalog' };
-          if (action.tool_name && toolAliases[action.tool_name]) action.tool_name = toolAliases[action.tool_name];
-          if (!action.tool_name || action.tool_name === 'undefined') {
-            const fallbackAnswer = action.tool_input?.answer || action.answer || 'Con gusto le doy seguimiento a tu solicitud. ¿Te puedo ayudar en algo más?';
-            return { nextAction: 'respond', response: fallbackAnswer };
+        const extractJsonObjects = (rawText: string): any[] => {
+          const objects: any[] = [];
+          if (!rawText) return objects;
+
+          const cleaned = this.cleanJsonOutput(rawText);
+          try {
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') objects.push(parsed);
+          } catch (_) {}
+
+          let depth = 0;
+          let startIndex = -1;
+          for (let i = 0; i < rawText.length; i++) {
+            if (rawText[i] === '{') {
+              if (depth === 0) startIndex = i;
+              depth++;
+            } else if (rawText[i] === '}') {
+              depth--;
+              if (depth === 0 && startIndex !== -1) {
+                const chunk = rawText.substring(startIndex, i + 1);
+                try {
+                  const parsed = JSON.parse(chunk);
+                  if (parsed && typeof parsed === 'object' && !objects.some(o => JSON.stringify(o) === JSON.stringify(parsed))) {
+                    objects.push(parsed);
+                  }
+                } catch (_) {}
+                startIndex = -1;
+              }
+            }
           }
-          if (action.tool_name === 'final_answer') {
-            return { nextAction: 'respond', response: action.tool_input?.answer || '' };
+          return objects;
+        };
+
+        const parsedObjects = extractJsonObjects(agentResponse);
+        const toolAliases: Record<string, string> = {
+          getProductCatalog: 'consult_product_catalog',
+          consultCatalog: 'consult_product_catalog',
+          catalogSearch: 'consult_product_catalog',
+          searchCatalog: 'consult_product_catalog',
+          getProducts: 'consult_product_catalog',
+          queryCatalog: 'consult_product_catalog',
+        };
+
+        // Prioridad 1: Buscar si hay alguna llamada a herramienta que NO sea final_answer
+        for (const obj of parsedObjects) {
+          let toolName = obj.tool_name || obj.name || obj.tool || obj.function?.name;
+          if (toolName && toolAliases[toolName]) toolName = toolAliases[toolName];
+          if (toolName && toolName !== 'final_answer' && toolName !== 'undefined') {
+            let toolInput = obj.tool_input || obj.parameters || obj.arguments || obj.input || obj.function?.arguments || obj.function?.parameters || {};
+            if (typeof toolInput === 'string') {
+              try { toolInput = JSON.parse(toolInput); } catch (_) {}
+            }
+            if (!allowedTools.includes(toolName)) {
+              this.logger.warn(`Sub-Agente '${state.route}' intentó usar una tool no permitida: '${toolName}'`);
+              if (toolName === 'consult_product_catalog') {
+                return { nextAction: 'call_tool', toolCallName: 'consult_product_catalog', toolCallInput: toolInput || { query: incomingContent } };
+              }
+              return { nextAction: 'respond', response: toolInput?.answer || obj.answer || 'Con gusto le doy seguimiento a tu consulta. ¿Me podrías indicar más detalles sobre lo que necesitas?' };
+            }
+            return { nextAction: 'call_tool', toolCallName: toolName, toolCallInput: toolInput };
           }
-          if (!allowedTools.includes(action.tool_name)) {
-            this.logger.warn(`Sub-Agente '${state.route}' intentó usar una tool no permitida: '${action.tool_name}'`);
-            if (action.tool_name === 'consult_product_catalog') return { nextAction: 'call_tool', toolCallName: 'consult_product_catalog', toolCallInput: action.tool_input || { query: incomingContent } };
-            return { nextAction: 'respond', response: action.tool_input?.answer || action.answer || 'Con gusto le doy seguimiento a tu consulta. ¿Me podrías indicar más detalles sobre lo que necesitas?' };
-          }
-          return { nextAction: 'call_tool', toolCallName: action.tool_name, toolCallInput: action.tool_input };
-        } catch (_) {
-          this.logger.warn(`Sintaxis JSON inusual en subagente. Intentando rescate Regex. Salida: ${agentResponse}`);
-          const answerMatch = agentResponse.match(/"answer"\s*:\s*"([^"]+)"/i);
-          if (answerMatch?.[1]) return { nextAction: 'respond', response: answerMatch[1] };
-          return { nextAction: 'respond', response: 'Con gusto le doy seguimiento a tu solicitud. ¿Te puedo ayudar en algo más?' };
         }
+
+        // Prioridad 2: Buscar final_answer o respuesta en lenguaje natural
+        for (const obj of parsedObjects) {
+          let toolName = obj.tool_name || obj.name || obj.tool || obj.function?.name;
+          let toolInput = obj.tool_input || obj.parameters || obj.arguments || obj.input || obj.function?.arguments || obj.function?.parameters || {};
+          if (typeof toolInput === 'string') {
+            try { toolInput = JSON.parse(toolInput); } catch (_) {}
+          }
+          if (toolName === 'final_answer' || obj.answer || toolInput?.answer || obj.response) {
+            const answerText = toolInput?.answer || obj.answer || obj.response || '';
+            if (answerText.trim().length > 0) {
+              return { nextAction: 'respond', response: answerText };
+            }
+          }
+        }
+
+        // Prioridad 3: Rescate Regex si ningún JSON fue parseable
+        this.logger.warn(`Sintaxis JSON inusual en subagente. Intentando rescate Regex. Salida: ${agentResponse}`);
+        const answerMatch = agentResponse.match(/"answer"\s*:\s*"([^"]+)"/i);
+        if (answerMatch?.[1]) return { nextAction: 'respond', response: answerMatch[1] };
+        return { nextAction: 'respond', response: 'Con gusto le doy seguimiento a tu solicitud. ¿Te puedo ayudar en algo más?' };
       };
 
       const executeToolNode = async (state: AgentState): Promise<Partial<AgentState>> => {

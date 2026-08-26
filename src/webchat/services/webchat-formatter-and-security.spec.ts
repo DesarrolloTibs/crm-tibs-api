@@ -147,8 +147,8 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       ];
 
       const result = formatterService.simpleFormat(data);
-      expect(result).toContain('1. nombreProyecto: Licenciamiento Cloud — montoTotal: $100.00 USD — moneda: USD');
-      expect(result).toContain('2. nombreProyecto: Consultoría Local — montoTotal: $50,000.00 MXN — moneda: MXN');
+      expect(result).toContain('1. Licenciamiento Cloud — $100.00 USD');
+      expect(result).toContain('2. Consultoría Local — $50,000.00 MXN');
     });
 
     it('should generate smart summary for monetary results with USD opportunity', () => {
@@ -683,6 +683,78 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       const haceUnAno = cubeExecutor.resolveDateRange('hace un año');
       expect(Array.isArray(haceUnAno)).toBe(true);
       expect(haceUnAno![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+  });
+
+  describe('WebchatResponseFormatterService - StageType Comparatives & Null Handling', () => {
+    let formatterService: WebchatResponseFormatterService;
+    const mockAiAgentService: any = { invokeLanguageModel: jest.fn() };
+    const mockStageRepo: any = { findOne: jest.fn() };
+    const mockTicketStageRepo: any = { findOne: jest.fn() };
+
+    beforeEach(() => {
+      formatterService = new WebchatResponseFormatterService(
+        mockAiAgentService,
+        mockStageRepo,
+        mockTicketStageRepo,
+      );
+    });
+
+    it('should format stageType comparative summary for opportunities including null stages', async () => {
+      const cubeData = [
+        { 'Etapas.stageType': 0, 'Oportunidades.count': '6', 'Oportunidades.montoTotalMxnSum': '4302430.00' },
+        { 'Etapas.stageType': 1, 'Oportunidades.count': '2', 'Oportunidades.montoTotalMxnSum': '300.00' },
+        { 'Etapas.stageType': 2, 'Oportunidades.count': '1', 'Oportunidades.montoTotalMxnSum': '0.00' },
+        { 'Etapas.stageType': null, 'Oportunidades.count': '4', 'Oportunidades.montoTotalMxnSum': '703000.00' },
+      ];
+
+      const plan: CubeQueryPlan = {
+        intent: 'ANALYTICAL',
+        detectedEntity: 'Oportunidades',
+        responseTemplate: 'Comparativa de oportunidades por etapa:',
+      };
+
+      const result = await formatterService.formatResults('comparativa entre abiertas y ganadas', cubeData, plan);
+
+      expect(result).toContain('Resumen comparativo de oportunidades:');
+      expect(result).toContain('• En Pipeline (Abiertas): 6 oportunidades — $4,302,430.00 MXN');
+      expect(result).toContain('• Ventas Ganadas: 2 oportunidades — $300.00 MXN');
+      expect(result).toContain('• Perdidas / Canceladas: 1 oportunidad — $0.00 MXN');
+      expect(result).toContain('• Sin etapa clasificada: 4 oportunidades — $703,000.00 MXN');
+    });
+
+    it('should format ticket stageType comparative summary', async () => {
+      const cubeData = [
+        { 'EtapasTicket.stageType': 0, 'Tickets.count': '5' },
+        { 'EtapasTicket.stageType': 1, 'Tickets.count': '12' },
+      ];
+
+      const plan: CubeQueryPlan = {
+        intent: 'ANALYTICAL',
+        detectedEntity: 'Tickets',
+        responseTemplate: 'Comparativa de tickets:',
+      };
+
+      const result = await formatterService.formatResults('tickets abiertos vs cerrados', cubeData, plan);
+
+      expect(result).toContain('Resumen de tickets de soporte:');
+      expect(result).toContain('• Tickets Abiertos / En Proceso: 5 tickets');
+      expect(result).toContain('• Tickets Resueltos / Cerrados: 12 tickets');
+    });
+
+    it('should map stageType to readable "Tipo de Etapa" in cleanTableDataForFrontend for aggregated queries', () => {
+      const data = [
+        { 'Etapas.stageType': 0, 'Oportunidades.count': '6', 'Oportunidades.montoTotalMxnSum': 4302430 },
+        { 'Etapas.stageType': 1, 'Oportunidades.count': '2', 'Oportunidades.montoTotalMxnSum': 300 },
+        { 'Etapas.stageType': null, 'Oportunidades.count': '4', 'Oportunidades.montoTotalMxnSum': 703000 },
+      ];
+
+      const clean = formatterService.cleanTableDataForFrontend(data);
+
+      expect(clean).toHaveLength(3);
+      expect(clean[0]['Tipo de Etapa']).toBe('Abierta / En Pipeline');
+      expect(clean[1]['Tipo de Etapa']).toBe('Ganada / Venta Concretada');
+      expect(clean[2]['Tipo de Etapa']).toBe('Sin etapa definida');
     });
   });
 });

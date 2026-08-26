@@ -18,7 +18,7 @@ export class WebchatCubeExecutorService {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
 
     try {
-      const orderFormatted = this.sanitizeOrder(cubeQuery.order);
+      let orderFormatted = this.sanitizeOrder(cubeQuery.order);
 
       const queryPayload: any = {};
       if (cubeQuery.measures && cubeQuery.measures.length > 0) {
@@ -80,19 +80,36 @@ export class WebchatCubeExecutorService {
           return !d.toLowerCase().endsWith('.id') && d.toLowerCase() !== 'id';
         });
 
-        // Asegurar que cualquier dimensión utilizada en la cláusula 'order' esté presente en dimensions
-        // para evitar el error de Cube/Postgres: "ORDER BY position N is not in select list"
+        // Asegurar que cualquier dimensión utilizada en la cláusula 'order' sea válida para la consulta:
+        // - En consultas de detalle: si la dimensión de orden no estaba en filteredDims, la añadimos.
+        // - En consultas de agregación pura (con measures y dimensiones de agrupación): NO inyectamos
+        //   dimensiones ajenas (como createdAt) a filteredDims para evitar romper el GROUP BY de Cube.dev;
+        //   en su lugar, reescribimos el orden hacia la medida principal de la agregación.
         if (orderFormatted) {
-          for (const [orderMember] of orderFormatted) {
-            if (
-              typeof orderMember === 'string' &&
-              orderMember.includes('.') &&
-              !filteredDims.includes(orderMember) &&
-              (!queryPayload.measures || !queryPayload.measures.includes(orderMember))
-            ) {
-              filteredDims.push(orderMember);
+          const validOrder: Array<[string, 'asc' | 'desc']> = [];
+          for (const [orderMember, orderDir] of orderFormatted) {
+            if (typeof orderMember === 'string' && orderMember.includes('.')) {
+              if (filteredDims.includes(orderMember) || (queryPayload.measures && queryPayload.measures.includes(orderMember))) {
+                validOrder.push([orderMember, orderDir]);
+              } else if (isDetailQuery) {
+                filteredDims.push(orderMember);
+                validOrder.push([orderMember, orderDir]);
+              } else {
+                if (queryPayload.measures && queryPayload.measures.length > 0) {
+                  const fallbackMeasure = queryPayload.measures[0];
+                  if (!validOrder.some(([m]) => m === fallbackMeasure)) {
+                    validOrder.push([fallbackMeasure, orderDir]);
+                  }
+                } else if (filteredDims.length > 0) {
+                  const fallbackDim = filteredDims[0];
+                  if (!validOrder.some(([d]) => d === fallbackDim)) {
+                    validOrder.push([fallbackDim, orderDir]);
+                  }
+                }
+              }
             }
           }
+          orderFormatted = validOrder.length > 0 ? validOrder : undefined;
         }
 
         if (filteredDims.length > 0) {
