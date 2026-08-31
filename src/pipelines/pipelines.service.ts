@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { Pipeline } from './entities/pipeline.entity';
 import { Stage } from '../stages/entities/stage.entity';
+import { PipelinesGateway } from './pipelines.gateway';
 
 @Injectable()
 export class PipelinesService {
@@ -12,7 +13,9 @@ export class PipelinesService {
     @InjectRepository(Stage)
     private readonly stageRepository: Repository<Stage>,
     private readonly dataSource: DataSource,
+    private readonly pipelinesGateway: PipelinesGateway,
   ) {}
+
 
   async getMainPipeline(): Promise<Pipeline> {
     // Asegurar que la columna exista en el schema del tenant activo
@@ -221,8 +224,11 @@ export class PipelinesService {
     }
 
     // Return updated pipeline
-    return this.getMainPipeline();
+    const updated = await this.getMainPipeline();
+    this.pipelinesGateway.emitPipelineUpdated(updated);
+    return updated;
   }
+
 
   async findAll(): Promise<Pipeline[]> {
     const pipelines = await this.pipelineRepository.find({

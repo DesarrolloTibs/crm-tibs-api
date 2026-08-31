@@ -31,11 +31,18 @@ export class OpportunityLabelsService implements OnModuleInit {
         ALTER TABLE "${tenantSchema}".tbloportunitylabels ADD COLUMN IF NOT EXISTS dtmlastmodified timestamptz NULL DEFAULT now();
         ALTER TABLE "${tenantSchema}".tbloportunitylabels ADD COLUMN IF NOT EXISTS field_key varchar(50) NULL;
 
-        INSERT INTO "${tenantSchema}".tbloportunitylabels (id, strname, field_key, blnstatus) VALUES
-          ('f509fa84-0b73-45f8-b3ab-b8471e98822e', 'Línea de Negocio', 'linea_negocio', true),
-          ('7d90d810-74d3-4613-882d-8e814a029db5', 'Tipo de Entrega', 'tipo_entrega', true),
-          ('c6d3df39-53e7-40b9-8e2b-f1de16b5394f', 'Licenciamiento', 'licenciamiento', true)
-        ON CONFLICT (id) DO NOTHING;
+        -- Insertar valores iniciales solo si no existe ya un registro para cada field_key
+        INSERT INTO "${tenantSchema}".tbloportunitylabels (id, strname, field_key, blnstatus)
+        SELECT 'f509fa84-0b73-45f8-b3ab-b8471e98822e', 'Línea de Negocio', 'linea_negocio', true
+        WHERE NOT EXISTS (SELECT 1 FROM "${tenantSchema}".tbloportunitylabels WHERE field_key = 'linea_negocio');
+
+        INSERT INTO "${tenantSchema}".tbloportunitylabels (id, strname, field_key, blnstatus)
+        SELECT '7d90d810-74d3-4613-882d-8e814a029db5', 'Tipo de Entrega', 'tipo_entrega', true
+        WHERE NOT EXISTS (SELECT 1 FROM "${tenantSchema}".tbloportunitylabels WHERE field_key = 'tipo_entrega');
+
+        INSERT INTO "${tenantSchema}".tbloportunitylabels (id, strname, field_key, blnstatus)
+        SELECT 'c6d3df39-53e7-40b9-8e2b-f1de16b5394f', 'Licenciamiento', 'licenciamiento', true
+        WHERE NOT EXISTS (SELECT 1 FROM "${tenantSchema}".tbloportunitylabels WHERE field_key = 'licenciamiento');
       `);
     } catch (e) {}
   }
@@ -44,29 +51,36 @@ export class OpportunityLabelsService implements OnModuleInit {
     await this.ensureTableExists();
 
     try {
-      const count = await this.labelRepository.count().catch(() => 0);
+      const labels = await this.labelRepository.find({ order: { dtmlastmodified: 'DESC' } }).catch(() => []);
+      const seenKeys = new Set<string>();
 
-      if (count > 0) {
-        // Para instalaciones existentes, asegurar de que tengan asignadas sus claves
-        const labels = await this.labelRepository.find().catch(() => []);
-        for (const label of labels) {
-          if (!label.field_key) {
-            let field_key = '';
-            const nameNormalized = (label.strname || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-            const id = label.id.toLowerCase();
-            
-            if (id === 'f509fa84-0b73-45f8-b3ab-b8471e98822e' || nameNormalized.includes('negocio') || nameNormalized.includes('linea')) {
-              field_key = 'linea_negocio';
-            } else if (id === '7d90d810-74d3-4613-882d-8e814a029db5' || nameNormalized.includes('entrega') || nameNormalized.includes('servicio')) {
-              field_key = 'tipo_entrega';
-            } else if (id === 'c6d3df39-53e7-40b9-8e2b-f1de16b5394f' || nameNormalized.includes('licencia')) {
-              field_key = 'licenciamiento';
-            }
+      for (const label of labels) {
+        // Asegurar que field_key esté asignado
+        if (!label.field_key) {
+          let field_key = '';
+          const nameNormalized = (label.strname || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          const id = label.id.toLowerCase();
+          
+          if (id === 'f509fa84-0b73-45f8-b3ab-b8471e98822e' || nameNormalized.includes('negocio') || nameNormalized.includes('linea')) {
+            field_key = 'linea_negocio';
+          } else if (id === '7d90d810-74d3-4613-882d-8e814a029db5' || nameNormalized.includes('entrega') || nameNormalized.includes('servicio')) {
+            field_key = 'tipo_entrega';
+          } else if (id === 'c6d3df39-53e7-40b9-8e2b-f1de16b5394f' || nameNormalized.includes('licencia')) {
+            field_key = 'licenciamiento';
+          }
 
-            if (field_key) {
-              label.field_key = field_key;
-              await this.labelRepository.save(label).catch(() => null);
-            }
+          if (field_key) {
+            label.field_key = field_key;
+            await this.labelRepository.save(label).catch(() => null);
+          }
+        }
+
+        // Limpieza de duplicados históricos dejando el más recientemente modificado
+        if (label.field_key) {
+          if (seenKeys.has(label.field_key)) {
+            await this.labelRepository.delete(label.id).catch(() => null);
+          } else {
+            seenKeys.add(label.field_key);
           }
         }
       }
@@ -83,7 +97,6 @@ export class OpportunityLabelsService implements OnModuleInit {
     });
   }
 
-
   async findOne(id: string): Promise<OpportunityLabel> {
     const label = await this.labelRepository.findOne({ where: { id } });
     if (!label) {
@@ -92,41 +105,35 @@ export class OpportunityLabelsService implements OnModuleInit {
     return label;
   }
 
+  /**
+   * Actualiza el nombre de una etiqueta de oportunidad existente en su lugar (in-place).
+   * Mantiene el mismo ID y field_key sin insertar nuevos registros.
+   */
   async update(id: string, strname: string, userId: string): Promise<OpportunityLabel> {
     const label = await this.findOne(id);
-    const originalFieldKey = label.field_key;
 
     // Validar que el nuevo nombre no sea vacío
     if (!strname || !strname.trim()) {
       throw new BadRequestException('El nombre de la etiqueta no puede estar vacío.');
     }
 
-    // Validar que el nombre no esté duplicado con otra etiqueta (en minúsculas e ignorando acentos)
+    const trimmedName = strname.trim();
+
+    // Validar que el nombre no esté duplicado con otra etiqueta activa distinta
     const duplicate = await this.labelRepository.findOne({
-      where: { strname: strname.trim() }
+      where: { strname: trimmedName }
     });
     if (duplicate && duplicate.id !== id) {
       throw new BadRequestException('El nombre de la etiqueta ya existe y no puede duplicarse.');
     }
 
-    // Ejecutar la eliminación y la creación en una transacción para evitar inconsistencias
-    const savedLabel = await this.labelRepository.manager.transaction(async (manager) => {
-      // 1. Eliminar el registro anterior primero para liberar la restricción UNIQUE en 'field_key'
-      await manager.delete(OpportunityLabel, id);
+    // Actualización directa in-place manteniendo el ID original
+    label.strname = trimmedName;
+    label.dtmlastmodified = new Date();
+    label.uuidlastmodifiedby = userId;
 
-      // 2. Crear y guardar el nuevo registro con un nuevo UUID autogenerado
-      const newLabel = manager.create(OpportunityLabel, {
-        strname: strname.trim(),
-        field_key: originalFieldKey,
-        blnstatus: true,
-        dtmlastmodified: new Date(),
-        uuidlastmodifiedby: userId,
-      });
-
-      return await manager.save(OpportunityLabel, newLabel);
-    });
-
-    this.logger.log(`Wizard update: deleted label ID ${id}, created new label ID ${savedLabel.id} with key "${originalFieldKey}"`);
+    const savedLabel = await this.labelRepository.save(label);
+    this.logger.log(`Etiqueta actualizada exitosamente: ID ${savedLabel.id}, clave "${savedLabel.field_key}", nuevo nombre "${savedLabel.strname}"`);
     return savedLabel;
   }
 }

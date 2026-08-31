@@ -23,6 +23,7 @@ import { RemindersService } from '../reminders/reminders.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { ActivitiesGateway } from './activities.gateway';
 
 @Injectable()
 export class ActivitiesService {
@@ -40,6 +41,7 @@ export class ActivitiesService {
     private readonly remindersService: RemindersService,
     private readonly notificationsService: NotificationsService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly activitiesGateway: ActivitiesGateway,
   ) { }
 
 
@@ -91,7 +93,9 @@ export class ActivitiesService {
       strname: createTypeActivityDto.strname,
       blnstatus: createTypeActivityDto.blnstatus ?? true,
     });
-    return this.typeActivityRepository.save(typeActivity);
+    const savedType = await this.typeActivityRepository.save(typeActivity);
+    this.activitiesGateway.emitActivityTypeCreated(savedType);
+    return savedType;
   }
 
   async updateType(
@@ -131,7 +135,9 @@ export class ActivitiesService {
     if (!typeActivity) {
       throw new NotFoundException(`Tipo de actividad con ID "${id}" no encontrado para actualizar.`);
     }
-    return this.typeActivityRepository.save(typeActivity);
+    const savedType = await this.typeActivityRepository.save(typeActivity);
+    this.activitiesGateway.emitActivityTypeUpdated(savedType);
+    return savedType;
   }
 
   async removeType(id: number, user: User): Promise<void> {
@@ -158,6 +164,7 @@ export class ActivitiesService {
     if (result.affected === 0) {
       throw new NotFoundException(`Tipo de actividad con ID "${id}" no encontrado.`);
     }
+    this.activitiesGateway.emitActivityTypeDeleted(id);
   }
 
   async create(
@@ -256,7 +263,9 @@ export class ActivitiesService {
       const tenantSchema = TenantContextService.getTenantSchema();
       this.eventEmitter.emit('activity.created', { activity: result, tenantSchema });
     }
-    return this.fillDeletedType(result!);
+    const finalActivity = this.fillDeletedType(result!);
+    this.activitiesGateway.emitActivityCreated(finalActivity);
+    return finalActivity;
   }
 
   async findAll(
@@ -477,7 +486,9 @@ export class ActivitiesService {
       const tenantSchema = TenantContextService.getTenantSchema();
       this.eventEmitter.emit('activity.updated', { activity: result, tenantSchema });
     }
-    return this.fillDeletedType(result!);
+    const finalActivity = this.fillDeletedType(result!);
+    this.activitiesGateway.emitActivityUpdated(finalActivity);
+    return finalActivity;
   }
 
   async remove(id: string, user: User): Promise<void> {
@@ -529,5 +540,6 @@ export class ActivitiesService {
     if (result.affected === 0) {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada.`);
     }
+    this.activitiesGateway.emitActivityDeleted(id);
   }
 }

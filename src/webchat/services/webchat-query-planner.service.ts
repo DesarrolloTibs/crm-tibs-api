@@ -21,7 +21,20 @@ export class WebchatQueryPlannerService {
     try {
       const parsed = JSON.parse(sanitized);
       const domain: WebchatDomain = parsed.domain || this.inferDomainFromQuestion(question);
-      const intent = parsed.intent || (domain === 'CONVERSATIONAL' ? 'CONVERSATIONAL' : 'ANALYTICAL');
+      let intent = parsed.intent || (domain === 'CONVERSATIONAL' ? 'CONVERSATIONAL' : (domain === 'ACTION_EXECUTION' ? 'ACTION_EXECUTION' : 'ANALYTICAL'));
+
+      let actionPlan = parsed.actionPlan || null;
+      if (!actionPlan && (parsed.action || domain === 'ACTION_EXECUTION' || intent === 'ACTION_EXECUTION')) {
+        const actionType = parsed.action || this.inferActionTypeFromQuestion(question);
+        if (actionType) {
+          actionPlan = {
+            action: actionType,
+            parameters: parsed.parameters || parsed.params || parsed.data || {},
+            thought: parsed.thought,
+          };
+          intent = 'ACTION_EXECUTION';
+        }
+      }
 
       return {
         thought: parsed.thought || 'Ruteo automático del orquestador.',
@@ -29,6 +42,7 @@ export class WebchatQueryPlannerService {
         domain: domain,
         canonicalSearchTerm: parsed.canonicalSearchTerm || (domain === 'VAGUE_SEARCH' ? question.trim() : undefined),
         responseTemplate: parsed.responseTemplate,
+        actionPlan,
         dashboardRedirect: parsed.dashboardRedirect,
       };
     } catch (parseErr) {
@@ -45,11 +59,25 @@ export class WebchatQueryPlannerService {
       }
 
       const inferredDomain = this.inferDomainFromQuestion(question);
+      const isAction = inferredDomain === 'ACTION_EXECUTION';
+      let actionPlan = null;
+      if (isAction) {
+        const actionType = this.inferActionTypeFromQuestion(question);
+        if (actionType) {
+          actionPlan = {
+            action: actionType,
+            parameters: this.extractBasicActionParams(question, actionType),
+            thought: 'Recuperación heurística de acción.',
+          };
+        }
+      }
+
       return {
-        intent: inferredDomain === 'CONVERSATIONAL' ? 'CONVERSATIONAL' : 'ANALYTICAL',
+        intent: inferredDomain === 'CONVERSATIONAL' ? 'CONVERSATIONAL' : (isAction ? 'ACTION_EXECUTION' : 'ANALYTICAL'),
         domain: inferredDomain,
         thought: 'Recuperación de ruteo por coincidencia de palabras clave.',
         responseTemplate: inferredDomain === 'CONVERSATIONAL' ? rawLlmResponse : undefined,
+        actionPlan,
       };
     }
   }
@@ -58,7 +86,14 @@ export class WebchatQueryPlannerService {
    * Infiere el dominio adecuado a partir de palabras clave en caso de fallo de JSON en el Router.
    */
   inferDomainFromQuestion(question: string): WebchatDomain {
-    const q = (question || '').toLowerCase();
+    const q = (question || '').toLowerCase().trim();
+
+    // Verbos de acción imperativos
+    const actionRegex = /^(crea|crear|genera|generar|registra|registrar|agenda|agendar|programa|programar|modifica|modificar|actualiza|actualizar|cambia|cambiar|levanta|levantar|abre|abrir|pon|poner|asigna|asignar)\b/i;
+    if (actionRegex.test(q)) {
+      return 'ACTION_EXECUTION';
+    }
+
     if (q.includes('ticket') || q.includes('incidencia') || q.includes('soporte') || q.includes('folio')) {
       return 'TICKETS';
     }
@@ -78,6 +113,43 @@ export class WebchatQueryPlannerService {
       return 'CONVERSATIONAL';
     }
     return 'OPORTUNIDADES'; // Dominio principal por defecto
+  }
+
+  /**
+   * Infiere el tipo de acción a partir del texto de la consulta.
+   */
+  inferActionTypeFromQuestion(question: string): 'createOpportunity' | 'modifyOpportunity' | 'createActivity' | 'modifyActivity' | 'createTicket' | null {
+    const q = (question || '').toLowerCase();
+    const isModify = q.includes('modifica') || q.includes('actualiza') || q.includes('cambia') || q.includes('reprograma') || q.includes('mueve');
+
+    if (q.includes('actividad') || q.includes('reunion') || q.includes('reunión') || q.includes('llamada') || q.includes('cita') || q.includes('agenda') || q.includes('programa')) {
+      return isModify ? 'modifyActivity' : 'createActivity';
+    }
+    if (q.includes('ticket') || q.includes('incidencia') || q.includes('soporte') || q.includes('reporte') || q.includes('falla')) {
+      return 'createTicket';
+    }
+    if (q.includes('oportunidad') || q.includes('cotizacion') || q.includes('cotización') || q.includes('proyecto') || q.includes('venta') || q.includes('monto')) {
+      return isModify ? 'modifyOpportunity' : 'createOpportunity';
+    }
+    return 'createOpportunity';
+  }
+
+  /**
+   * Extrae parámetros básicos de la pregunta en caso de rescate heurístico.
+   */
+  private extractBasicActionParams(question: string, actionType: string): Record<string, any> {
+    const q = question.trim();
+    const params: Record<string, any> = {};
+
+    if (actionType === 'createOpportunity' || actionType === 'modifyOpportunity') {
+      params.nombreProyecto = q.replace(/^(crea|crear|genera|registra|modifica|actualiza)\s+(una\s+)?(oportunidad|cotizacion|cotización|proyecto)?\s*(para|de)?/i, '').trim();
+    } else if (actionType === 'createActivity' || actionType === 'modifyActivity') {
+      params.activity = q;
+      params.date = 'mañana a las 10am';
+    } else if (actionType === 'createTicket') {
+      params.title = q.replace(/^(crea|crear|levanta|levantar|abre|abrir|reporta)\s+(un\s+)?(ticket|incidencia|reporte)?\s*(por|de)?/i, '').trim() || q;
+    }
+    return params;
   }
 
   /**

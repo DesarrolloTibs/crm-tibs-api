@@ -25,6 +25,7 @@ import { Pipeline } from '../pipelines/entities/pipeline.entity';
 import { Stage } from '../stages/entities/stage.entity';
 import { Product } from '../products/entities/product.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PipelinesGateway } from '../pipelines/pipelines.gateway';
 
 @Injectable()
 export class OpportunitiesService {
@@ -50,6 +51,7 @@ export class OpportunitiesService {
     private readonly storageService: StorageService,
     private readonly interactionsService: InteractionsService,
     private readonly notificationsService: NotificationsService,
+    private readonly pipelinesGateway: PipelinesGateway,
   ) {}
 
   async create(createOpportunityDto: CreateOpportunityDto, user?: User): Promise<Opportunity> {
@@ -87,7 +89,13 @@ export class OpportunitiesService {
       convertedProductsPrice = productsPriceSum / Number(dtoWithoutContacts.tipoCambio);
     }
 
-    const total = (Number(dtoWithoutContacts.monto_licenciamiento) || 0) + (Number(dtoWithoutContacts.monto_servicios) || 0) + convertedProductsPrice;
+    let total = (Number(dtoWithoutContacts.monto_licenciamiento) || 0) + (Number(dtoWithoutContacts.monto_servicios) || 0) + convertedProductsPrice;
+    if (total === 0 && Number(dtoWithoutContacts.monto_total) > 0) {
+      total = Number(dtoWithoutContacts.monto_total);
+      if (!dtoWithoutContacts.monto_servicios && !dtoWithoutContacts.monto_licenciamiento) {
+        (dtoWithoutContacts as any).monto_servicios = total;
+      }
+    }
     const opportunityData = { ...dtoWithoutContacts, monto_total: total } as any;
 
     // Si la moneda no es USD, nos aseguramos de que tipoCambio sea nulo.
@@ -248,7 +256,9 @@ export class OpportunitiesService {
     }
 
     // Cargar la relación stage completa antes de retornar
-    return this.findOne(savedOpportunity.id);
+    const fullOpportunity = await this.findOne(savedOpportunity.id);
+    this.pipelinesGateway.emitOpportunityCreated(fullOpportunity);
+    return fullOpportunity;
   }
 
   findAll(
@@ -541,11 +551,20 @@ export class OpportunitiesService {
     const currentMoneda = opportunity.moneda !== undefined ? opportunity.moneda : existingOpportunity.moneda;
     const currentTipoCambio = opportunity.tipoCambio !== undefined ? opportunity.tipoCambio : existingOpportunity.tipoCambio;
 
-    if (currentMoneda === 'USD' && currentTipoCambio && Number(currentTipoCambio) > 0) {
-      convertedProductsPrice = productsPriceSum / Number(currentTipoCambio);
+    let total = (Number(opportunity.monto_licenciamiento ?? existingOpportunity.monto_licenciamiento) || 0) + (Number(opportunity.monto_servicios ?? existingOpportunity.monto_servicios) || 0) + convertedProductsPrice;
+    if (total === 0 && Number(updateOpportunityDto.monto_total) > 0) {
+      total = Number(updateOpportunityDto.monto_total);
+      if (updateOpportunityDto.monto_servicios === undefined && updateOpportunityDto.monto_licenciamiento === undefined) {
+        opportunity.monto_servicios = total;
+      }
+    } else if (updateOpportunityDto.monto_total !== undefined && Number(updateOpportunityDto.monto_total) > 0 && updateOpportunityDto.monto_licenciamiento === undefined && updateOpportunityDto.monto_servicios === undefined) {
+      total = Number(updateOpportunityDto.monto_total);
+      if (!opportunity.monto_servicios && !opportunity.monto_licenciamiento) {
+        opportunity.monto_servicios = total;
+      }
     }
 
-    opportunity.monto_total = (Number(opportunity.monto_licenciamiento ?? existingOpportunity.monto_licenciamiento) || 0) + (Number(opportunity.monto_servicios ?? existingOpportunity.monto_servicios) || 0) + convertedProductsPrice;
+    opportunity.monto_total = total;
 
     if (opportunity.moneda !== 'USD') {
       opportunity.tipoCambio = 0;
@@ -662,7 +681,9 @@ export class OpportunitiesService {
       }
     }
 
-    return this.findOne(savedOpportunity.id);
+    const fullOpportunity = await this.findOne(savedOpportunity.id);
+    this.pipelinesGateway.emitOpportunityUpdated(fullOpportunity);
+    return fullOpportunity;
   }
 
   async remove(id: string): Promise<void> {
@@ -670,6 +691,7 @@ export class OpportunitiesService {
     if (result.affected === 0) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
     }
+    this.pipelinesGateway.emitOpportunityDeleted(id);
   }
 
   async addOpportunityFile(
@@ -713,7 +735,9 @@ export class OpportunitiesService {
       );
     }
 
-    return this.findOne(opportunityId);
+    const fullOpportunity = await this.findOne(opportunityId);
+    this.pipelinesGateway.emitOpportunityUpdated(fullOpportunity);
+    return fullOpportunity;
   }
 
   async getOpportunityFile(opportunityId: string, fileId: string): Promise<OpportunityFile> {
@@ -754,7 +778,9 @@ export class OpportunitiesService {
       );
     }
 
-    return this.findOne(opportunityId);
+    const fullOpportunity = await this.findOne(opportunityId);
+    this.pipelinesGateway.emitOpportunityUpdated(fullOpportunity);
+    return fullOpportunity;
   }
 
   async downloadFile(filePath: string, fileName: string, res: Response): Promise<void> {
@@ -775,7 +801,9 @@ export class OpportunitiesService {
         comment,
       });
     }
-    return saved;
+    const fullOpportunity = await this.findOne(saved.id);
+    this.pipelinesGateway.emitOpportunityUpdated(fullOpportunity);
+    return fullOpportunity;
   }
 }
 

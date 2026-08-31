@@ -6,6 +6,9 @@ import { WebchatSecurityService } from './services/webchat-security.service';
 import { WebchatCubeExecutorService } from './services/webchat-cube-executor.service';
 import { WebchatEntityMatcherService } from './services/webchat-entity-matcher.service';
 import { WebchatResponseFormatterService } from './services/webchat-response-formatter.service';
+import { WebchatActionExecutorService } from './services/webchat-action-executor.service';
+import { User } from '../users/entities/user.entity';
+import { Role } from '../role.enum';
 import {
   ConversationHistoryMessage,
   CubeAnnotation,
@@ -29,15 +32,17 @@ export class WebchatService {
     private readonly cubeExecutor: WebchatCubeExecutorService,
     private readonly entityMatcher: WebchatEntityMatcherService,
     private readonly responseFormatter: WebchatResponseFormatterService,
+    private readonly actionExecutor: WebchatActionExecutorService,
   ) {}
 
   /**
    * Procesa una consulta de lenguaje natural del usuario autenticado del CRM.
    * Arquitectura jerárquica:
-   * 1. Agente Orquestador / Router (~350 tokens): Clasifica intención y dominio.
-   * 2. Si es conversacional o búsqueda vaga, resuelve de inmediato (0 tokens de subagente).
-   * 3. Sub-Agente Especializado por Dominio (~600-1800 tokens): Genera CubeQueryPlan específico.
-   * 4. Ejecución en Capa Semántica con filtros de seguridad y formateo inteligente.
+   * 1. Agente Orquestador / Router (~350 tokens): Clasifica intención y dominio o detecta plan de acción.
+   * 2. Si es acción de crear/modificar registros, ejecuta WebchatActionExecutorService con RBAC.
+   * 3. Si es conversacional o búsqueda vaga, resuelve de inmediato (0 tokens de subagente).
+   * 4. Sub-Agente Especializado por Dominio (~600-1800 tokens): Genera CubeQueryPlan específico.
+   * 5. Ejecución en Capa Semántica con filtros de seguridad y formateo inteligente.
    */
   async processQuery(
     question: string,
@@ -47,6 +52,8 @@ export class WebchatService {
     conversationHistory?: ConversationHistoryMessage[],
   ): Promise<WebchatResponse> {
     try {
+      const userObj = { id: userId, role: userRole as Role, username } as User;
+
       // 1. Construir historial de conversación reciente para contexto
       let historyText = '';
       if (conversationHistory && conversationHistory.length > 0) {
@@ -72,7 +79,16 @@ Genera tu respuesta JSON:`;
       const classification = this.queryPlanner.parseRouterClassification(rawRouterResponse, question);
       this.logger.log(`[WebChat - Router Classification] Domain: ${classification.domain} | Intent: ${classification.intent}`);
 
-      // 3. Si el Orquestador determina que es CONVERSACIONAL (saludo, despedida, qué puedes hacer)
+      // 3. Si el Orquestador determina EJECUCIÓN DE ACCIÓN (crear/modificar oportunidad, actividad, ticket)
+      if (classification.actionPlan || classification.intent === 'ACTION_EXECUTION' || classification.domain === 'ACTION_EXECUTION') {
+        const plan = classification.actionPlan || {
+          action: this.queryPlanner.inferActionTypeFromQuestion(question) || 'createOpportunity',
+          parameters: {},
+        };
+        return await this.actionExecutor.executeAction(plan, userObj, question, conversationHistory);
+      }
+
+      // 4. Si el Orquestador determina que es CONVERSACIONAL (saludo, despedida, qué puedes hacer)
       if (classification.intent === 'CONVERSATIONAL' || classification.domain === 'CONVERSATIONAL') {
         return {
           answer: classification.responseTemplate || '¡Hola! Soy tu asistente del CRM. ¿En qué puedo ayudarte hoy?',
@@ -80,7 +96,7 @@ Genera tu respuesta JSON:`;
         };
       }
 
-      // 4. Si el Orquestador determina BÚSQUEDA VAGA de 1 o 2 palabras aisladas (persona, empresa, marca)
+      // 5. Si el Orquestador determina BÚSQUEDA VAGA de 1 o 2 palabras aisladas (persona, empresa, marca)
       if (classification.intent === 'VAGUE_SEARCH' || classification.domain === 'VAGUE_SEARCH' || this.entityMatcher.isVagueQuery(question)) {
         const vaguePlan: CubeQueryPlan = {
           intent: 'VAGUE_SEARCH',
@@ -90,7 +106,7 @@ Genera tu respuesta JSON:`;
         return await this.handleVagueSearch(question, vaguePlan, userId, userRole);
       }
 
-      // 5. PASO 2: Invocación del Sub-Agente Especializado del Dominio detectado
+      // 6. PASO 2: Invocación del Sub-Agente Especializado del Dominio detectado
       const subAgentPrompt = this.promptBuilder.buildDomainPrompt(classification.domain, userId, userRole, username);
       const fullSubAgentPrompt = `${subAgentPrompt}
 
@@ -103,7 +119,7 @@ Genera tu respuesta JSON:`;
       const rawSubAgentResponse = await this.aiAgentService.invokeLanguageModel(fullSubAgentPrompt, 0.2);
       this.logger.log(`[WebChat - SubAgent (${classification.domain}) Raw] ${rawSubAgentResponse.substring(0, 300)}`);
 
-      // 6. Parsear y estructurar el plan de consulta del sub-agente
+      // 7. Parsear y estructurar el plan de consulta del sub-agente
       const queryPlan = this.queryPlanner.parsePlanFromLlm(rawSubAgentResponse, question);
       if (classification.dashboardRedirect && !queryPlan.dashboardRedirect) {
         queryPlan.dashboardRedirect = classification.dashboardRedirect;
@@ -112,7 +128,16 @@ Genera tu respuesta JSON:`;
         queryPlan.canonicalSearchTerm = classification.canonicalSearchTerm;
       }
 
-      // 7. Si el sub-agente respondió conversacional sin consulta
+      // 8. Si el sub-agente generó un plan de acción
+      if (queryPlan.actionPlan || queryPlan.intent === 'ACTION_EXECUTION') {
+        const plan = queryPlan.actionPlan || {
+          action: this.queryPlanner.inferActionTypeFromQuestion(question) || 'createOpportunity',
+          parameters: {},
+        };
+        return await this.actionExecutor.executeAction(plan, userObj, question);
+      }
+
+      // 9. Si el sub-agente respondió conversacional sin consulta
       if (queryPlan.intent === 'CONVERSATIONAL' && (!queryPlan.cubeQuery || Object.keys(queryPlan.cubeQuery).length === 0)) {
         return {
           answer: queryPlan.responseTemplate || queryPlan.thought || '¡Hola! ¿En qué puedo ayudarte hoy?',
@@ -120,7 +145,7 @@ Genera tu respuesta JSON:`;
         };
       }
 
-      // 8. Si el sub-agente detectó búsqueda vaga
+      // 10. Si el sub-agente detectó búsqueda vaga
       const isExplicitQueryPlan =
         queryPlan.intent === 'ANALYTICAL' ||
         queryPlan.intent === 'SPECIFIC_ENTITY' ||
@@ -133,7 +158,7 @@ Genera tu respuesta JSON:`;
         return await this.handleVagueSearch(question, queryPlan, userId, userRole);
       }
 
-      // 9. Ejecutar consulta analítica / específica
+      // 11. Ejecutar consulta analítica / específica
       return await this.handleSpecificOrAnalyticalQuery(question, queryPlan, userId, userRole);
 
     } catch (error: any) {

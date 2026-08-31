@@ -4,53 +4,58 @@ import { WebchatDomain } from '../interfaces/webchat.interfaces';
 @Injectable()
 export class WebchatPromptBuilderService {
   /**
-   * Construye el prompt ligero para el Agente Orquestador / Router (~350-450 tokens).
-   * Su función única es clasificar la intención, determinar el dominio temático de la consulta
-   * y responder directamente si la consulta es puramente conversacional.
+   * Construye el prompt ligero para el Agente Orquestador / Router (~350-450 tokens, < 4000 caracteres).
+   * Su función es clasificar la intención (análisis, búsqueda, conversacional o ejecución de acción),
+   * determinar el dominio temático de la consulta y estructurar parámetros de acción si aplica.
    */
   buildRouterPrompt(userId: string, userRole: string, username: string): string {
-    const { roleDescription, fechaHoy, todayISO, horaActual } = this.getUserContext(userId, userRole, username);
+    const { roleDescription, fechaHoy, todayISO, horaActual, timezone } = this.getUserContext(userId, userRole, username);
 
-    return `Eres el Agente Orquestador y Clasificador de Inteligencia del CRM. Tu tarea es analizar la consulta del usuario, detectar la intención, normalizar el término de búsqueda si aplica, y clasificarla en el dominio temático adecuado.
+    return `Eres el Agente Orquestador y Clasificador de Inteligencia del CRM. Analiza la consulta del usuario, clasifica intención/dominio o estructura la acción solicitada.
 
 [USUARIO ACTUAL]
-Nombre: ${username} | Rol: ${roleDescription} | Fecha actual: ${fechaHoy} (${todayISO}) ${horaActual} (CDMX)
+Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO}) ${horaActual} (${timezone})
 
 [DOMINIOS DISPONIBLES]
-1. "OPORTUNIDADES": Ventas ganadas, cotizaciones, montos, pipeline, proyectos comerciales, marcas, líneas de negocio, monedas (USD/MXN).
-2. "TICKETS": Mesa de ayuda, soporte técnico, folios de tickets, tickets abiertos, pendientes o resueltos.
-3. "CLIENTES_EMPRESAS": Directorio de clientes (contactos personas), datos de empresas, cuentas corporativas.
-4. "ACTIVIDADES": Agenda, calendario de actividades, reuniones, llamadas, tareas programadas.
-5. "GASTOS": Registro de gastos, viáticos, comprobantes y gastos promedio.
-6. "PRODUCTOS": Catálogo de productos, precios base unitarios, unidades de medida.
-7. "VAGUE_SEARCH": 1 o 2 palabras aisladas con NOMBRE PROPIO sin verbo ni pregunta (ej: "Juan", "Acme", "Dell").
-8. "CONVERSATIONAL": Saludos, despedidas, agradecimientos o preguntas sobre qué puedes hacer ("Hola", "¿Quién eres?", "¿Qué puedes hacer?").
-9. "MULTI_DOMAIN": Consulta que abarca explícitamente más de un dominio a la vez.
+1. "OPORTUNIDADES": Ventas ganadas, cotizaciones, montos, pipeline, marcas, líneas de negocio.
+2. "TICKETS": Mesa de ayuda, soporte técnico, tickets abiertos o resueltos.
+3. "CLIENTES_EMPRESAS": Directorio de clientes, datos de empresas, cuentas.
+4. "ACTIVIDADES": Agenda, actividades, reuniones, llamadas, tareas.
+5. "GASTOS": Registro de gastos, viáticos, comprobantes.
+6. "PRODUCTOS": Catálogo de productos, precios base unitarios.
+7. "VAGUE_SEARCH": 1 o 2 palabras con NOMBRE PROPIO sin verbo ("Juan", "Acme", "Dell").
+8. "CONVERSATIONAL": Saludos, despedidas o capacidades ("Hola", "¿Quién eres?").
+9. "ACTION_EXECUTION": Comandos para CREAR o MODIFICAR registros (Oportunidad, Actividad, Ticket).
+10. "MULTI_DOMAIN": Consulta que abarca más de un dominio.
 
-[REGLAS OBLIGATORIAS]
+[REGLAS]
 1. Responde SIEMPRE con un único objeto JSON válido sin texto adicional.
-2. Si es "CONVERSATIONAL", define "intent": "CONVERSATIONAL", "domain": "CONVERSATIONAL" y genera respuesta en "responseTemplate".
-3. Si piden ver gráfica/dashboard, incluye "dashboardRedirect": { "tab": "commercial" | "support", "executiveId": "${userId}" }.
+2. Si es "CONVERSATIONAL", usa intent/domain "CONVERSATIONAL" y "responseTemplate".
+3. Si es "ACTION_EXECUTION", usa intent/domain "ACTION_EXECUTION" y genera "actionPlan":
+   { "action": "createOpportunity" | "modifyOpportunity" | "createActivity" | "modifyActivity" | "createTicket", "parameters": { ... } }
+4. Si piden ver gráfica/dashboard, incluye "dashboardRedirect": { "tab": "commercial" | "support", "executiveId": "${userId}" }.
 
-[FORMATO DE RESPUESTA JSON]
+[FORMATO JSON]
 {
-  "thought": "Explicación breve del dominio e intención detectada.",
-  "intent": "ANALYTICAL | SPECIFIC_ENTITY | VAGUE_SEARCH | CONVERSATIONAL",
-  "domain": "OPORTUNIDADES | TICKETS | CLIENTES_EMPRESAS | ACTIVIDADES | GASTOS | PRODUCTOS | VAGUE_SEARCH | CONVERSATIONAL | MULTI_DOMAIN",
-  "canonicalSearchTerm": "término normalizado o corregido si aplica, o null",
-  "responseTemplate": "Respuesta directa únicamente si es CONVERSATIONAL, de lo contrario null",
+  "thought": "Explicación breve.",
+  "intent": "ANALYTICAL | SPECIFIC_ENTITY | VAGUE_SEARCH | CONVERSATIONAL | ACTION_EXECUTION",
+  "domain": "OPORTUNIDADES | TICKETS | CLIENTES_EMPRESAS | ACTIVIDADES | GASTOS | PRODUCTOS | VAGUE_SEARCH | CONVERSATIONAL | ACTION_EXECUTION | MULTI_DOMAIN",
+  "canonicalSearchTerm": "término normalizado o null",
+  "responseTemplate": "Respuesta si es CONVERSATIONAL o null",
+  "actionPlan": null,
   "dashboardRedirect": null
 }
 
-[EJEMPLOS DE RUTEO]
-- "Hola, ¿qué puedes hacer?" → {"thought": "Saludo y capacidades.", "intent": "CONVERSATIONAL", "domain": "CONVERSATIONAL", "canonicalSearchTerm": null, "responseTemplate": "¡Hola! Soy tu asistente de inteligencia del CRM. Puedo darte métricas de tus ventas ganadas, oportunidades en pipeline, tickets de soporte, gastos, agenda de actividades y buscar clientes o empresas. ¿Qué deseas consultar?"}
-- "cuanto he vendido este mes" → {"thought": "Consulta de ventas ganadas.", "intent": "ANALYTICAL", "domain": "OPORTUNIDADES", "canonicalSearchTerm": null, "responseTemplate": null}
-- "cuántos tickets abiertos hay" → {"thought": "Métrica de tickets de soporte.", "intent": "ANALYTICAL", "domain": "TICKETS", "canonicalSearchTerm": null, "responseTemplate": null}
-- "lista de empresas" → {"thought": "Listado de cuentas corporativas.", "intent": "ANALYTICAL", "domain": "CLIENTES_EMPRESAS", "canonicalSearchTerm": null, "responseTemplate": null}
-- "mis actividades de hoy" → {"thought": "Agenda de actividades del día.", "intent": "ANALYTICAL", "domain": "ACTIVIDADES", "canonicalSearchTerm": null, "responseTemplate": null}
-- "mis gastos" → {"thought": "Consulta de viáticos/gastos.", "intent": "ANALYTICAL", "domain": "GASTOS", "canonicalSearchTerm": null, "responseTemplate": null}
-- "precio de la Laptop HP" → {"thought": "Consulta de catálogo de productos.", "intent": "SPECIFIC_ENTITY", "domain": "PRODUCTOS", "canonicalSearchTerm": "Laptop HP", "responseTemplate": null}
-- "Acme" → {"thought": "Búsqueda vaga de un nombre propio.", "intent": "VAGUE_SEARCH", "domain": "VAGUE_SEARCH", "canonicalSearchTerm": "Acme", "responseTemplate": null}`;
+[EJEMPLOS]
+- "Hola" → {"thought": "Saludo.", "intent": "CONVERSATIONAL", "domain": "CONVERSATIONAL", "responseTemplate": "¡Hola! Soy tu asistente del CRM. ¿En qué te ayudo?"}
+- "crea oportunidad Bimbo 50000 MXN desarrollo" → {"thought": "Crear opp.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createOpportunity", "parameters": {"nombreProyecto": "Bimbo", "monto": 50000, "moneda": "MXN", "lineaNegocio": "Desarrollo"}}}
+- "a oportunidad prueba agrega 5000 licenciamiento" → {"thought": "Modificar opp.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "prueba", "montoLicenciamiento": 5000}}}
+- "agenda reunión mañana 4pm con Carlos" → {"thought": "Crear act.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Reunión con Carlos", "date": "mañana a las 4pm", "cliente": "Carlos"}}}
+- "cambia actividad de las 3 a consulta" → {"thought": "Modificar act.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetDate": "las 3", "newActivity": "consulta"}}}
+- "reprograma reunión de las 3 para mañana 5pm" → {"thought": "Reprogramar act.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetDate": "las 3", "newDate": "mañana a las 5pm"}}}
+- "levanta ticket por caída de servidor" → {"thought": "Crear ticket.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createTicket", "parameters": {"title": "Caída de servidor", "priority": 3}}}
+- "cuanto he vendido este mes" → {"thought": "Ventas.", "intent": "ANALYTICAL", "domain": "OPORTUNIDADES", "actionPlan": null}`;
+
   }
 
   /**
@@ -690,29 +695,30 @@ ${this.buildResponseJsonSchema()}
   // ── Helpers Privados ────────────────────────────────────────────────────────
 
   private getUserContext(userId: string, userRole: string, username: string) {
+    const timezone = process.env.NOTIFICATION_TIMEZONE || 'America/Mexico_City';
     const now = new Date();
-    const mexicoCityISO = new Date(now.toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+    const localISO = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
     const diasSemana = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
     const meses = [
       'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
       'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
     ];
     const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-    const todayISO = `${mexicoCityISO.getFullYear()}-${pad(mexicoCityISO.getMonth() + 1)}-${pad(mexicoCityISO.getDate())}`;
-    const fechaHoy = `${diasSemana[mexicoCityISO.getDay()]} ${mexicoCityISO.getDate()} de ${meses[mexicoCityISO.getMonth()]} de ${mexicoCityISO.getFullYear()}`;
-    const horaActual = mexicoCityISO.toTimeString().slice(0, 5);
+    const todayISO = `${localISO.getFullYear()}-${pad(localISO.getMonth() + 1)}-${pad(localISO.getDate())}`;
+    const fechaHoy = `${diasSemana[localISO.getDay()]} ${localISO.getDate()} de ${meses[localISO.getMonth()]} de ${localISO.getFullYear()}`;
+    const horaActual = localISO.toTimeString().slice(0, 5);
 
     const roleLower = (userRole || '').toLowerCase().trim();
     let roleDescription = '';
     if (roleLower === 'superadmin') {
-      roleDescription = 'SUPERADMINISTRADOR — Acceso global y multi-organización a todas las entidades del sistema sin restricciones.';
+      roleDescription = 'SUPERADMIN — Acceso global.';
     } else if (roleLower === 'admin') {
-      roleDescription = 'ADMINISTRADOR — Puede consultar datos globales de toda la organización actual sin restricciones.';
+      roleDescription = 'ADMIN — Gestión y consulta global.';
     } else {
-      roleDescription = `EJECUTIVO (ID: ${userId}) — Solo puede ver datos vinculados a él en oportunidades, actividades, gastos y tickets. Los filtros de seguridad se aplican automáticamente.`;
+      roleDescription = `EJECUTIVO (${userId}) — Datos propios.`;
     }
 
-    return { roleDescription, fechaHoy, todayISO, horaActual, roleLower };
+    return { roleDescription, fechaHoy, todayISO, horaActual, roleLower, timezone };
   }
 
   private buildBaseHeader(userId: string, userRole: string, username: string): string {

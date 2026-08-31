@@ -29,6 +29,8 @@ import { ClientsModule } from 'src/clients/clients.module';
 import { StorageModule } from '../storage/storage.module';
 import { InteractionsModule } from '../interactions/interactions.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { PipelinesModule } from '../pipelines/pipelines.module';
+
 
 @Module({
   imports: [
@@ -42,7 +44,9 @@ import { NotificationsModule } from '../notifications/notifications.module';
     StorageModule,
     InteractionsModule,
     NotificationsModule,
+    PipelinesModule,
     // ConversationsModule ya NO se importa — QuotationPdfService usa EventEmitter
+
     // para comunicarse con ConversationsService, eliminando la circularidad
 
     MulterModule.register({
@@ -67,6 +71,6 @@ import { NotificationsModule } from '../notifications/notifications.module';
   ],
   controllers: [OpportunitiesController, PublicQuotationController, OpportunityLabelsController, OpportunityCatalogsController],
   providers: [OpportunitiesService, QuotationPdfService, OpportunityLabelsService, OpportunityCatalogsService],
-  exports: [OpportunitiesService, QuotationPdfService],
+  exports: [OpportunitiesService, QuotationPdfService, OpportunityLabelsService, OpportunityCatalogsService],
 })
 export class OpportunitiesModule {}

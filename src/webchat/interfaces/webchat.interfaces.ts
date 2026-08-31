@@ -37,24 +37,40 @@ export type WebchatDomain =
   | 'PRODUCTOS'
   | 'VAGUE_SEARCH'
   | 'CONVERSATIONAL'
+  | 'ACTION_EXECUTION'
   | 'MULTI_DOMAIN';
+
+export type WebchatActionType =
+  | 'createOpportunity'
+  | 'modifyOpportunity'
+  | 'createActivity'
+  | 'modifyActivity'
+  | 'createTicket';
+
+export interface WebchatActionPlan {
+  action: WebchatActionType;
+  parameters: Record<string, any>;
+  thought?: string;
+}
 
 export interface RouterClassification {
   thought?: string;
-  intent: 'VAGUE_SEARCH' | 'SPECIFIC_ENTITY' | 'ANALYTICAL' | 'CONVERSATIONAL';
+  intent: 'VAGUE_SEARCH' | 'SPECIFIC_ENTITY' | 'ANALYTICAL' | 'CONVERSATIONAL' | 'ACTION_EXECUTION';
   domain: WebchatDomain;
   canonicalSearchTerm?: string;
   responseTemplate?: string;
+  actionPlan?: WebchatActionPlan | null;
   dashboardRedirect?: DashboardRedirect | null;
 }
 
 export interface CubeQueryPlan {
   thought?: string;
-  intent?: 'VAGUE_SEARCH' | 'SPECIFIC_ENTITY' | 'ANALYTICAL' | 'CONVERSATIONAL';
+  intent?: 'VAGUE_SEARCH' | 'SPECIFIC_ENTITY' | 'ANALYTICAL' | 'CONVERSATIONAL' | 'ACTION_EXECUTION';
   detectedEntity?: 'Clientes' | 'Usuarios' | 'Productos' | 'Oportunidades' | 'Tickets' | 'Actividades' | 'Gastos' | 'Empresas' | null;
   canonicalSearchTerm?: string;
   cubeQuery?: CubeQuery;
   cubeQueries?: CubeQuery[];
+  actionPlan?: WebchatActionPlan | null;
   responseTemplate?: string;
   dashboardRedirect?: DashboardRedirect | null;
 }

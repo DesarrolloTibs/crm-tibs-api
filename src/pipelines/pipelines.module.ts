@@ -5,10 +5,13 @@ import { Stage } from '../stages/entities/stage.entity';
 import { PipelinesService } from './pipelines.service';
 import { PipelinesController } from './pipelines.controller';
 
+import { PipelinesGateway } from './pipelines.gateway';
+
 @Module({
   imports: [TypeOrmModule.forFeature([Pipeline, Stage])],
-  providers: [PipelinesService],
+  providers: [PipelinesService, PipelinesGateway],
   controllers: [PipelinesController],
-  exports: [PipelinesService],
+  exports: [PipelinesService, PipelinesGateway],
 })
 export class PipelinesModule {}
+

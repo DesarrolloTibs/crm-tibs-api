@@ -12,6 +12,8 @@ import { RemindersModule } from 'src/reminders/reminders.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { CalendarIntegrationsModule } from '../calendar-integrations/calendar-integrations.module';
 
+import { ActivitiesGateway } from './activities.gateway';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([Activity, TypeActivity, Client]),
@@ -22,7 +24,8 @@ import { CalendarIntegrationsModule } from '../calendar-integrations/calendar-in
     CalendarIntegrationsModule,
   ],
   controllers: [ActivitiesController],
-  providers: [ActivitiesService],
-  exports: [ActivitiesService],
+  providers: [ActivitiesService, ActivitiesGateway],
+  exports: [ActivitiesService, ActivitiesGateway],
 })
 export class ActivitiesModule { }
+
