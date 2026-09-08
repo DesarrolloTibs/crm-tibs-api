@@ -25,3 +25,8 @@ pnpm-debug.log*
 # NestJS cache
 .nest/
 uploads/
+
+# Obsidian Vault & Cache
+.obsidian/
+
+AGENTS.md
