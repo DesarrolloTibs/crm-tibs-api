@@ -106,7 +106,7 @@ graph TD
 src/
 ├── activities/             # Tareas, reuniones, llamadas y gateway WebSocket
 ├── auth/                   # Autenticación JWT, Passport, login y recuperación de contraseña
-├── calendar-integrations/  # Google Calendar, Outlook Graph, iCloud CalDAV y webhooks
+├── calendar-integrations/  # Google Calendar, Outlook Graph y webhooks
 ├── clients/                # Directorio de clientes, datos fiscales y relaciones comerciales
 ├── common/                 # Filtros globales de excepción, interceptores, loggers y eventos
 ├── companies/              # Empresas (cuentas maestras) con contactos asociados
@@ -174,7 +174,7 @@ src/
 * [[CRM TIBS - Modulo de Tickets & Helpdesk]] — Mesa de ayuda multicanal, SLAs y resolución de soporte.
 * [[CRM TIBS - AI Agent, RAG & LangGraph]] — Motor de IA agéntica, LangGraph, herramientas y vector store.
 * [[CRM TIBS - Conversaciones, Webchat & WebSockets]] — Mensajería omnicanal y los 5 Gateways de Socket.IO.
-* [[CRM TIBS - Integraciones de Calendario Externo]] — Sincronización con Google, Outlook e iCloud.
+* [[CRM TIBS - Integraciones de Calendario Externo]] — Sincronización con Google y Outlook.
 * [[MOC - Mapa de Contenidos Backend]] — Mapa maestro de navegación de la bóveda.
 * [[Diccionario de Entidades y Modelos]] — Diccionario de tipos, DTOs y entidades TypeORM.
 * [[Matriz de Endpoints y Servicios]] — Mapeo exhaustivo de rutas y controladores.

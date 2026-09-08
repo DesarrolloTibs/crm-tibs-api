@@ -113,8 +113,9 @@ describe('WebchatActionExecutorService', () => {
     };
 
     mockClientRepo = {
-      findOne: jest.fn().mockResolvedValue({ id: 'client-123', nombre: 'Juan', apellido: 'Pérez' }),
-      find: jest.fn().mockResolvedValue([{ id: 'client-123', nombre: 'Juan', apellido: 'Pérez' }]),
+      findOne: jest.fn().mockResolvedValue({ id: 'client-123', nombre: 'Juan', apellido: 'Pérez', correo: 'juan.perez@example.com' }),
+      find: jest.fn().mockResolvedValue([{ id: 'client-123', nombre: 'Juan', apellido: 'Pérez', correo: 'juan.perez@example.com' }]),
+      save: jest.fn().mockImplementation((c) => Promise.resolve(c)),
     };
 
     mockCompanyRepo = {
@@ -639,6 +640,118 @@ describe('WebchatActionExecutorService', () => {
         }),
         expect.any(Object),
       );
+      expect(response.answer).toContain('Actividad Programada Exitosamente');
+    });
+
+    it('No crea la actividad y solicita el correo si el contacto relacionado no tiene correo asignado', async () => {
+      mockActivitiesService.findByUserAndDate.mockResolvedValue([]);
+      mockClientRepo.findOne.mockResolvedValue({
+        id: 'client-no-email',
+        nombre: 'Carlos',
+        apellido: 'Santana',
+        correo: null,
+      });
+
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + 1);
+      futureDate.setHours(10, 0, 0, 0);
+
+      const response = await service.handleCreateActivity(
+        {
+          activity: 'Reunión de demostración',
+          date: futureDate.toISOString(),
+          cliente: 'Carlos Santana',
+        },
+        executiveUser,
+      );
+
+      expect(mockActivitiesService.create).not.toHaveBeenCalled();
+      expect(response.answer).toContain('es obligatorio que tenga un correo electrónico asignado');
+      expect(response.answer).toContain('Carlos Santana');
+    });
+
+    it('Asigna y guarda el correo en el contacto si se proporciona en la consulta y crea la actividad', async () => {
+      mockActivitiesService.findByUserAndDate.mockResolvedValue([]);
+      const clientWithoutEmail = {
+        id: 'client-to-update',
+        nombre: 'Carlos',
+        apellido: 'Santana',
+        correo: null,
+      };
+      mockClientRepo.findOne.mockResolvedValue(clientWithoutEmail);
+      mockActivitiesService.create.mockResolvedValue({
+        id: 'act-with-new-email',
+        activity: 'Reunión comercial',
+        date: '2026-09-09T16:00:00.000Z',
+        typeActivity: { strname: 'Reunión' },
+      });
+
+      const response = await service.handleCreateActivity(
+        {
+          activity: 'Reunión comercial',
+          date: '2026-09-09T16:00:00.000Z',
+          cliente: 'Carlos Santana',
+          correo: 'carlos.santana@empresa.com',
+        },
+        executiveUser,
+      );
+
+      expect(mockClientRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'client-to-update',
+          correo: 'carlos.santana@empresa.com',
+        }),
+      );
+      expect(mockActivitiesService.create).toHaveBeenCalled();
+      expect(response.answer).toContain('Actividad Programada Exitosamente');
+    });
+
+    it('Completa y crea la actividad cuando el usuario proporciona el correo en el siguiente turno (multi-turno)', async () => {
+      mockActivitiesService.findByUserAndDate.mockResolvedValue([]);
+      const clientWithoutEmail = {
+        id: 'client-multiturn',
+        nombre: 'Carlos',
+        apellido: 'Santana',
+        correo: null,
+      };
+      mockClientRepo.findOne.mockResolvedValue(clientWithoutEmail);
+      mockActivitiesService.create.mockResolvedValue({
+        id: 'act-multiturn-email',
+        activity: 'Demo con Carlos',
+        date: '2026-09-10T17:00:00.000Z',
+        typeActivity: { strname: 'Reunión' },
+      });
+
+      const conversationHistory = [
+        {
+          role: 'user' as const,
+          content: 'agenda reunión para mañana 11am con el cliente Carlos llamada "Demo con Carlos"',
+        },
+        {
+          role: 'assistant' as const,
+          content: 'Para agendar la actividad con el contacto "Carlos Santana", es obligatorio que tenga un correo electrónico asignado en el CRM. Por favor proporciona el correo del contacto.',
+        },
+      ];
+
+      const response = await service.executeAction(
+        {
+          action: 'createActivity',
+          parameters: {
+            correo: 'carlos@santana.com',
+          },
+        },
+        adminUser,
+        'carlos@santana.com',
+        conversationHistory,
+      );
+
+      expect(mockClientRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'client-multiturn',
+          correo: 'carlos@santana.com',
+        }),
+      );
+      expect(mockActivitiesService.create).toHaveBeenCalled();
       expect(response.answer).toContain('Actividad Programada Exitosamente');
     });
   });

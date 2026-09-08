@@ -24,6 +24,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { ActivitiesGateway } from './activities.gateway';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class ActivitiesService {
@@ -42,6 +43,7 @@ export class ActivitiesService {
     private readonly notificationsService: NotificationsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly activitiesGateway: ActivitiesGateway,
+    private readonly mailService: MailService,
   ) { }
 
 
@@ -54,6 +56,62 @@ export class ActivitiesService {
       } as TypeActivity;
     }
     return activity;
+  }
+
+  /**
+   * Envía un correo informativo con archivo .ics adjunto a los clientes/contactos
+   * vinculados a la actividad como aviso de que ha sido programada.
+   */
+  private async notifyClientsAboutActivity(activity: Activity): Promise<void> {
+    if (!activity) return;
+
+    try {
+      const recipients = new Map<string, { email: string; name: string }>();
+
+      if (activity.client && activity.client.correo) {
+        const name = `${activity.client.nombre || ''} ${activity.client.apellido || ''}`.trim() || activity.client.nombre || 'Cliente';
+        recipients.set(activity.client.correo.toLowerCase(), {
+          email: activity.client.correo,
+          name,
+        });
+      }
+
+      if (activity.contacts && Array.isArray(activity.contacts)) {
+        for (const contact of activity.contacts) {
+          if (contact && contact.correo) {
+            const name = `${contact.nombre || ''} ${contact.apellido || ''}`.trim() || contact.nombre || 'Cliente';
+            recipients.set(contact.correo.toLowerCase(), {
+              email: contact.correo,
+              name,
+            });
+          }
+        }
+      }
+
+      if (recipients.size === 0) {
+        return;
+      }
+
+      const executiveName = activity.user?.username || undefined;
+      const companyName = activity.company?.nombre || undefined;
+      const opportunityName = activity.opportunity?.nombre_proyecto || undefined;
+      const typeName = activity.typeActivity?.strname || 'Actividad';
+
+      for (const recipient of recipients.values()) {
+        await this.mailService.sendActivityNoticeToClient(
+          recipient.email,
+          recipient.name,
+          activity.activity,
+          typeName,
+          activity.date,
+          executiveName,
+          companyName,
+          opportunityName,
+        );
+      }
+    } catch (error) {
+      this.logger.error('Error al enviar aviso por correo a clientes vinculados:', error);
+    }
   }
 
   async findAllTypes(): Promise<TypeActivity[]> {
@@ -264,6 +322,7 @@ export class ActivitiesService {
       this.eventEmitter.emit('activity.created', { activity: result, tenantSchema });
     }
     const finalActivity = this.fillDeletedType(result!);
+    await this.notifyClientsAboutActivity(finalActivity);
     this.activitiesGateway.emitActivityCreated(finalActivity);
     return finalActivity;
   }

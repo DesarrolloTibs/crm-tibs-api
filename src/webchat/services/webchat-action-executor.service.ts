@@ -147,9 +147,17 @@ export class WebchatActionExecutorService {
 
         // 4. Extraer tipo de actividad si falta
         if (!merged.tipoActividad && !merged.tipo_actividad && !merged.typeActivity && !merged.tipo) {
-          const typeMatch = msg.match(/\b(reuni[oó]n|llamada|correo|visita|demostraci[oó]n|demo)\b/i);
+          const typeMatch = msg.match(/\b(reuni[oó]n|llamada|visita|demostraci[oó]n|demo)\b/i);
           if (typeMatch && typeMatch[1]) {
             merged.tipoActividad = typeMatch[1].trim();
+          }
+        }
+
+        // 5. Extraer correo electrónico si fue solicitado o proporcionado
+        if (!merged.correo && !merged.email) {
+          const emailMatch = msg.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+          if (emailMatch) {
+            merged.correo = emailMatch[0].trim();
           }
         }
       } else if (action === 'createOpportunity') {
@@ -857,6 +865,62 @@ export class WebchatActionExecutorService {
       }
     }
 
+    // D. Resolución de contacto pendiente desde oportunidad o clientId
+    if (clientId && !clientEntity) {
+      clientEntity = await this.clientRepo.findOne({ where: { id: clientId } });
+    }
+
+    let contactEntities: Client[] = [];
+    if (Array.isArray(params.contactIds) && params.contactIds.length > 0) {
+      const validContactUuids = params.contactIds.filter((id: any) => this.isValidUuid(id));
+      if (validContactUuids.length > 0) {
+        contactEntities = await this.clientRepo.find({
+          where: validContactUuids.map((id: string) => ({ id })),
+        });
+      }
+    }
+
+    // E. Validación obligatoria de correo electrónico para actividades asociadas a contactos
+    const contactsToCheck: Client[] = [];
+    if (clientEntity) {
+      contactsToCheck.push(clientEntity);
+    }
+    for (const c of contactEntities) {
+      if (!contactsToCheck.some(existing => existing.id === c.id)) {
+        contactsToCheck.push(c);
+      }
+    }
+
+    if (contactsToCheck.length > 0) {
+      let providedEmail = (params.correo || params.email || '').toString().trim();
+      if (!providedEmail && activityText) {
+        const emailMatch = activityText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        if (emailMatch) {
+          providedEmail = emailMatch[0].trim();
+        }
+      }
+
+      if (providedEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(providedEmail)) {
+        for (const c of contactsToCheck) {
+          if (!c.correo || !c.correo.trim()) {
+            c.correo = providedEmail.toLowerCase();
+            await this.clientRepo.save(c);
+            break;
+          }
+        }
+      }
+
+      const contactsWithoutEmail = contactsToCheck.filter(c => !c.correo || !c.correo.trim());
+      if (contactsWithoutEmail.length > 0) {
+        const missingNames = contactsWithoutEmail
+          .map(c => `"${(`${c.nombre || ''} ${c.apellido || ''}`).trim() || 'Contacto'}"`)
+          .join(', ');
+        return {
+          answer: `Para agendar la actividad con el contacto ${missingNames}, es obligatorio que tenga un correo electrónico asignado en el CRM.\n\nPor favor, proporciona el correo electrónico del contacto para poder registrarlo y completar la creación de la actividad.`,
+        };
+      }
+    }
+
     // 7. Recordatorio opcional
     let reminder: any = undefined;
     if (params.recordatorio || params.reminderTitle) {
@@ -876,6 +940,7 @@ export class WebchatActionExecutorService {
       clientId: clientId || null,
       companyId: companyId || null,
       opportunityId: opportunityId || null,
+      contactIds: params.contactIds || undefined,
       reminder,
     } as any, { id: targetUserId } as User);
 

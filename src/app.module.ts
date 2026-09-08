@@ -290,8 +290,6 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
               "accessToken" text NULL,
               "refreshToken" text NULL,
               "expiresAt" timestamptz NULL,
-              "icloudEmail" varchar(255) NULL,
-              "icloudPassword" text NULL,
               "calendarId" varchar(255) NULL,
               "webhookSubscriptionId" varchar(255) NULL,
               "webhookExpiration" timestamptz NULL,
@@ -309,13 +307,11 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "accessToken" text NULL;
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "refreshToken" text NULL;
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "expiresAt" timestamptz NULL;
-            ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "icloudEmail" varchar(255) NULL;
-            ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "icloudPassword" text NULL;
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "calendarId" varchar(255) NULL;
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "webhookSubscriptionId" varchar(255) NULL;
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "webhookExpiration" timestamptz NULL;
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "syncToken" varchar(500) NULL;
-          `);
+          `).catch(() => null);
         }
 
         // Also ensure public schema tables have stage_type and calendar columns
@@ -326,8 +322,6 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "accessToken" text NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "refreshToken" text NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "expiresAt" timestamptz NULL;
-          ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "icloudEmail" varchar(255) NULL;
-          ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "icloudPassword" text NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "calendarId" varchar(255) NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "webhookSubscriptionId" varchar(255) NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "webhookExpiration" timestamptz NULL;

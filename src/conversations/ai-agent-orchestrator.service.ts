@@ -657,7 +657,7 @@ Genera el JSON de salida:
           modifyOpportunity: `2. modifyOpportunity: Edita oportunidad existente.\nCampos: id(UUID), nombreProyecto, descripcion, montoTotal, cantidad, moneda.\n{"thought": "...", "tool_name": "modifyOpportunity", "tool_input": {"id": "uuid-real", "cantidad": 4}}`,
           updateContact: `3. updateContact: Actualiza contacto vinculado.\nCampos opcionales: nombre(str), correo(str), telefono(str).\n{"thought": "...", "tool_name": "updateContact", "tool_input": {"correo": "cliente@correo.com"}}`,
           checkAvailability: `4. checkAvailability: Valida disponibilidad de ejecutivo especializado únicamente para el día y hora indicados explícitamente por el cliente.\nCampos: proposedDate(ISO 8601 UTC en Ciudad de México UTC-6, suma 6 horas a la hora local). Ejemplo: 15:00 hora local = 21:00 UTC.\n{"thought": "...", "tool_name": "checkAvailability", "tool_input": {"proposedDate": "2026-07-30T21:00:00.000Z"}}`,
-          createActivity: `5. createActivity: Crea la actividad únicamente si el cliente especificó su día/hora y checkAvailability dio AVAILABLE. Tu respuesta al cliente debe confirmar EXACTAMENTE la hora local acordada con el cliente.\nCampos: activityText(str), date(ISO 8601 UTC, suma 6 horas a hora local), typeActivityId(num), opportunityId(UUID,opc), reminderTitle(opc), reminderDate(ISO 8601,opc).\n{"thought": "...", "tool_name": "createActivity", "tool_input": {"activityText": "Llamada comercial", "date": "2026-07-30T21:00:00.000Z", "typeActivityId": 1}}`,
+          createActivity: `5. createActivity: Crea la actividad únicamente si el cliente especificó su día/hora, checkAvailability dio AVAILABLE y el contacto cuenta con correo electrónico registrado (campo 'correo' en [CONTACTO CRM]). Si el contacto no tiene correo registrado, es OBLIGATORIO solicitarle su correo amablemente mediante 'final_answer' y guardarlo con 'updateContact' antes de llamar a 'createActivity'.\nCampos: activityText(str), date(ISO 8601 UTC, suma 6 horas a hora local), typeActivityId(num), opportunityId(UUID,opc), reminderTitle(opc), reminderDate(ISO 8601,opc), correo(str,opc).\nREGLA ESTRICTA DE RECORDATORIOS: El recordatorio es exclusivamente interno para el ejecutivo en el CRM. El cliente NO recibe ningún recordatorio antes de la cita. Está ESTRICTAMENTE PROHIBIDO decirle o prometerle al cliente que se le enviará un recordatorio 1 hora antes o previo a la cita.\n{"thought": "...", "tool_name": "createActivity", "tool_input": {"activityText": "Llamada comercial", "date": "2026-07-30T21:00:00.000Z", "typeActivityId": 1}}`,
           createTicket: `6. createTicket: Registra ticket soporte.\nCampos: title(str), description(str), priority(1=Bajo,2=Medio,3=Alto), category(str).\n{"thought": "...", "tool_name": "createTicket", "tool_input": {"title": "Error login", "description": "Falla acceso", "priority": 2, "category": "Soporte"}}`,
           consult_product_catalog: `7. consult_product_catalog: Consulta información de productos en el catálogo.\nCampos: query(str).\n{"thought": "...", "tool_name": "consult_product_catalog", "tool_input": {"query": "término a buscar"}}`,
           sendQuotationPdf: `8. sendQuotationPdf: Genera y transmite el PDF de la cotización al chat.\nCampos opcionales: opportunityId(UUID).\n{"thought": "...", "tool_name": "sendQuotationPdf", "tool_input": {}}`,
@@ -668,7 +668,7 @@ Genera el JSON de salida:
         const toolsText = allowedTools.map(k => ALL_TOOL_PROMPTS[k]).filter(Boolean).join('\n\n');
         const finalAnswerPrompt = `${allowedTools.length + 1}. final_answer — Envía una respuesta en lenguaje natural al cliente.\n{"thought": "...", "tool_name": "final_answer", "tool_input": {"answer": "Hola, bienvenido. ¿En qué te puedo ayudar hoy?"}}`;
         const toolsSectionText = toolsText ? `${toolsText}\n\n${finalAnswerPrompt}` : finalAnswerPrompt;
-        const activitySection = state.route === 'seguimiento' ? `\n[TIPOS DE ACTIVIDAD]\n${activityTypesText}\n[ANTELACIÓN RECORDATORIO] ${config.reminderOffsetMinutes} min.\n` : '';
+        const activitySection = state.route === 'seguimiento' ? `\n[TIPOS DE ACTIVIDAD]\n${activityTypesText}\n[RECORDATORIO INTERNO EJECUTIVO] ${config.reminderOffsetMinutes} min de antelación en CRM para el ejecutivo. NOTA: Este recordatorio es 100% interno para el ejecutivo del CRM, el cliente NO recibe recordatorios previos.\n` : '';
 
         let clientInfo: Record<string, any> = {};
         const activeClientId = state.clientId || conversation.clientId;
@@ -680,7 +680,7 @@ Genera el JSON de salida:
           }
         }
 
-        const systemPrompt = `[SUB-AGENTE: ${subAgent?.name || 'General'}]\n${subAgent?.context || ''}\n\n[HOY] ${fechaContexto}\n\n[RESUMEN PREVIO]\n${conversation.summary || 'Sin historial.'}\n\n[CONTACTO CRM] ${JSON.stringify(clientInfo)}\n${activitySection}[HERRAMIENTAS] Responde SIEMPRE con un único JSON. Sin texto fuera del JSON.\n${toolsSectionText}\n\nREGLAS: Un JSON por turno | Usa IDs reales del contexto | checkAvailability antes de createActivity`;
+        const systemPrompt = `[SUB-AGENTE: ${subAgent?.name || 'General'}]\n${subAgent?.context || ''}\n\n[HOY] ${fechaContexto}\n\n[RESUMEN PREVIO]\n${conversation.summary || 'Sin historial.'}\n\n[CONTACTO CRM] ${JSON.stringify(clientInfo)}\n${activitySection}[HERRAMIENTAS] Responde SIEMPRE con un único JSON. Sin texto fuera del JSON.\n${toolsSectionText}\n\nREGLAS: Un JSON por turno | Usa IDs reales del contexto | checkAvailability antes de createActivity | El contacto debe tener correo registrado antes de createActivity | El cliente NO recibe recordatorios previos (son solo internos del CRM), jamás le digas que recibirá un recordatorio`;
 
         let toolExecutionText = '';
         if (state.toolCallName && state.toolCallResult) {
@@ -691,6 +691,11 @@ Genera el JSON de salida:
             if (res.suggestedSlots) compactResult.suggestedSlots = res.suggestedSlots;
           } else if (state.toolCallName === 'consult_product_catalog') {
             compactResult = { status: res.status, productos: res.data?.map((i: any) => i.content) || [], mensaje: res.data?.length === 0 ? 'No se encontraron productos.' : undefined };
+          } else if (state.toolCallName === 'updateContact' || state.toolCallName === 'registerContact') {
+            compactResult = { status: res.status };
+            if (res.message) compactResult.message = res.message;
+            if (res.client?.correo || res.correo) compactResult.correo = res.client?.correo || res.correo;
+            if (res.client?.telefono || res.telefono) compactResult.telefono = res.client?.telefono || res.telefono;
           } else {
             compactResult = { status: res.status };
             if (res.message) compactResult.message = res.message;
@@ -698,8 +703,16 @@ Genera el JSON de salida:
           }
           toolExecutionText = `\n[TOOL: ${state.toolCallName}] ${JSON.stringify(compactResult)}`;
           if (state.toolCallName === 'createActivity' && res.status === 'SUCCESS') {
-            toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] La actividad ha sido agendada y creada exitosamente en el CRM. Tu ÚNICA acción ahora es usar la herramienta 'final_answer' para confirmar la cita de forma clara y amigable al cliente. Queda ESTRICTAMENTE PROHIBIDO volver a llamar a 'checkAvailability' o 'createActivity'.`;
-          } else if (state.toolCallName !== 'checkAvailability') {
+            toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] La actividad ha sido agendada y creada exitosamente en el CRM. Tu ÚNICA acción ahora es usar la herramienta 'final_answer' para confirmar la cita de forma clara y amigable al cliente indicándole únicamente el día y la hora agendada. REGLA ESTRICTA DE RECORDATORIOS: El recordatorio configurado en el CRM es ÚNICA Y EXCLUSIVAMENTE INTERNO para el ejecutivo asignado; el cliente NO recibe recordatorios una hora antes ni previos a la cita. Por lo tanto, está TERMINANTEMENTE PROHIBIDO decirle o prometerle al cliente que se le enviará o que recibirá un recordatorio una hora antes o previo a la cita. Queda ESTRICTAMENTE PROHIBIDO volver a llamar a 'checkAvailability' o 'createActivity'.`;
+          } else if (state.toolCallName === 'updateContact' || state.toolCallName === 'registerContact') {
+            toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] El contacto ha sido actualizado/registrado exitosamente en el CRM con su correo y datos. Si el cliente en mensajes anteriores o en el contexto actual solicitó agendar una cita, llamada o reunión y ya cuentas con el día y hora deseada (ej. "mañana a las 10 am"), NO uses 'final_answer'; continúa INMEDIATAMENTE en este mismo turno llamando a 'checkAvailability' o 'createActivity' para agendar la cita. Solo debes usar 'final_answer' si aún NO conoces el día/hora deseada por el cliente o si no hay ninguna acción pendiente.`;
+          } else if (state.toolCallName === 'checkAvailability') {
+            if (res.available) {
+              toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] El horario consultado está DISPONIBLE y el contacto ya cuenta con correo registrado en el CRM. Continúa INMEDIATAMENTE en este mismo turno llamando a la herramienta 'createActivity' para registrar la actividad en el CRM. NO te detengas con 'final_answer' sin haber creado la actividad.`;
+            } else {
+              toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] El horario consultado NO está disponible. Usa 'final_answer' para informar amablemente al cliente y proponerle los horarios alternativos devueltos en 'suggestedSlots'.`;
+            }
+          } else {
             toolExecutionText += `\n[INSTRUCCIÓN OBLIGATORIA] El resultado anterior es de la herramienta '${state.toolCallName}'. Ahora DEBES generar un final_answer con una respuesta amigable en lenguaje natural para el cliente usando esa información. JAMÁS repitas el JSON del resultado como respuesta.`;
           }
         }

@@ -60,9 +60,15 @@ erDiagram
 El módulo de actividades organiza la agenda operativa de los ejecutivos:
 * **Tipos de Actividad (`type_activities`):** Catálogo personalizable (ej. Llamada de prospección, Demostración en vivo, Envío de propuesta, Firma de contrato).
 * **Vinculación Múltiple:** Una actividad puede estar asociada simultáneamente a una Oportunidad (`opportunityId`), una Empresa (`companyId`) y múltiples contactos a través de la tabla intermedia `activity_contacts`.
+* **Notificación Automática por Correo al Cliente con Archivo iCalendar (`.ics`):**
+  * Al crearse cualquier actividad que tenga vinculado un cliente (`client`) o contactos (`contacts`) con correo electrónico registrado, el sistema despacha automáticamente a través de `MailService.sendActivityNoticeToClient` un correo formal y pulcro.
+  * **Diseño Exclusivo de Aviso:** El correo se concibe estrictamente como un aviso informativo para el cliente, sin botones ni accesos directos al CRM interno (`login` o enlaces de plataforma).
+  * **Adjunto .ics Nativo:** Se genera y adjunta dinámicamente un archivo iCalendar estándar (`invitacion-actividad.ics` con `METHOD:REQUEST`), permitiendo al cliente integrar el evento directamente en su propio calendario (Google Calendar, Apple Mail, Outlook, etc.).
+* **Validación Previa Obligatoria de Correo:**
+  * En la orquestación del Agente de IA y WebChat interno (`WebchatActionExecutorService`), si un contacto seleccionado no cuenta con dirección de correo electrónico, se solicita forzosamente antes de crear la actividad.
 * **Sincronización Bidireccional de Calendario:**
-  * Dispone de los campos `externalEventId`, `externalProvider` (`google`, `outlook`, `icloud`) y `externalLastSyncedAt`.
-  * Cada vez que se crea o actualiza una actividad, el `CalendarSyncCoordinatorService` propaga la cita hacia el calendario externo conectado del usuario.
+  * Dispone de los campos `externalEventId`, `externalProvider` (`google`, `outlook`) y `externalLastSyncedAt`.
+  * Cada vez que se crea o actualiza una actividad, el `CalendarSyncCoordinatorService` propaga la cita hacia el calendario externo conectado del usuario (Google o Microsoft Outlook).
 * **Tiempo Real:** Dispone de un gateway WebSocket dedicado en el namespace `/activities` (`ActivitiesGateway`) para actualizar en vivo los calendarios y cronogramas de los demás integrantes del equipo.
 
 ---
@@ -70,3 +76,9 @@ El módulo de actividades organiza la agenda operativa de los ejecutivos:
 ## 5. Motor de Recordatorios (`src/reminders`)
 * Permite programar alertas con anticipación para tareas pendientes (ej. "Llamar a seguimiento el jueves a las 10:00 AM").
 * Los recordatorios incluyen fecha y hora límite, ejecutivo asignado, estado (`pendiente` / `atendido`) y enlace directo a la ficha del cliente u oportunidad.
+
+
+### 🔒 Recordatorios de Actividad Exclusivamente Internos
+* **Alineación de Comportamiento:** Los recordatorios de actividad configurados en el CRM (ej. 60 minutos antes) son **100% internos para los usuarios/ejecutivos del CRM** (notificación in-app y correo electrónico interno opcional al usuario).
+* **Desactivación de Correos a Clientes en Recordatorios:** En `NotificationsSchedulerService` se desactivó el despacho de correos de recordatorio hacia los clientes. Los clientes reciben única y exclusivamente el correo inicial de aviso informativo con su archivo `.ics` adjunto al crearse la actividad.
+* **Agente de IA:** Se configuró en `AiAgentOrchestratorService` la regla estricta que prohíbe prometer o mencionar recordatorios previos al cliente por chat/WhatsApp.

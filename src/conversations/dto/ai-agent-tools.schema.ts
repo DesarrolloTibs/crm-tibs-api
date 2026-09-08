@@ -55,6 +55,8 @@ export const CreateActivitySchema = z.object({
   opportunityId: z.string().uuid().nullable().optional(),
   reminderTitle: z.string().optional(),
   reminderDate: z.string().datetime().nullable().optional(),
+  correo: z.string().email('Correo electrónico no válido.').optional(),
+  email: z.string().email('Correo electrónico no válido.').optional(),
 });
 
 export const CreateTicketSchema = z.object({

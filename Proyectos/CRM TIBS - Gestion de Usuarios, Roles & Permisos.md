@@ -49,7 +49,7 @@ graph TD
 | **Gestionar oportunidades comerciales propias/equipo**| ❌ | ✅ | ✅ |
 | **Generar y enviar cotizaciones PDF** | ❌ | ✅ | ✅ |
 | **Atender tickets de soporte técnico** | ❌ | ✅ | ✅ |
-| **Sincronizar calendario personal (Google/MS/iCloud)**| ❌ | ✅ | ✅ |
+| **Sincronizar calendario personal (Google/MS)**| ❌ | ✅ | ✅ |
 
 ---
 

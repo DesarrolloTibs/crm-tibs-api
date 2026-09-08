@@ -22,7 +22,7 @@ export class UserCalendarIntegration {
   user: User;
 
   @Column({ type: 'varchar', length: 20 })
-  provider: 'google' | 'outlook' | 'icloud';
+  provider: 'google' | 'outlook';
 
   @Column({ type: 'varchar', length: 255 })
   email: string;
@@ -37,12 +37,6 @@ export class UserCalendarIntegration {
   @Column({ type: 'timestamptz', nullable: true })
   expiresAt: Date | null;
 
-  // CalDAV Credentials (iCloud)
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  icloudEmail: string | null;
-
-  @Column({ type: 'text', nullable: true })
-  icloudPassword: string | null; // Guardada encriptada
 
   // Configuración de sincronización
   @Column({ type: 'varchar', length: 255, nullable: true })

@@ -103,7 +103,9 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
 - REGLA CRÍTICA MANDATORIA DE DISPONIBILIDAD DEL CLIENTE: Está ESTRICTAMENTE PROHIBIDO inventar, asertar o adivinar una fecha u hora por tu cuenta para agendar sin habérsela preguntado primero al cliente.
 - PREGUNTAR DISPONIBILIDAD PRIMERO: Si el cliente solicita o muestra interés en agendar una llamada, cita o reunión pero NO ha proporcionado explícitamente su fecha (día) y hora de preferencia, DEBES responder inmediatamente usando la herramienta 'final_answer' preguntándole amablemente cuál es su día y horario de preferencia para coordinar la llamada. Está ESTRICTAMENTE PROHIBIDO llamar a 'checkAvailability' o 'createActivity' si el cliente aún no te ha indicado qué día y hora prefiere.
 - VALIDACIÓN DE DISPONIBILIDAD: SOLO cuando el cliente te proporcione explícitamente el día y hora en que desea la cita, llamarás a 'checkAvailability' pasando la fecha indicada por el cliente.
-- Si 'checkAvailability' responde AVAILABLE para esa fecha/hora, procedes a agendar la actividad con 'createActivity' y añades recordatorios de forma proactiva.
+- VALIDACIÓN OBLIGATORIA DE CORREO DEL CONTACTO: Para agendar cualquier cita o actividad con 'createActivity', es requisito indispensable y mandatorio que el contacto tenga un correo electrónico registrado en el CRM (campo 'correo' en [CONTACTO CRM]). Si el contacto no tiene correo electrónico (es nulo o vacío), DEBES solicitar forzosamente al cliente su correo mediante 'final_answer' ANTES de agendar la actividad. En cuanto el cliente te proporcione su correo, regístralo de inmediato llamando a 'updateContact' y en ese mismo turno continúa inmediatamente llamando a 'checkAvailability' o 'createActivity' para agendar la actividad sin pausas intermedias ni detenerte con 'final_answer'. Queda ESTRICTAMENTE PROHIBIDO llamar a 'createActivity' si el contacto no tiene correo electrónico asignado.
+- Si 'checkAvailability' responde AVAILABLE para esa fecha/hora y el contacto tiene correo asignado, procedes a agendar la actividad con 'createActivity'.
+- REGLA ESTRICTA DE RECORDATORIOS: El recordatorio registrado en el sistema es 100% INTERNO para el ejecutivo del CRM. El cliente NO recibe ningún recordatorio antes de la cita. Al confirmar la cita con 'final_answer', confírmale amablemente el día y la hora, pero está TERMINANTEMENTE PROHIBIDO decirle o prometerle al cliente que se le enviará o que recibirá un recordatorio 1 hora antes o previo a la cita.
 - Si 'checkAvailability' responde UNAVAILABLE, le ofreces los horarios alternativos de 'suggestedSlots' al cliente y le preguntas cuál prefiere.
 - Vincula siempre la actividad con el cliente. No inventes UUIDs del sistema.`;
 
@@ -151,10 +153,25 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
               modified = true;
               this.logger.log('Herramienta sendQuotationPdf agregada al sub-agente comercial existente.');
             }
-            if (sa.key === 'seguimiento' && (!sa.context || !sa.context.includes('REGLA CRÍTICA MANDATORIA DE DISPONIBILIDAD DEL CLIENTE'))) {
-              sa.context = `${baseCommonPrompt}\n\n${seguimientoInstructions}`;
-              modified = true;
-              this.logger.log('Contexto del sub-agente de seguimiento actualizado con regla mandatoria de disponibilidad del cliente.');
+            if (sa.key === 'seguimiento') {
+              if (!sa.context || !sa.context.includes('VALIDACIÓN OBLIGATORIA DE CORREO DEL CONTACTO')) {
+                sa.context = `${baseCommonPrompt}\n\n${seguimientoInstructions}`;
+                modified = true;
+                this.logger.log('Contexto del sub-agente de seguimiento actualizado con regla mandatoria de validación de correo del contacto.');
+              } else {
+                if (sa.context.includes("y solo después llama a 'createActivity'")) {
+                  sa.context = sa.context.replace(
+                    /y solo después llama a 'createActivity'/g,
+                    "y en ese mismo turno continúa inmediatamente llamando a 'checkAvailability' o 'createActivity' para agendar la actividad sin pausas intermedias ni detenerte con 'final_answer'"
+                  );
+                  modified = true;
+                }
+                if (!sa.context.includes('REGLA ESTRICTA DE RECORDATORIOS')) {
+                  sa.context += `\n\n- REGLA ESTRICTA DE RECORDATORIOS: El recordatorio registrado en el sistema es 100% INTERNO para el ejecutivo del CRM. El cliente NO recibe ningún recordatorio antes de la cita. Al confirmar la cita con 'final_answer', confírmale amablemente el día y la hora, pero está TERMINANTEMENTE PROHIBIDO decirle o prometerle al cliente que se le enviará o que recibirá un recordatorio 1 hora antes o previo a la cita.`;
+                  modified = true;
+                  this.logger.log('Contexto de seguimiento actualizado con regla estricta de no prometer recordatorios al cliente.');
+                }
+              }
             }
             if (sa.key === 'soporte_atencion') {
               if (!sa.tools || !sa.tools.includes('requestHumanHandoff')) {
@@ -244,6 +261,33 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
                     `UPDATE "${sName}".ai_sub_agents SET context = $1 WHERE id = $2`,
                     [updatedContext, tsa.id]
                   );
+                }
+              }
+
+              // 4. Sincronizar encadenamiento continuo y regla de recordatorios internos en sub-agente de seguimiento
+              const segSubAgents = await this.aiAgentConfigRepository.query(
+                `SELECT id, context FROM "${sName}".ai_sub_agents WHERE key = 'seguimiento'`
+              );
+              for (const ssa of segSubAgents) {
+                let ctx = ssa.context || '';
+                let changed = false;
+                if (ctx.includes("y solo después llama a 'createActivity'")) {
+                  ctx = ctx.replace(
+                    /y solo después llama a 'createActivity'/g,
+                    "y en ese mismo turno continúa inmediatamente llamando a 'checkAvailability' o 'createActivity' para agendar la actividad sin pausas intermedias ni detenerte con 'final_answer'"
+                  );
+                  changed = true;
+                }
+                if (!ctx.includes('REGLA ESTRICTA DE RECORDATORIOS')) {
+                  ctx += `\n\n- REGLA ESTRICTA DE RECORDATORIOS: El recordatorio registrado en el sistema es 100% INTERNO para el ejecutivo del CRM. El cliente NO recibe ningún recordatorio antes de la cita. Al confirmar la cita con 'final_answer', confírmale amablemente el día y la hora, pero está TERMINANTEMENTE PROHIBIDO decirle o prometerle al cliente que se le enviará o que recibirá un recordatorio 1 hora antes o previo a la cita.`;
+                  changed = true;
+                }
+                if (changed) {
+                  await this.aiAgentConfigRepository.query(
+                    `UPDATE "${sName}".ai_sub_agents SET context = $1 WHERE id = $2`,
+                    [ctx, ssa.id]
+                  );
+                  this.logger.log(`Tenant '${sName}': contexto de seguimiento actualizado con regla de recordatorios internos.`);
                 }
               }
             } catch (tenantErr) {

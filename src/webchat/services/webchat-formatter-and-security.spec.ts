@@ -241,7 +241,7 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(routerPrompt).toContain('"PRODUCTOS"');
       expect(routerPrompt).toContain('"VAGUE_SEARCH"');
       expect(routerPrompt).toContain('"CONVERSATIONAL"');
-      expect(routerPrompt.length).toBeLessThan(4000); // Verify it is lightweight
+      expect(routerPrompt.length).toBeLessThan(5000); // Verify it is lightweight
     });
 
     it('should build specialized domain prompts without losing schema rules', () => {

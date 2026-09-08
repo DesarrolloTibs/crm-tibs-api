@@ -102,7 +102,7 @@ Cada vez que se aprovisiona una organización, se crea su propio esquema Postgre
 * **`type_activities`:** Tipos de actividad (Llamada, Videollamada, Reunión presencial, Correo).
 * **`interactions`:** Bitácora de notas y llamadas sostenidas con un cliente.
 * **`reminders`:** Recordatorios con alerta horaria para ejecutivos comerciales.
-* **`user_calendar_integrations`:** Credenciales OAuth, refresh tokens y suscripciones activas de Google Calendar, Microsoft Outlook o iCloud CalDAV para cada usuario del inquilino.
+* **`user_calendar_integrations`:** Credenciales OAuth, refresh tokens y suscripciones activas de Google Calendar o Microsoft Outlook para cada usuario del inquilino.
 
 ### 2.4. Mesa de Ayuda y Tickets
 * **`helpdesks`:** Tableros o departamentos de soporte técnico (Soporte N1, Infraestructura, Facturación).

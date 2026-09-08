@@ -11,6 +11,7 @@ import { Client } from '../clients/entities/client.entity';
 import { RemindersModule } from 'src/reminders/reminders.module';
 import { NotificationsModule } from 'src/notifications/notifications.module';
 import { CalendarIntegrationsModule } from '../calendar-integrations/calendar-integrations.module';
+import { MailModule } from 'src/mail/mail.module';
 
 import { ActivitiesGateway } from './activities.gateway';
 
@@ -22,6 +23,7 @@ import { ActivitiesGateway } from './activities.gateway';
     RemindersModule,
     NotificationsModule,
     CalendarIntegrationsModule,
+    MailModule,
   ],
   controllers: [ActivitiesController],
   providers: [ActivitiesService, ActivitiesGateway],

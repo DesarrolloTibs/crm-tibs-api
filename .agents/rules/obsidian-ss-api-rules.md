@@ -14,7 +14,7 @@ Cuando el usuario formule preguntas o solicite cambios sobre:
 - "¿Cómo funciona el multi-tenancy y el middleware de esquemas?"
 - "¿Cómo se generan las cotizaciones en PDF o los pipelines?"
 - "¿Cómo interactúa el agente de IA con LangGraph o el vector store de PGVector?"
-- "¿Cómo funcionan los webhooks de Google Calendar, Outlook o iCloud?"
+- "¿Cómo funcionan los webhooks de Google Calendar o Microsoft Outlook?"
 - "¿Cuáles son las entidades de la base de datos o los endpoints expuestos?"
 
 El agente **DEBE PRIMERO**:

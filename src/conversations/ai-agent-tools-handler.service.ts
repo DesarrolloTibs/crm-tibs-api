@@ -403,6 +403,25 @@ export class AiAgentToolsHandlerService {
             return { status: 'ERROR', message: 'No hay ningún contacto registrado y vinculado a este chat para poder agendar una actividad.' };
           }
 
+          let client = await this.clientRepository.findOne({ where: { id: clientId } });
+          if (!client) {
+            return { status: 'ERROR', message: 'No se encontró el contacto vinculado a esta conversación en el CRM.' };
+          }
+
+          const providedEmail = (input.correo || input.email || '').toString().trim();
+          if (providedEmail && (!client.correo || !client.correo.trim())) {
+            client.correo = providedEmail.toLowerCase();
+            client = await this.clientRepository.save(client);
+            conversation.client = client;
+          }
+
+          if (!client.correo || !client.correo.trim()) {
+            return {
+              status: 'ERROR',
+              message: 'El contacto no tiene un correo electrónico registrado en el CRM. Para poder agendar la actividad es OBLIGATORIO que el contacto cuente con correo asignado. Debes solicitar amablemente su correo electrónico al cliente usando la herramienta final_answer. En cuanto el cliente te lo proporcione, regístralo con updateContact antes de proceder a crear la actividad con createActivity.',
+            };
+          }
+
           const activeOpportunities = await this.opportunitiesService.findByClientId(clientId);
           let finalOpportunityId = input.opportunityId;
 
@@ -445,7 +464,7 @@ export class AiAgentToolsHandlerService {
             reminder: input.reminderTitle ? { title: input.reminderTitle, date: remDate } : undefined,
           } as any, userEntity);
 
-          return { status: 'SUCCESS', message: `Actividad y recordatorio programados con éxito ${finalOpportunityId ? 'y asociados a la oportunidad ' + finalOpportunityId : ''}`, activityId: activity.id };
+          return { status: 'SUCCESS', message: `Actividad agendada con éxito en el CRM (el recordatorio es exclusivamente interno del sistema para el ejecutivo, NO para el cliente) ${finalOpportunityId ? 'y asociada a la oportunidad ' + finalOpportunityId : ''}`, activityId: activity.id };
         }
 
         case 'createTicket': {

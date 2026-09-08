@@ -1,12 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { Cron } from '@nestjs/schedule';
 import { DataSource, Repository } from 'typeorm';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { UserCalendarIntegration } from '../entities/user-calendar-integration.entity';
 import { GoogleCalendarService } from './google-calendar.service';
 import { OutlookCalendarService } from './outlook-calendar.service';
-import { ICloudCalendarService } from './icloud-calendar.service';
 import { Activity } from '../../activities/entities/activity.entity';
 import { Client, ClientCategory } from '../../clients/entities/client.entity';
 
@@ -20,7 +18,6 @@ export class CalendarSyncCoordinatorService {
     private readonly dataSource: DataSource,
     private readonly googleService: GoogleCalendarService,
     private readonly outlookService: OutlookCalendarService,
-    private readonly icloudService: ICloudCalendarService,
   ) {}
 
   /**
@@ -93,13 +90,6 @@ export class CalendarSyncCoordinatorService {
             description,
             date: activity.date,
           });
-        } else if (integration.provider === 'icloud') {
-          externalId = crypto.randomUUID();
-          await this.icloudService.createOrUpdateEvent(integration, externalId, {
-            title,
-            description,
-            date: activity.date,
-          });
         }
 
         if (externalId) {
@@ -151,12 +141,6 @@ export class CalendarSyncCoordinatorService {
             });
           } else if (integration.provider === 'outlook') {
             await this.outlookService.updateEvent(integration, integrationRepo, activity.externalEventId!, {
-              title,
-              description,
-              date: activity.date,
-            });
-          } else if (integration.provider === 'icloud') {
-            await this.icloudService.createOrUpdateEvent(integration, activity.externalEventId!, {
               title,
               description,
               date: activity.date,
@@ -221,8 +205,6 @@ export class CalendarSyncCoordinatorService {
           await this.googleService.deleteEvent(integration, integrationRepo, externalEventId);
         } else if (integration.provider === 'outlook') {
           await this.outlookService.deleteEvent(integration, integrationRepo, externalEventId);
-        } else if (integration.provider === 'icloud') {
-          await this.icloudService.deleteEvent(integration, externalEventId);
         }
       } catch (err) {
         this.logger.error(`Error al eliminar evento en calendario externo: ${err.message}`);
@@ -231,7 +213,7 @@ export class CalendarSyncCoordinatorService {
   }
 
   /**
-   * Sincroniza cambios desde proveedores externos hacia el CRM (Google/Outlook/iCloud).
+   * Sincroniza cambios desde proveedores externos hacia el CRM (Google/Outlook).
    */
   async syncExternalChangesToCRM(tenantSchema: string, userId: string, force = false): Promise<void> {
     const lockKey = `${tenantSchema}:${userId}`;
@@ -270,8 +252,6 @@ export class CalendarSyncCoordinatorService {
           const res = await this.outlookService.getSyncChanges(integration, integrationRepo);
           items = res.items;
           nextSyncToken = res.nextSyncToken;
-        } else if (integration.provider === 'icloud') {
-          items = await this.icloudService.getSyncChanges(integration);
         }
 
         for (const item of items) {
@@ -367,42 +347,5 @@ export class CalendarSyncCoordinatorService {
         this.isSyncing.delete(lockKey);
       }
     });
-  }
-
-  /**
-   * Tarea de sondeo periódico (polling) para iCloud CalDAV e integraciones activas.
-   * Ejecutado cada 15 minutos de forma automática.
-   */
-  @Cron('*/15 * * * *')
-  async pollICloudCalendars() {
-    this.logger.log('Iniciando tarea periódica de polling para iCloud CalDAV...');
-    try {
-      const tenants = await this.dataSource.query('SELECT schema_name FROM public.tenants WHERE is_active = true');
-      for (const tenant of tenants) {
-        const schema = tenant.schema_name;
-        if (schema === 'public') continue;
-
-        // Comprobamos si la tabla existe en este tenant
-        const tableExists = await this.dataSource.query(`
-          SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = $1 AND table_name = 'user_calendar_integrations'
-          );
-        `, [schema]);
-
-        if (!tableExists[0]?.exists) continue;
-
-        // Buscar usuarios de este tenant con iCloud
-        const icloudUsers = await this.dataSource.query(`
-          SELECT "userId" FROM "${schema}".user_calendar_integrations WHERE provider = 'icloud'
-        `);
-
-        for (const user of icloudUsers) {
-          await this.syncExternalChangesToCRM(schema, user.userId);
-        }
-      }
-    } catch (err) {
-      this.logger.error(`Error en el cron de polling de iCloud: ${err.message}`);
-    }
   }
 }

@@ -35,7 +35,7 @@ status: produccion
 ## 🤖 3. Inteligencia Artificial, Omnicanalidad y Tiempo Real
 * [[CRM TIBS - AI Agent, RAG & LangGraph]] — Motor agéntico multi-agente, bucle de inferencia con LangGraph, herramientas del agente (`AiAgentToolsHandlerService`), pipeline RAG con `PGVectorStore`, ingestión de PDFs y soporte para Google GenAI, OpenAI y Watsonx Embeddings.
 * [[CRM TIBS - Conversaciones, Webchat & WebSockets]] — Bandeja de entrada unificada, widget público de Webchat, alternancia entre IA y operador humano, y los 5 Gateways de Socket.IO (`/conversations`, `/notifications`, `/activities`, `/pipelines`, `/tickets`).
-* [[CRM TIBS - Integraciones de Calendario Externo]] — Coordinador de sincronización bidireccional con Google Calendar, Microsoft Outlook (Graph API) e iCloud (CalDAV), con recepción de webhooks push y tabla de mapeo global.
+* [[CRM TIBS - Integraciones de Calendario Externo]] — Coordinador de sincronización bidireccional con Google Calendar y Microsoft Outlook (Graph API), con recepción de webhooks push y tabla de mapeo global.
 
 ---
 

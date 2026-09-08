@@ -246,7 +246,7 @@ export class Activity {
   externalEventId: string;
 
   @Column({ type: 'varchar', length: 50, nullable: true })
-  externalProvider: 'google' | 'outlook' | 'icloud' | null;
+  externalProvider: 'google' | 'outlook' | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   externalLastSyncedAt: Date;
@@ -443,7 +443,7 @@ export class UserCalendarIntegration {
   userId: string;
 
   @Column({ type: 'varchar', length: 20 })
-  provider: 'google' | 'outlook' | 'icloud';
+  provider: 'google' | 'outlook';
 
   @Column({ type: 'varchar', length: 255 })
   email: string;

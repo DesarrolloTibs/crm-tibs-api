@@ -134,7 +134,7 @@ Genera tu respuesta JSON:`;
           action: this.queryPlanner.inferActionTypeFromQuestion(question) || 'createOpportunity',
           parameters: {},
         };
-        return await this.actionExecutor.executeAction(plan, userObj, question);
+        return await this.actionExecutor.executeAction(plan, userObj, question, conversationHistory);
       }
 
       // 9. Si el sub-agente respondió conversacional sin consulta

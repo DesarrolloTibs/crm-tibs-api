@@ -7,7 +7,6 @@ import { CalendarIntegrationsController } from './calendar-integrations.controll
 import { CalendarWebhooksController } from './calendar-webhooks.controller';
 import { GoogleCalendarService } from './services/google-calendar.service';
 import { OutlookCalendarService } from './services/outlook-calendar.service';
-import { ICloudCalendarService } from './services/icloud-calendar.service';
 import { CalendarSyncCoordinatorService } from './services/calendar-sync-coordinator.service';
 
 @Module({
@@ -19,7 +18,6 @@ import { CalendarSyncCoordinatorService } from './services/calendar-sync-coordin
   providers: [
     GoogleCalendarService,
     OutlookCalendarService,
-    ICloudCalendarService,
     CalendarSyncCoordinatorService,
   ],
   exports: [CalendarSyncCoordinatorService],

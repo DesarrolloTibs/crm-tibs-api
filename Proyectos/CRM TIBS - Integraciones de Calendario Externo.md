@@ -7,24 +7,21 @@ tags:
   - calendar
   - google-calendar
   - outlook
-  - icloud
-  - caldav
   - webhooks
 date: 2026-09-08
 status: produccion
 ---
 
-# 📅 Integraciones de Calendario Externo (Google, Outlook & iCloud)
+# 📅 Integraciones de Calendario Externo (Google & Outlook)
 
 ## 1. Visión General de la Sincronización de Agenda
-CRM TIBS API ofrece sincronización bidireccional continua entre la agenda de actividades del CRM y los tres principales proveedores de calendario personal y corporativo: **Google Calendar**, **Microsoft Outlook** (Microsoft Graph API) y **Apple iCloud** (vía protocolo estándar CalDAV).
+CRM TIBS API ofrece sincronización bidireccional continua entre la agenda de actividades del CRM y los dos principales proveedores corporativos de calendario: **Google Calendar** y **Microsoft Outlook** (Microsoft Graph API). La integración con Apple iCloud ha sido deshabilitada para garantizar máxima compatibilidad y seguridad OAuth 2.0 nativa.
 
 ```mermaid
 graph TD
     subgraph Proveedores Cloud Externos
         GCAL[Google Calendar API]
         MSFT[Microsoft Graph API / Outlook]
-        ICLOUD[Apple iCloud CalDAV]
     end
 
     subgraph Endpoints de Webhooks & Handlers
@@ -40,7 +37,6 @@ graph TD
         COORD[CalendarSyncCoordinatorService]
         G_SVC[GoogleCalendarService]
         O_SVC[OutlookCalendarService]
-        I_SVC[ICloudCalendarService]
     end
 
     subgraph Base de Datos del Inquilino
@@ -57,12 +53,10 @@ graph TD
 
     COORD --> G_SVC
     COORD --> O_SVC
-    COORD --> I_SVC
 
     G_SVC <--> INT_TBL
     G_SVC <--> ACT_TBL
     O_SVC <--> ACT_TBL
-    I_SVC <--> ACT_TBL
 ```
 
 ---
@@ -77,10 +71,6 @@ graph TD
 ### 2.2. Microsoft Outlook (`OutlookCalendarService`)
 * **Autenticación:** OAuth 2.0 sobre Microsoft identity platform (Azure Active Directory / Entra ID) utilizando Microsoft Graph API v1.0 (`Calendars.ReadWrite`).
 * **Suscripciones de Webhook:** Crea una suscripción en Graph API apuntando a `/api/calendar-webhooks/outlook`. Soporta la validación de handshake inicial (`validationToken`) y procesa notificaciones de cambios incrementales con `syncToken` delta.
-
-### 2.3. Apple iCloud (`ICloudCalendarService`)
-* **Protocolo:** Utiliza CalDAV directo mediante credenciales de aplicación seguras (`icloudEmail` y contraseña específica de aplicación generada en `appleid.apple.com`).
-* **Sincronización:** Consulta el endpoint CalDAV de iCloud de forma periódica o por demanda, parseando payloads iCalendar (`.ics`).
 
 ---
 

@@ -19,7 +19,6 @@ import { UserCalendarIntegration } from './entities/user-calendar-integration.en
 import { CalendarWebhookMapping } from './entities/calendar-webhook-mapping.entity';
 import { GoogleCalendarService } from './services/google-calendar.service';
 import { OutlookCalendarService } from './services/outlook-calendar.service';
-import { ICloudCalendarService } from './services/icloud-calendar.service';
 import { CalendarSyncCoordinatorService } from './services/calendar-sync-coordinator.service';
 
 @UseGuards(AuthGuard('jwt'))
@@ -32,7 +31,6 @@ export class CalendarIntegrationsController {
     private readonly webhookMappingRepo: Repository<CalendarWebhookMapping>,
     private readonly googleService: GoogleCalendarService,
     private readonly outlookService: OutlookCalendarService,
-    private readonly icloudService: ICloudCalendarService,
     private readonly syncCoordinator: CalendarSyncCoordinatorService,
   ) {}
 
@@ -82,61 +80,6 @@ export class CalendarIntegrationsController {
     }
 
     return { authUrl };
-  }
-
-  /**
-   * Conecta una cuenta de iCloud CalDAV.
-   */
-  @Post('connect-icloud')
-  async connectICloud(
-    @GetUser() user: User,
-    @Body() body: { email: string; appPassword: string },
-  ) {
-    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
-    const { email, appPassword } = body;
-    if (!email || !appPassword) {
-      throw new BadRequestException('Se requiere email y contraseña de aplicación.');
-    }
-
-    try {
-      // 1. Descubrir la ruta de calendarios
-      const homeUrl = await this.icloudService.discoverCalendarHome(email, appPassword);
-      
-      // 2. Obtener lista de calendarios y elegir el primero
-      const calendars = await this.icloudService.getCalendarsList(email, appPassword, homeUrl);
-      if (calendars.length === 0) {
-        throw new BadRequestException('No se encontraron calendarios válidos en la cuenta de iCloud.');
-      }
-      
-      const defaultCalendar = calendars[0].id;
-
-      // 3. Encriptar contraseña y guardar configuración
-      const encryptedPassword = this.icloudService.encryptPassword(appPassword);
-
-      // Eliminar integración previa si existe
-      await this.integrationRepo.delete({ userId: user.id });
-
-      const integration = this.integrationRepo.create({
-        userId: user.id,
-        provider: 'icloud',
-        email: email,
-        icloudEmail: email,
-        icloudPassword: encryptedPassword,
-        calendarId: defaultCalendar,
-      });
-
-      await this.integrationRepo.save(integration);
-
-      // 4. Iniciar sync inicial en segundo plano
-      this.syncCoordinator.syncExternalChangesToCRM(tenantSchema, user.id).catch(() => null);
-
-      return {
-        success: true,
-        email: email,
-      };
-    } catch (err) {
-      throw new BadRequestException(err.message || 'Error al conectar con iCloud.');
-    }
   }
 
   /**

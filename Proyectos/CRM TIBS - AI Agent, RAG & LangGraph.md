@@ -56,13 +56,14 @@ En lugar de depender de prompts estáticos, el agente opera mediante un grafo de
 4. **Nodo de Síntesis:** El modelo incorpora los datos retornados por las herramientas y redacta una respuesta coherente con el tono definido en `AiAgentConfig`.
 
 ### 2.2. Catálogo de Herramientas Disponibles para el Agente:
-* `get_products_catalog`: Consulta productos, precios vigentes y características técnicas.
-* `get_client_opportunities`: Consulta el estatus de las cotizaciones y oportunidades asociadas al contacto.
-* `create_crm_activity`: Agenda citas, llamadas o reuniones automáticamente en la agenda del ejecutivo.
-* `create_support_ticket`: Levanta un ticket de soporte técnico si el usuario reporta una falla o queja.
-* `delegate_to_subagent`: Transfiere el hilo de conversación a un sub-agente especializado configurado en `ai_sub_agents`.
-
----
+* `consult_product_catalog`: Consulta productos, precios vigentes y características técnicas con soporte RAG.
+* `createOpportunity` / `modifyOpportunity`: Registra o edita cotizaciones y oportunidades comerciales.
+* `createActivity`: Agenda citas, llamadas o reuniones en la agenda del ejecutivo.
+  * **Validación Obligatoria de Correo:** Si la actividad se relaciona a un contacto, el sistema valida estrictamente que cuente con correo electrónico asignado en el CRM. Si el contacto no tiene correo, el agente solicita amablemente el correo al cliente antes de agendar y lo persiste con `updateContact`. Queda prohibido llamar a `createActivity` sin correo.
+* `checkAvailability`: Valida disponibilidad de agenda sin colisiones previo a la creación de actividades.
+* `updateContact` / `registerContact`: Identifica y persiste datos de prospectos y clientes.
+* `createTicket`: Levanta un ticket de soporte técnico si el usuario reporta una falla o queja.
+* `requestHumanHandoff`: Deriva la conversación a un ejecutivo especializado y desactiva el bot.
 
 ## 3. Pipeline de RAG y Búsqueda Vectorial (`src/rag`)
 
@@ -85,3 +86,16 @@ En lugar de depender de prompts estáticos, el agente opera mediante un grafo de
 ## 4. Control de Consumo de Tokens y Cuotas
 * Antes y después de cada invocación a los modelos generativos, `SubscriptionValidatorService` calcula el total de tokens de entrada (`prompt_tokens`) y salida (`completion_tokens`).
 * Actualiza el consumo acumulado del tenant en el periodo y emite el evento `CONVERSATION_EVENTS.TENANT_CONSUMPTION_UPDATED` a través de `EventEmitter2` para actualizar en vivo el indicador de consumo en la interfaz de usuario.
+
+
+### 🔄 Actualización de Encadenamiento Continuo en Agendamiento (`seguimiento`)
+* **Problema Previo:** Al solicitar el correo electrónico al cliente para agendar una cita o actividad, la herramienta `updateContact` ejecutaba con éxito pero el orquestador forzaba una instrucción de respuesta `final_answer` inmediata. Esto provocaba que el bot dijera que procedería a verificar la disponibilidad pero cerraba el turno sin llamar a `checkAvailability` ni a `createActivity`.
+* **Solución Implementada:**
+  1. En `ai-agent-orchestrator.service.ts`: Se ajustó la inyección de directivas post-ejecución de herramientas para `updateContact` y `registerContact`. Si el cliente ya había expresado su día y horario de preferencia (ej. *"mañana a las 10 am"*), se instruye al subagente a continuar **en ese mismo turno** invocando `checkAvailability` o `createActivity` sin emitir `final_answer` anticipado.
+  2. Asimismo, cuando `checkAvailability` devuelve `available: true` y el contacto ya cuenta con correo registrado, se instruye explícitamente a llamar inmediatamente a `createActivity`.
+  3. Sincronización en `ai-sub-agent-migration.service.ts` y `tenant-provisioner.service.ts`: Se actualizó el prompt del subagente `seguimiento` en la base de datos para todos los esquemas de tenants activos (`tenant_teter`, etc.) para asegurar el agendamiento fluido de extremo a extremo en una sola interacción.
+
+
+### 🔔 Regla Estricta: Recordatorios de Actividad Exclusivamente Internos
+* **Comportamiento Ajustado:** El recordatorio creado con `createActivity` (`reminderOffsetMinutes`, por defecto 60 minutos antes) es **exclusivamente interno para la agenda y notificaciones del ejecutivo/usuario del CRM**.
+* **Directiva Agéntica:** Se incorporó en `ai-agent-orchestrator.service.ts`, `ai-sub-agent-migration.service.ts` y `tenant-provisioner.service.ts` la instrucción explícita que prohíbe terminantemente al Agente de IA prometer o mencionar al cliente en su respuesta final que recibirá un recordatorio una hora antes de la cita. La confirmación al cliente se limita únicamente a informarle la fecha y hora agendada.

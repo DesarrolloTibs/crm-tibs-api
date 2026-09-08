@@ -29,7 +29,7 @@ Esta guía estandariza el protocolo de consulta para que modelos de lenguaje y a
 | ¿Cómo opera la mesa de ayuda, Helpdesks, estados de tickets y el cron de SLAs? | `Proyectos/CRM TIBS - Modulo de Tickets & Helpdesk.md` |
 | ¿Cómo funciona el agente de IA, LangGraph, herramientas agénticas y el RAG vectorial? | `Proyectos/CRM TIBS - AI Agent, RAG & LangGraph.md` |
 | ¿Cómo funciona el Webchat público, bandeja de entrada y los 5 Gateways de WebSockets? | `Proyectos/CRM TIBS - Conversaciones, Webchat & WebSockets.md` |
-| ¿Cómo se integran Google Calendar, Microsoft Outlook e iCloud CalDAV con webhooks? | `Proyectos/CRM TIBS - Integraciones de Calendario Externo.md` |
+| ¿Cómo se integran Google Calendar y Microsoft Outlook con webhooks? | `Proyectos/CRM TIBS - Integraciones de Calendario Externo.md` |
 | ¿Cuáles son todos los DTOs, interfaces y entidades TypeORM del backend? | `Indices/Diccionario de Entidades y Modelos.md` |
 | ¿Cuáles son todas las rutas REST, métodos HTTP y controladores del backend? | `Indices/Matriz de Endpoints y Servicios.md` |
 | ¿Cuál es la visión general del backend, variables de entorno y deuda técnica? | `Proyectos/CRM TIBS API.md` |
