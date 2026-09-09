@@ -329,6 +329,24 @@ export class TenantProvisionerService {
           CONSTRAINT pk_channel_configs PRIMARY KEY (id)
         );
 
+        CREATE TABLE IF NOT EXISTS "${schemaName}".whatsapp_templates (
+          id uuid NOT NULL DEFAULT gen_random_uuid(),
+          "channelConfigId" uuid NULL REFERENCES "${schemaName}".channel_configs(id) ON DELETE CASCADE,
+          "templateId" varchar(255) NULL,
+          name varchar(255) NOT NULL DEFAULT 'crm_inicio_conversacion',
+          category varchar(50) NOT NULL DEFAULT 'MARKETING',
+          language varchar(20) NOT NULL DEFAULT 'es',
+          "bodyText" text NOT NULL DEFAULT 'Hola {{1}}, ¿cómo estás? Me comunico contigo para dar seguimiento y revisar lo siguiente:',
+          "headerText" varchar(255) NULL,
+          "footerText" varchar(255) NULL,
+          components jsonb NULL,
+          status varchar(50) NOT NULL DEFAULT 'APPROVED',
+          "isBase" boolean NOT NULL DEFAULT true,
+          "createdAt" timestamptz NOT NULL DEFAULT now(),
+          "updatedAt" timestamptz NOT NULL DEFAULT now(),
+          CONSTRAINT pk_whatsapp_templates PRIMARY KEY (id)
+        );
+
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".conversations (
           id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -342,6 +360,7 @@ export class TenantProvisionerService {
           "botActive" boolean NOT NULL DEFAULT true,
           "channelConfigId" uuid NULL REFERENCES "${schemaName}".channel_configs(id) ON DELETE SET NULL,
           summary text NULL,
+          "lastCustomerMessageAt" timestamptz NULL,
           "createdAt" timestamptz NOT NULL DEFAULT now(),
           "updatedAt" timestamptz NOT NULL DEFAULT now(),
           CONSTRAINT pk_conversations PRIMARY KEY (id)
@@ -354,6 +373,10 @@ export class TenantProvisionerService {
           sender varchar(50) NOT NULL DEFAULT 'contact',
           "senderUserId" uuid NULL REFERENCES "${schemaName}".users(id) ON DELETE SET NULL,
           content text NOT NULL,
+          "status" varchar(50) NOT NULL DEFAULT 'sent',
+          "messageType" varchar(50) NOT NULL DEFAULT 'text',
+          "externalMessageId" varchar(255) NULL,
+          "errorMessage" text NULL,
           "createdAt" timestamptz NOT NULL DEFAULT now(),
           CONSTRAINT pk_messages PRIMARY KEY (id)
         );

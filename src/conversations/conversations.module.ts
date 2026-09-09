@@ -4,6 +4,7 @@ import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
 import { AiAgentConfig } from './entities/ai-agent-config.entity';
 import { ChannelConfig } from './entities/channel-config.entity';
+import { WhatsAppTemplate } from './entities/whatsapp-template.entity';
 import { AiSubAgent } from './entities/ai-sub-agent.entity';
 import { Client } from '../clients/entities/client.entity';
 import { User } from '../users/entities/user.entity';
@@ -32,6 +33,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
       Message,
       AiAgentConfig,
       ChannelConfig,
+      WhatsAppTemplate,
       AiSubAgent,
       Client,
       User,

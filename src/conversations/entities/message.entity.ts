@@ -27,6 +27,18 @@ export class Message {
   @Column({ type: 'text' })
   content: string;
 
+  @Column({ type: 'varchar', length: 50, default: 'sent' })
+  status: string; // 'pending' | 'sent' | 'delivered' | 'read' | 'failed'
+
+  @Column({ type: 'varchar', length: 50, default: 'text' })
+  messageType: string; // 'text' | 'template' | 'document' | 'image'
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  externalMessageId: string | null; // ID de mensaje de Meta (wamid)
+
+  @Column({ type: 'text', nullable: true })
+  errorMessage: string | null;
+
   @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 }

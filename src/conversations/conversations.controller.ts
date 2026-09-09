@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Patch,
   Delete,
   Body,
@@ -15,7 +16,14 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { ConversationsService } from './conversations.service';
 import { AiAgentService } from './ai-agent.service';
-import { AssignUserDto, ToggleBotStatusDto, SendManualMessageDto } from './dto/conversations.dto';
+import {
+  AssignUserDto,
+  ToggleBotStatusDto,
+  SendManualMessageDto,
+  SendTemplateMessageDto,
+  UpsertBaseTemplateDto,
+  SelectExistingBaseTemplateDto,
+} from './dto/conversations.dto';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
@@ -94,6 +102,37 @@ export class ConversationsController {
     return this.conversationsService.deleteChannel(id);
   }
 
+  @Get('channels/:channelConfigId/base-template')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Obtener la plantilla base de WhatsApp vinculada al canal' })
+  async getBaseTemplate(@Param('channelConfigId', ParseUUIDPipe) channelConfigId: string) {
+    return this.conversationsService.getBaseTemplate(channelConfigId);
+  }
+
+  @Put('channels/:channelConfigId/base-template')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({
+    summary: 'Editar componentes (header, body, footer) de la plantilla base en Meta',
+    description:
+      'Permite modificar únicamente headerText, bodyText y footerText con impacto directo en Meta Graph API. El nombre técnico en Meta es fijo, inmutable y obligatorio: crm_inicio_conversacion',
+  })
+  async upsertBaseTemplate(
+    @Param('channelConfigId', ParseUUIDPipe) channelConfigId: string,
+    @Body() body: UpsertBaseTemplateDto,
+  ) {
+    return this.conversationsService.upsertBaseTemplate(channelConfigId, body);
+  }
+
+  @Post('channels/:channelConfigId/select-base-template')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Designar una plantilla aprobada de Meta como la plantilla base del canal' })
+  async selectBaseTemplate(
+    @Param('channelConfigId', ParseUUIDPipe) channelConfigId: string,
+    @Body() body: SelectExistingBaseTemplateDto,
+  ) {
+    return this.conversationsService.selectExistingAsBaseTemplate(channelConfigId, body);
+  }
+
   @Get('webhook/:channel')
   @ApiOperation({ summary: 'Verificación del webhook de Meta (GET)' })
   async verifyMetaWebhook(
@@ -145,6 +184,35 @@ export class ConversationsController {
     @Body() body: SendManualMessageDto,
   ) {
     return this.conversationsService.sendManualMessage(id, user.id, body.content);
+  }
+
+  @Get(':id/templates')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Obtener la plantilla base aprobada de WhatsApp para la conversación' })
+  async getTemplates(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('all') all?: string,
+  ) {
+    const fetchAll = all === 'true' || all === '1';
+    return this.conversationsService.getWhatsAppTemplates(id, fetchAll);
+  }
+
+  @Post(':id/template-message')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Enviar una plantilla aprobada de Meta por WhatsApp' })
+  async sendTemplateMessage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @GetUser() user: User,
+    @Body() body: SendTemplateMessageDto,
+  ) {
+    return this.conversationsService.sendTemplateMessage(id, user.id, body);
+  }
+
+  @Get(':id/base-template')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Obtener la plantilla base para iniciar/reanudar la conversación activa' })
+  async getConversationBaseTemplate(@Param('id', ParseUUIDPipe) id: string) {
+    return this.conversationsService.getConversationBaseTemplate(id);
   }
 
   @Patch(':id/bot-status')

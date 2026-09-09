@@ -312,6 +312,45 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "webhookExpiration" timestamptz NULL;
             ALTER TABLE "${schema}".user_calendar_integrations ADD COLUMN IF NOT EXISTS "syncToken" varchar(500) NULL;
           `).catch(() => null);
+
+          // Alter conversations and messages tables for WhatsApp 24h/23h window and delivery tracking
+          await queryRunner.query(`
+            ALTER TABLE "${schema}".conversations ADD COLUMN IF NOT EXISTS "lastCustomerMessageAt" timestamptz NULL;
+            ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "status" varchar(50) NOT NULL DEFAULT 'sent';
+            ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "messageType" varchar(50) NOT NULL DEFAULT 'text';
+            ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "externalMessageId" varchar(255) NULL;
+            ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "errorMessage" text NULL;
+
+            -- Backfill lastCustomerMessageAt para conversaciones preexistentes a partir del último mensaje recibido del contacto
+            UPDATE "${schema}".conversations c
+            SET "lastCustomerMessageAt" = sub.max_created
+            FROM (
+              SELECT "conversationId", MAX("createdAt") AS max_created
+              FROM "${schema}".messages
+              WHERE sender = 'contact'
+              GROUP BY "conversationId"
+            ) sub
+            WHERE c.id = sub."conversationId" AND c."lastCustomerMessageAt" IS NULL;
+
+            -- Crear tabla whatsapp_templates si no existe
+            CREATE TABLE IF NOT EXISTS "${schema}".whatsapp_templates (
+              id uuid NOT NULL DEFAULT gen_random_uuid(),
+              "channelConfigId" uuid NULL REFERENCES "${schema}".channel_configs(id) ON DELETE CASCADE,
+              "templateId" varchar(255) NULL,
+              name varchar(255) NOT NULL DEFAULT 'crm_inicio_conversacion',
+              category varchar(50) NOT NULL DEFAULT 'MARKETING',
+              language varchar(20) NOT NULL DEFAULT 'es',
+              "bodyText" text NOT NULL DEFAULT 'Hola {{1}}, ¿cómo estás? Me comunico contigo para dar seguimiento y revisar lo siguiente:',
+              "headerText" varchar(255) NULL,
+              "footerText" varchar(255) NULL,
+              components jsonb NULL,
+              status varchar(50) NOT NULL DEFAULT 'APPROVED',
+              "isBase" boolean NOT NULL DEFAULT true,
+              "createdAt" timestamptz NOT NULL DEFAULT now(),
+              "updatedAt" timestamptz NOT NULL DEFAULT now(),
+              CONSTRAINT "pk_${schema}_whatsapp_templates" PRIMARY KEY (id)
+            );
+          `).catch(() => null);
         }
 
         // Also ensure public schema tables have stage_type and calendar columns
@@ -326,9 +365,32 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "webhookSubscriptionId" varchar(255) NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "webhookExpiration" timestamptz NULL;
           ALTER TABLE public.user_calendar_integrations ADD COLUMN IF NOT EXISTS "syncToken" varchar(500) NULL;
+          ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS "lastCustomerMessageAt" timestamptz NULL;
+          ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "status" varchar(50) NOT NULL DEFAULT 'sent';
+          ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "messageType" varchar(50) NOT NULL DEFAULT 'text';
+          ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "externalMessageId" varchar(255) NULL;
+          ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "errorMessage" text NULL;
+
+          CREATE TABLE IF NOT EXISTS public.whatsapp_templates (
+            id uuid NOT NULL DEFAULT gen_random_uuid(),
+            "channelConfigId" uuid NULL REFERENCES public.channel_configs(id) ON DELETE CASCADE,
+            "templateId" varchar(255) NULL,
+            name varchar(255) NOT NULL DEFAULT 'crm_inicio_conversacion',
+            category varchar(50) NOT NULL DEFAULT 'MARKETING',
+            language varchar(20) NOT NULL DEFAULT 'es',
+            "bodyText" text NOT NULL DEFAULT 'Hola {{1}}, ¿cómo estás? Me comunico contigo para dar seguimiento y revisar lo siguiente:',
+            "headerText" varchar(255) NULL,
+            "footerText" varchar(255) NULL,
+            components jsonb NULL,
+            status varchar(50) NOT NULL DEFAULT 'APPROVED',
+            "isBase" boolean NOT NULL DEFAULT true,
+            "createdAt" timestamptz NOT NULL DEFAULT now(),
+            "updatedAt" timestamptz NOT NULL DEFAULT now(),
+            CONSTRAINT pk_whatsapp_templates_public PRIMARY KEY (id)
+          );
         `).catch(() => null);
 
-        this.logger.log('Calendar integration migration completed successfully.');
+        this.logger.log('Schema migrations (calendar, conversations, messages, whatsapp_templates) completed successfully.');
       }
 
     } catch (err) {

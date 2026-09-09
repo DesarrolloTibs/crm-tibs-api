@@ -44,9 +44,23 @@ export class Conversation {
   @Column({ type: 'text', nullable: true })
   summary: string | null;
 
+  @Column({ type: 'timestamp', nullable: true })
+  lastCustomerMessageAt: Date | null;
+
   @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 
   @UpdateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP', onUpdate: 'CURRENT_TIMESTAMP' })
   updatedAt: Date;
+
+  /**
+   * Verifica si la ventana de conversación con el cliente sigue activa.
+   * Por defecto evalúa 23 horas para dejar un margen de seguridad de 1 hora antes de que Meta corte la sesión.
+   */
+  isCustomerWindowActive(safetyHours: number = 23): boolean {
+    if (this.channel !== 'whatsapp') return true;
+    if (!this.lastCustomerMessageAt) return false;
+    const diffMs = Date.now() - new Date(this.lastCustomerMessageAt).getTime();
+    return diffMs < safetyHours * 60 * 60 * 1000;
+  }
 }

@@ -9,6 +9,7 @@ import { Client } from '../clients/entities/client.entity';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
 import { ChannelConfig } from './entities/channel-config.entity';
+import { WhatsAppTemplate } from './entities/whatsapp-template.entity';
 import { ConversationsGateway } from './conversations.gateway';
 import { AiAgentService } from './ai-agent.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
@@ -16,7 +17,25 @@ import { ClientsService } from '../clients/clients.service';
 import { PhoneUtils } from '../common/utils/phone.utils';
 import { NOTIFICATION_EVENTS } from '../common/events/notification.events';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
+import { SendTemplateMessageDto, UpsertBaseTemplateDto, SelectExistingBaseTemplateDto } from './dto/conversations.dto';
 
+/**
+ * Margen de seguridad para la ventana de atención de WhatsApp antes del corte estricto de Meta (24h).
+ * Se define en 23 horas para prevenir rechazos y fallos de entrega en tránsito.
+ */
+export const WHATSAPP_WINDOW_HOURS_MARGIN = 23;
+
+/**
+ * Nombre técnico oficial e inmutable de la plantilla base en Meta.
+ * Meta exige que el nombre sea exactamente este y no permite alterarlo una vez registrada.
+ */
+export const WHATSAPP_BASE_TEMPLATE_NAME = 'crm_inicio_conversacion';
+
+/**
+ * Mensaje base predeterminado de inicio de conversación que cumple con el ratio de longitud de Meta.
+ */
+export const WHATSAPP_BASE_TEMPLATE_DEFAULT_BODY =
+  'Hola {{1}}, ¿cómo estás? Me comunico contigo para dar seguimiento y revisar lo siguiente:';
 
 @Injectable()
 export class ConversationsService {
@@ -34,6 +53,8 @@ export class ConversationsService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(ChannelConfig)
     private readonly channelConfigRepository: Repository<ChannelConfig>,
+    @InjectRepository(WhatsAppTemplate)
+    private readonly whatsAppTemplateRepository: Repository<WhatsAppTemplate>,
     private readonly gateway: ConversationsGateway,
     private readonly aiAgentService: AiAgentService,
     private readonly eventEmitter: EventEmitter2,
@@ -100,10 +121,26 @@ export class ConversationsService {
       }
     }
 
-    return conversations.map((conv) => ({
-      ...conv,
-      lastMessage: lastMessageMap.get(conv.id) || null,
-    }));
+    return conversations.map((conv) => {
+      const is24HourWindowActive = conv.channel !== 'whatsapp' || (
+        !!conv.lastCustomerMessageAt &&
+        (Date.now() - new Date(conv.lastCustomerMessageAt).getTime()) < WHATSAPP_WINDOW_HOURS_MARGIN * 60 * 60 * 1000
+      );
+      const windowExpiresAt = conv.lastCustomerMessageAt
+        ? new Date(new Date(conv.lastCustomerMessageAt).getTime() + 24 * 60 * 60 * 1000)
+        : null;
+      const safetyWindowExpiresAt = conv.lastCustomerMessageAt
+        ? new Date(new Date(conv.lastCustomerMessageAt).getTime() + WHATSAPP_WINDOW_HOURS_MARGIN * 60 * 60 * 1000)
+        : null;
+
+      return {
+        ...conv,
+        is24HourWindowActive,
+        windowExpiresAt,
+        safetyWindowExpiresAt,
+        lastMessage: lastMessageMap.get(conv.id) || null,
+      };
+    });
   }
 
 
@@ -183,6 +220,7 @@ export class ConversationsService {
     clientNickname: string,
     text: string,
     channelConfigId?: string,
+    externalMessageId?: string,
   ): Promise<Message> {
     // 1. Buscar o crear la conversación
     let conversation = await this.conversationRepository.findOne({
@@ -232,6 +270,7 @@ export class ConversationsService {
         assignedUserId: config.defaultUserId,
         botActive: true,
         channelConfigId: channelConfigId || null,
+        lastCustomerMessageAt: new Date(),
       });
       conversation = await this.conversationRepository.save(conversation);
     }
@@ -241,11 +280,15 @@ export class ConversationsService {
       conversationId: conversation.id,
       sender: 'contact',
       content: text,
+      status: 'delivered',
+      messageType: 'text',
+      externalMessageId: externalMessageId || null,
     });
     const savedIncoming = await this.messageRepository.save(incomingMessage);
     this.gateway.emitMessage(savedIncoming);
 
-    // Actualizar timestamp de conversación
+    // Actualizar timestamp y ventana de 24h/23h del cliente
+    conversation.lastCustomerMessageAt = new Date();
     conversation.updatedAt = new Date();
     await this.conversationRepository.save(conversation);
 
@@ -315,19 +358,19 @@ export class ConversationsService {
         const subscriptionCode = (result as any).subscriptionCode || 'SUBSCRIPTION_ERROR';
         const subscriptionPayload = (result as any).subscriptionPayload || {};
 
-        let notifTitle = '⚠️ Límite de Suscripción Alcanzado';
+        let notifTitle = 'Límite de Suscripción Alcanzado';
         let notifMessage = 'El asistente de IA no pudo procesar un mensaje entrante porque se alcanzó un límite de la suscripción.';
 
         if (subscriptionCode === 'TOKENS_LIMIT_EXCEEDED') {
           const used = subscriptionPayload.tokens_used?.toLocaleString() || '—';
           const limit = subscriptionPayload.tokens_limit?.toLocaleString() || '—';
-          notifTitle = '⚠️ Límite de Tokens de IA Alcanzado';
+          notifTitle = 'Límite de Tokens de IA Alcanzado';
           notifMessage = `Se ha alcanzado el límite de tokens de IA del plan actual (${used} / ${limit} tokens). Los mensajes entrantes no serán procesados por la IA hasta que se renueve o amplíe la suscripción.`;
         } else if (subscriptionCode === 'SUBSCRIPTION_EXPIRED') {
-          notifTitle = '🚫 Suscripción Expirada';
+          notifTitle = 'Suscripción Expirada';
           notifMessage = 'La suscripción de la organización ha expirado. Los mensajes entrantes no serán procesados por la IA hasta que se renueve el plan.';
         } else if (subscriptionCode === 'PLAN_NOT_ASSIGNED') {
-          notifTitle = '📋 Plan No Asignado';
+          notifTitle = 'Plan No Asignado';
           notifMessage = 'La organización no cuenta con un plan de suscripción asignado. Los mensajes entrantes no serán procesados por la IA.';
         }
 
@@ -353,11 +396,17 @@ export class ConversationsService {
           conversationId: conversation.id,
           sender: 'agent',
           content: reply,
+          status: 'pending',
+          messageType: 'text',
         });
         const savedBot = await this.messageRepository.save(botMessage);
         
         // Envío real o simulado inteligente
-        await this.sendOutboundMessage(conversation, reply);
+        try {
+          await this.sendOutboundMessage(conversation, reply, savedBot);
+        } catch (botOutboundErr: any) {
+          this.logger.warn(`No se pudo entregar respuesta del bot a Meta: ${botOutboundErr.message}`);
+        }
 
         const fullBotMessage = await this.messageRepository.findOne({
           where: { id: savedBot.id },
@@ -397,7 +446,7 @@ export class ConversationsService {
           ? `${conversation.client.nombre || ''} ${conversation.client.apellido || ''}`.trim() 
           : (conversation.clientName || conversation.externalId || 'Contacto');
 
-        const notificationTitle = '💬 Derivación de Chat: Ejecutivo Especializado';
+        const notificationTitle = 'Derivación de Chat: Ejecutivo Especializado';
         const notificationMessage = `El cliente ${clientName} ha sido derivado en el chat para recibir atención de un ejecutivo especializado.`;
 
         if (conversation.assignedUserId) {
@@ -438,6 +487,19 @@ export class ConversationsService {
       throw new NotFoundException('Conversación no encontrada.');
     }
 
+    // Validar ventana de atención de seguridad si el canal es WhatsApp
+    if (conversation.channel === 'whatsapp') {
+      const isWindowOpen = conversation.isCustomerWindowActive(WHATSAPP_WINDOW_HOURS_MARGIN);
+      if (!isWindowOpen) {
+        throw new BadRequestException({
+          message: `La ventana de atención de WhatsApp ha expirado (límite de seguridad de ${WHATSAPP_WINDOW_HOURS_MARGIN} horas alcanzado). Para contactar a este cliente debes enviar una plantilla pre-aprobada por Meta.`,
+          code: 'WHATSAPP_24H_WINDOW_EXPIRED',
+          lastCustomerMessageAt: conversation.lastCustomerMessageAt,
+          safetyHoursMargin: WHATSAPP_WINDOW_HOURS_MARGIN,
+        });
+      }
+    }
+
     // Cancelar cualquier respuesta de IA pendiente por debounce si el ejecutivo interviene
     if (this.aiDebounceTimers.has(conversationId)) {
       clearTimeout(this.aiDebounceTimers.get(conversationId));
@@ -458,6 +520,8 @@ export class ConversationsService {
       sender: 'user', // Identifica intervención humana del ejecutivo
       senderUserId: validSenderUserId,
       content,
+      status: 'pending',
+      messageType: 'text',
     });
     const saved = await this.messageRepository.save(manualMessage);
 
@@ -467,17 +531,844 @@ export class ConversationsService {
       relations: ['senderUser'],
     });
 
-    this.gateway.emitMessage(fullMessage!);
+    this.gateway.emitMessage(fullMessage || saved);
 
     // Envío real o simulado inteligente
-    await this.sendOutboundMessage(conversation, content);
+    try {
+      await this.sendOutboundMessage(conversation, content, fullMessage || saved);
+    } catch (sendErr: any) {
+      this.logger.warn(`Mensaje manual guardado pero falló la entrega en Meta: ${sendErr.message}`);
+      throw new BadRequestException(`El mensaje no pudo ser entregado por Meta (${conversation.channel}): ${sendErr.message}`);
+    }
 
     // Actualizar timestamp
     conversation.updatedAt = new Date();
     await this.conversationRepository.save(conversation);
 
-    return fullMessage!;
+    return fullMessage || saved;
   }
+
+  /**
+   * Envía una plantilla de mensaje oficial aprobada por Meta por WhatsApp.
+   * Permite reabrir o iniciar conversaciones fuera de la ventana de 24/23 horas.
+   */
+  async sendTemplateMessage(
+    conversationId: string,
+    senderUserId: string,
+    dto: SendTemplateMessageDto,
+  ): Promise<Message> {
+    const conversation = await this.conversationRepository.findOne({
+      where: { id: conversationId },
+      relations: ['channelConfig', 'client', 'client.company', 'client.ejecutivo', 'assignedUser'],
+    });
+    if (!conversation) {
+      throw new NotFoundException('Conversación no encontrada.');
+    }
+
+    if (conversation.channel !== 'whatsapp') {
+      throw new BadRequestException('El envío de plantillas de mensajes oficiales solo está disponible para el canal de WhatsApp.');
+    }
+
+    let channelConfig = conversation.channelConfig;
+    if (!channelConfig && conversation.channelConfigId) {
+      channelConfig = await this.channelConfigRepository.findOne({ where: { id: conversation.channelConfigId } });
+    }
+    if (!channelConfig) {
+      channelConfig = await this.channelConfigRepository.findOne({
+        where: { channel: 'whatsapp', isActive: true },
+      });
+    }
+
+    if (!channelConfig || !channelConfig.accessToken || !channelConfig.phoneNumberId) {
+      throw new BadRequestException('La configuración del canal WhatsApp no tiene configurado phoneNumberId o accessToken.');
+    }
+
+    const { externalId } = conversation;
+    const phoneId = channelConfig.phoneNumberId;
+    const token = channelConfig.accessToken;
+
+    const url = `https://graph.facebook.com/v19.0/${phoneId}/messages`;
+    const payload: any = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: externalId,
+      type: 'template',
+      template: {
+        name: dto.templateName,
+        language: {
+          code: dto.languageCode || 'es',
+        },
+      },
+    };
+
+    if (dto.components && Array.isArray(dto.components) && dto.components.length > 0) {
+      // Sanitizar parámetros para que Meta no rechace con error 100 si algún parámetro de texto viaja vacío ""
+      payload.template.components = dto.components.map((comp: any) => {
+        if (comp.parameters && Array.isArray(comp.parameters)) {
+          return {
+            ...comp,
+            parameters: comp.parameters.map((p: any) => {
+              if (p.type === 'text' && (!p.text || !p.text.trim())) {
+                return { ...p, text: ' ' };
+              }
+              return p;
+            }),
+          };
+        }
+        return comp;
+      });
+    } else {
+      // Auto-construir parámetros para las variables {{1}}, {{2}}, {{3}} si no se enviaron explícitamente
+      const tpl = await this.whatsAppTemplateRepository.findOne({
+        where: { name: dto.templateName, isBase: true },
+      });
+      if (tpl && tpl.bodyText) {
+        const matches = tpl.bodyText.match(/\{\{(\d+)\}\}/g) || [];
+        const varNumbers = Array.from(new Set(matches.map(m => parseInt(m.replace(/\D/g, ''), 10)))).sort((a, b) => a - b);
+        if (varNumbers.length > 0) {
+          // Obtener o enlazar el contacto si no estaba cargado
+          let client = conversation.client;
+          if (!client && conversation.externalId) {
+            client = await this.clientRepository.findOne({
+              where: { telefono: conversation.externalId },
+              relations: ['company', 'ejecutivo'],
+            });
+            if (client && !conversation.clientId) {
+              conversation.clientId = client.id;
+              await this.conversationRepository.save(conversation);
+            }
+          }
+
+          // {{1}}: Nombre del contacto
+          const clientName = client
+            ? `${client.nombre || ''} ${client.apellido || ''}`.trim() || conversation.clientName
+            : conversation.clientName;
+
+          // {{2}}: Nombre de la empresa relacionada al contacto (vacío si no tiene relación)
+          const contactCompanyName = client?.company?.nombre || client?.empresa || '';
+
+          // {{3}}: Nombre del asesor / agente
+          let senderName = 'Asesor';
+          if (senderUserId) {
+            const sender = await this.userRepository.findOne({ where: { id: senderUserId } });
+            if (sender?.username) senderName = sender.username;
+          }
+          const agentName = client?.ejecutivo?.username || conversation.assignedUser?.username || senderName;
+
+          const parameters = varNumbers.map(n => {
+            if (n === 1) return { type: 'text', text: clientName || 'Cliente' };
+            if (n === 2) {
+              // Si no hay empresa relacionada, se envía vacío (' ' para no romper la regla de Meta de texto no-vacío)
+              return { type: 'text', text: contactCompanyName && contactCompanyName.trim() ? contactCompanyName.trim() : ' ' };
+            }
+            return { type: 'text', text: agentName || 'Asesor' };
+          });
+          payload.template.components = [
+            {
+              type: 'body',
+              parameters,
+            },
+          ];
+        }
+      }
+    }
+
+    let metaResult: any;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      metaResult = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const errorDetail = metaResult?.error?.message || JSON.stringify(metaResult);
+        this.logger.error(`Error enviando plantilla WhatsApp a ${externalId}: ${errorDetail}`);
+        throw new BadRequestException(`Meta WhatsApp Template error: ${errorDetail}`);
+      }
+    } catch (fetchErr: any) {
+      if (fetchErr instanceof BadRequestException) throw fetchErr;
+      throw new BadRequestException(`Error de conexión al enviar plantilla a Meta: ${fetchErr.message}`);
+    }
+
+    const wamid = metaResult?.messages?.[0]?.id || null;
+
+    // Validar senderUserId
+    let validSenderUserId: string | null = null;
+    if (senderUserId) {
+      const userExists = await this.userRepository.findOne({ where: { id: senderUserId } });
+      if (userExists) validSenderUserId = senderUserId;
+    }
+
+    // Determinar el contenido real y legible de la plantilla para el chat
+    let renderedContent = dto.content?.trim() || '';
+
+    if (!renderedContent) {
+      let tpl = await this.whatsAppTemplateRepository.findOne({
+        where: { name: dto.templateName },
+      });
+      if (!tpl) {
+        tpl = await this.whatsAppTemplateRepository.findOne({
+          where: { isBase: true },
+        });
+      }
+
+      const rawBody = tpl?.bodyText || WHATSAPP_BASE_TEMPLATE_DEFAULT_BODY;
+      let bodyText = rawBody;
+
+      const bodyComp = payload.template?.components?.find(
+        (c: any) => c.type?.toLowerCase() === 'body',
+      );
+      const bodyParams = bodyComp?.parameters || [];
+
+      if (Array.isArray(bodyParams) && bodyParams.length > 0) {
+        bodyParams.forEach((param: any, idx: number) => {
+          const varPattern = new RegExp(`\\{\\{${idx + 1}\\}\\}`, 'g');
+          const val = param.text ? param.text.trim() : '';
+          bodyText = bodyText.replace(varPattern, val);
+        });
+      }
+
+      if (tpl?.headerText && tpl.headerText.trim()) {
+        renderedContent = `*${tpl.headerText.trim()}*\n\n${bodyText}`;
+      } else {
+        renderedContent = bodyText;
+      }
+
+      if (tpl?.footerText && tpl.footerText.trim()) {
+        renderedContent = `${renderedContent}\n\n_${tpl.footerText.trim()}_`;
+      }
+    }
+
+    const templateMessage = this.messageRepository.create({
+      conversationId,
+      sender: 'user',
+      senderUserId: validSenderUserId,
+      content: renderedContent || `📄 [Plantilla WhatsApp: ${dto.templateName}]`,
+      status: 'sent',
+      messageType: 'template',
+      externalMessageId: wamid,
+    });
+
+    const saved = await this.messageRepository.save(templateMessage);
+
+    const fullMessage = await this.messageRepository.findOne({
+      where: { id: saved.id },
+      relations: ['senderUser'],
+    });
+
+    this.gateway.emitMessage(fullMessage || saved);
+
+    conversation.updatedAt = new Date();
+    await this.conversationRepository.save(conversation);
+
+    this.logger.log(`[REAL WHATSAPP TEMPLATE] Plantilla '${dto.templateName}' enviada con éxito a ${externalId} (wamid: ${wamid})`);
+    return fullMessage || saved;
+  }
+
+  /**
+   * Consulta la plantilla base aprobada para la conversación activa.
+   * Si allTemplates es true, consulta el catálogo completo de plantillas aprobadas en Meta.
+   */
+  async getWhatsAppTemplates(
+    conversationId?: string,
+    allTemplates: boolean = false,
+    explicitChannelConfigId?: string,
+  ): Promise<any[]> {
+    let channelConfig: ChannelConfig | null = null;
+
+    if (explicitChannelConfigId) {
+      channelConfig = await this.channelConfigRepository.findOne({ where: { id: explicitChannelConfigId } });
+    } else if (conversationId) {
+      const conv = await this.conversationRepository.findOne({ where: { id: conversationId } });
+      if (conv && conv.channelConfigId) {
+        channelConfig = await this.channelConfigRepository.findOne({ where: { id: conv.channelConfigId } });
+      }
+    }
+
+    if (!channelConfig) {
+      channelConfig = await this.channelConfigRepository.findOne({
+        where: { channel: 'whatsapp', isActive: true },
+      });
+    }
+
+    if (!channelConfig) {
+      throw new NotFoundException('No se encontró una configuración activa para el canal WhatsApp.');
+    }
+
+    const wabaId = channelConfig.accountId;
+    const token = channelConfig.accessToken;
+
+    if (!wabaId || !token) {
+      throw new BadRequestException('El canal WhatsApp no tiene configurado el WhatsApp Business Account ID (accountId) o el accessToken.');
+    }
+
+    // Si NO se solicitan todas las plantillas, retornar ÚNICAMENTE la plantilla base configurada
+    if (!allTemplates) {
+      const baseTemplate = await this.whatsAppTemplateRepository.findOne({
+        where: { channelConfigId: channelConfig.id, isBase: true },
+      });
+
+      if (baseTemplate) {
+        // Si tiene templateId oficial en Meta, consultar datos actualizados de esa plantilla en Meta
+        if (baseTemplate.templateId) {
+          try {
+            const metaRes = await fetch(`https://graph.facebook.com/v19.0/${baseTemplate.templateId}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const metaData = await metaRes.json().catch(() => ({}));
+            if (metaRes.ok && metaData.id) {
+              return [
+                {
+                  id: metaData.id,
+                  name: metaData.name || baseTemplate.name,
+                  status: metaData.status || baseTemplate.status,
+                  category: metaData.category || baseTemplate.category,
+                  language: metaData.language || baseTemplate.language,
+                  components: metaData.components || baseTemplate.components || [
+                    { type: 'BODY', text: baseTemplate.bodyText || 'Hola {{1}}' },
+                  ],
+                  isBase: true,
+                },
+              ];
+            }
+          } catch (syncErr: any) {
+            this.logger.warn(`No se pudo consultar la plantilla base en Meta (${baseTemplate.templateId}): ${syncErr.message}`);
+          }
+        }
+
+        // Retornar la plantilla base almacenada localmente
+        return [
+          {
+            id: baseTemplate.templateId || baseTemplate.id,
+            name: baseTemplate.name,
+            status: baseTemplate.status,
+            category: baseTemplate.category,
+            language: baseTemplate.language,
+            components: baseTemplate.components || [
+              { type: 'BODY', text: baseTemplate.bodyText || WHATSAPP_BASE_TEMPLATE_DEFAULT_BODY },
+            ],
+            isBase: true,
+          },
+        ];
+      }
+
+      // Si aún no se ha configurado plantilla base, devolver la estructura base por defecto
+      return [
+        {
+          id: null,
+          name: WHATSAPP_BASE_TEMPLATE_NAME,
+          status: 'APPROVED',
+          category: 'MARKETING',
+          language: 'es',
+          components: [
+            { type: 'BODY', text: WHATSAPP_BASE_TEMPLATE_DEFAULT_BODY },
+          ],
+          isBase: true,
+        },
+      ];
+    }
+
+    // Si allTemplates === true, consultar todas las plantillas aprobadas de Meta
+    const url = `https://graph.facebook.com/v19.0/${wabaId}/message_templates?status=APPROVED&limit=100`;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new BadRequestException(`Error de Meta al consultar plantillas: ${data?.error?.message || JSON.stringify(data)}`);
+      }
+
+      return data.data || [];
+    } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
+      throw new BadRequestException(`No se pudieron obtener las plantillas de Meta: ${err.message}`);
+    }
+  }
+
+  /**
+   * Obtiene la plantilla base configurada para el canal de WhatsApp.
+   * Si tiene templateId en Meta, consulta su estado en vivo para mantenerlo sincronizado.
+   */
+  async getBaseTemplate(channelConfigId?: string): Promise<any> {
+    let query = this.whatsAppTemplateRepository.createQueryBuilder('t')
+      .where('t.isBase = :isBase', { isBase: true });
+
+    if (channelConfigId) {
+      query.andWhere('t.channelConfigId = :channelConfigId', { channelConfigId });
+    }
+
+    let template = await query.getOne();
+
+    // Obtener la configuración del canal para consultar a Meta si corresponde
+    let channelConfig: ChannelConfig | null = null;
+    if (channelConfigId) {
+      channelConfig = await this.channelConfigRepository.findOne({ where: { id: channelConfigId } });
+    }
+    if (!channelConfig) {
+      channelConfig = await this.channelConfigRepository.findOne({ where: { channel: 'whatsapp', isActive: true } });
+    }
+
+    // Si existe plantilla en base de datos con templateId de Meta, consultar estado y componentes en vivo
+    if (template && template.templateId && channelConfig && channelConfig.accessToken) {
+      try {
+        const metaRes = await fetch(
+          `https://graph.facebook.com/v19.0/${template.templateId}?fields=id,name,status,category,language,components`,
+          {
+            headers: {
+              Authorization: `Bearer ${channelConfig.accessToken}`,
+            },
+          },
+        );
+        const metaData = await metaRes.json().catch(() => ({}));
+        if (metaRes.ok && metaData) {
+          let hasChanges = false;
+          if (metaData.status && template.status !== metaData.status) {
+            template.status = metaData.status;
+            hasChanges = true;
+          }
+          if (metaData.category && template.category !== metaData.category) {
+            template.category = metaData.category;
+            hasChanges = true;
+          }
+          if (metaData.components && Array.isArray(metaData.components)) {
+            template.components = metaData.components;
+            const bodyComp = metaData.components.find((c: any) => c.type === 'BODY');
+            const headerComp = metaData.components.find((c: any) => c.type === 'HEADER');
+            const footerComp = metaData.components.find((c: any) => c.type === 'FOOTER');
+            if (bodyComp?.text && template.bodyText !== bodyComp.text) {
+              template.bodyText = bodyComp.text;
+              hasChanges = true;
+            }
+            if (headerComp?.text !== undefined && template.headerText !== (headerComp?.text || null)) {
+              template.headerText = headerComp?.text || null;
+              hasChanges = true;
+            }
+            if (footerComp?.text !== undefined && template.footerText !== (footerComp?.text || null)) {
+              template.footerText = footerComp?.text || null;
+              hasChanges = true;
+            }
+          }
+          if (hasChanges) {
+            template.updatedAt = new Date();
+            await this.whatsAppTemplateRepository.save(template);
+          }
+        }
+      } catch (syncErr: any) {
+        this.logger.warn(`No se pudo sincronizar el estado en vivo de la plantilla ${template.templateId}: ${syncErr.message}`);
+      }
+      return template;
+    }
+
+    // Si aún no tiene templateId en DB, verificar si ya fue creada previamente en Meta directamente
+    if ((!template || !template.templateId) && channelConfig?.accountId && channelConfig?.accessToken) {
+      try {
+        const searchRes = await fetch(
+          `https://graph.facebook.com/v19.0/${channelConfig.accountId}/message_templates?name=${WHATSAPP_BASE_TEMPLATE_NAME}`,
+          { headers: { Authorization: `Bearer ${channelConfig.accessToken}` } },
+        );
+        const searchData = await searchRes.json().catch(() => ({}));
+        const existingMeta = searchData?.data?.find((t: any) => t.name === WHATSAPP_BASE_TEMPLATE_NAME);
+        if (existingMeta && existingMeta.id) {
+          this.logger.log(`[BASE TEMPLATE SYNC] Plantilla '${WHATSAPP_BASE_TEMPLATE_NAME}' encontrada en Meta (${existingMeta.id}). Vinculando automáticamente...`);
+          if (!template) {
+            template = this.whatsAppTemplateRepository.create({
+              channelConfigId: channelConfig.id,
+              isBase: true,
+            });
+          }
+          template.templateId = existingMeta.id;
+          template.name = existingMeta.name || WHATSAPP_BASE_TEMPLATE_NAME;
+          template.category = existingMeta.category || 'MARKETING';
+          template.language = existingMeta.language || 'es';
+          template.status = existingMeta.status || 'APPROVED';
+          template.components = existingMeta.components || null;
+
+          const bodyComp = existingMeta.components?.find((c: any) => c.type === 'BODY');
+          const headerComp = existingMeta.components?.find((c: any) => c.type === 'HEADER');
+          const footerComp = existingMeta.components?.find((c: any) => c.type === 'FOOTER');
+          if (bodyComp?.text) template.bodyText = bodyComp.text;
+          if (headerComp?.text) template.headerText = headerComp.text;
+          if (footerComp?.text) template.footerText = footerComp.text;
+
+          template.updatedAt = new Date();
+          template = await this.whatsAppTemplateRepository.save(template);
+          return template;
+        }
+      } catch (searchErr: any) {
+        this.logger.warn(`No se pudo buscar plantilla preexistente en Meta: ${searchErr.message}`);
+      }
+    }
+
+    if (template) {
+      return template;
+    }
+
+    // Si aún no ha sido creada o configurada, devolver estructura inicial sugerida
+    return {
+      id: null,
+      channelConfigId: channelConfig?.id || channelConfigId || null,
+      templateId: null,
+      name: WHATSAPP_BASE_TEMPLATE_NAME,
+      category: 'MARKETING',
+      language: 'es',
+      bodyText: WHATSAPP_BASE_TEMPLATE_DEFAULT_BODY,
+      headerText: null,
+      footerText: null,
+      components: [
+        {
+          type: 'BODY',
+          text: WHATSAPP_BASE_TEMPLATE_DEFAULT_BODY,
+        },
+      ],
+      status: 'DRAFT',
+      isBase: true,
+    };
+  }
+
+  /**
+   * Crea o actualiza la plantilla base de WhatsApp con impacto directo e inmediato en Meta Graph API.
+   */
+  async upsertBaseTemplate(channelConfigId: string, dto: UpsertBaseTemplateDto): Promise<WhatsAppTemplate> {
+    const channelConfig = await this.channelConfigRepository.findOne({ where: { id: channelConfigId } });
+    if (!channelConfig) {
+      throw new NotFoundException('Configuración de canal no encontrada.');
+    }
+    if (channelConfig.channel !== 'whatsapp') {
+      throw new BadRequestException('Las plantillas oficiales de Meta solo aplican para el canal de WhatsApp.');
+    }
+
+    const wabaId = channelConfig.accountId;
+    const token = channelConfig.accessToken;
+    if (!wabaId || !token) {
+      throw new BadRequestException('El canal no tiene configurado el accountId (WhatsApp Business Account ID) o el accessToken.');
+    }
+
+    // Buscar si ya existe la plantilla base en base de datos para este canal
+    let baseTemplate = await this.whatsAppTemplateRepository.findOne({
+      where: { channelConfigId, isBase: true },
+    });
+
+    // El nombre técnico de la plantilla base en Meta es estrictamente inmutable: 'crm_inicio_conversacion'
+    const templateName = baseTemplate?.name || WHATSAPP_BASE_TEMPLATE_NAME;
+    const language = baseTemplate?.language || 'es';
+    const category = baseTemplate?.category || 'MARKETING';
+    const bodyText = (dto.bodyText || WHATSAPP_BASE_TEMPLATE_DEFAULT_BODY).trim();
+
+    // Construir estructura de componentes para Meta Graph API (solo header, body y footer permitidos)
+    const components: any[] = [];
+    if (dto.headerText && dto.headerText.trim()) {
+      components.push({
+        type: 'HEADER',
+        format: 'TEXT',
+        text: dto.headerText.trim(),
+      });
+    }
+
+    // Detectar variables {{1}}, {{2}}, {{3}} y validar límites y correlatividad requerida por Meta
+    const rawMatches = bodyText.match(/\{\{(\d+)\}\}/g) || [];
+    const varNumbers = Array.from(new Set(rawMatches.map(m => parseInt(m.replace(/\D/g, ''), 10)))).sort((a, b) => a - b);
+
+    if (varNumbers.some(n => n > 3)) {
+      throw new BadRequestException(
+        'La plantilla base solo admite un máximo de 3 variables: {{1}} (Cliente), {{2}} (Empresa/Canal) y {{3}} (Asesor).',
+      );
+    }
+
+    for (let i = 0; i < varNumbers.length; i++) {
+      if (varNumbers[i] !== i + 1) {
+        throw new BadRequestException(
+          `Las variables de Meta deben ser estrictamente correlativas empezando en {{1}} (ej. {{1}}, {{2}}, {{3}}). Falta la variable {{${i + 1}}}.`,
+        );
+      }
+    }
+
+    const bodyComponent: any = {
+      type: 'BODY',
+      text: bodyText,
+    };
+    if (varNumbers.length > 0) {
+      const sampleNames: Record<number, string> = {
+        1: 'Juan Pérez',
+        2: 'TIBS Soluciones',
+        3: 'Carlos Asesor',
+      };
+      const sampleValues = varNumbers.map(n => sampleNames[n]);
+      bodyComponent.example = {
+        body_text: [sampleValues],
+      };
+    }
+    components.push(bodyComponent);
+
+    if (dto.footerText && dto.footerText.trim()) {
+      components.push({
+        type: 'FOOTER',
+        text: dto.footerText.trim(),
+      });
+    }
+
+    // Si la plantilla no tiene templateId local, verificar si ya existe en Meta con ese nombre
+    if (!baseTemplate?.templateId) {
+      try {
+        const searchRes = await fetch(`https://graph.facebook.com/v19.0/${wabaId}/message_templates?name=${templateName}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const searchData = await searchRes.json().catch(() => ({}));
+        const existingMeta = searchData?.data?.find((t: any) => t.name === templateName);
+        if (existingMeta && existingMeta.id) {
+          this.logger.log(`[META TEMPLATE FOUND] Plantilla '${templateName}' ya existía en Meta con ID ${existingMeta.id}. Vinculando...`);
+          if (!baseTemplate) {
+            baseTemplate = this.whatsAppTemplateRepository.create({
+              channelConfigId,
+              isBase: true,
+            });
+          }
+          baseTemplate.templateId = existingMeta.id;
+          baseTemplate.language = existingMeta.language || language;
+          baseTemplate.category = existingMeta.category || category;
+          baseTemplate.status = existingMeta.status || 'APPROVED';
+        }
+      } catch (searchErr: any) {
+        this.logger.warn(`Error buscando plantilla en Meta: ${searchErr.message}`);
+      }
+    }
+
+    // Caso 1: La plantilla ya tiene un ID en Meta -> Actualizar componentes existentes en Meta
+    if (baseTemplate && baseTemplate.templateId) {
+      this.logger.log(`[META TEMPLATE UPDATE] Actualizando componentes (header, body, footer) de plantilla ${baseTemplate.templateId} en Meta...`);
+      const updateUrl = `https://graph.facebook.com/v19.0/${baseTemplate.templateId}`;
+      try {
+        const res = await fetch(updateUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ components }),
+        });
+
+        const resData = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const metaErrorObj = resData?.error;
+          const metaError =
+            metaErrorObj?.error_user_msg ||
+            metaErrorObj?.error_user_title ||
+            metaErrorObj?.error_data?.details ||
+            metaErrorObj?.message ||
+            JSON.stringify(resData);
+          this.logger.error(`Error de Meta al actualizar plantilla ${baseTemplate.templateId}: ${JSON.stringify(metaErrorObj || resData)}`);
+          throw new BadRequestException(`Meta Graph API error al actualizar plantilla: ${metaError}`);
+        }
+
+        baseTemplate.bodyText = bodyText;
+        baseTemplate.headerText = dto.headerText?.trim() || null;
+        baseTemplate.footerText = dto.footerText?.trim() || null;
+        baseTemplate.components = components;
+        baseTemplate.category = category;
+        baseTemplate.language = baseTemplate.language || language;
+        baseTemplate.status = 'APPROVED'; // Si es UTILITY suele mantenerse aprobada o pasar a revisión
+        baseTemplate.updatedAt = new Date();
+
+        return await this.whatsAppTemplateRepository.save(baseTemplate);
+      } catch (err: any) {
+        if (err instanceof BadRequestException) throw err;
+        throw new BadRequestException(`Error de conexión con Meta al actualizar plantilla: ${err.message}`);
+      }
+    }
+
+    // Caso 2: Crear nueva plantilla en Meta
+    this.logger.log(`[META TEMPLATE CREATE] Creando nueva plantilla '${templateName}' en WABA ${wabaId}...`);
+    const createUrl = `https://graph.facebook.com/v19.0/${wabaId}/message_templates`;
+    
+    // Intentar primero con es_MX o es
+    let targetLanguage = language;
+    const payload = {
+      name: templateName,
+      category,
+      language: targetLanguage,
+      components,
+    };
+
+    try {
+      let res = await fetch(createUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      let resData = await res.json().catch(() => ({}));
+
+      // Si falla por idioma 'es', reintentar con 'es_MX'
+      if (!res.ok && targetLanguage === 'es') {
+        targetLanguage = 'es_MX';
+        payload.language = targetLanguage;
+        res = await fetch(createUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(payload),
+        });
+        resData = await res.json().catch(() => ({}));
+      }
+
+      if (!res.ok) {
+        const metaErrorObj = resData?.error;
+        const metaError =
+          metaErrorObj?.error_user_msg ||
+          metaErrorObj?.error_user_title ||
+          metaErrorObj?.error_data?.details ||
+          metaErrorObj?.message ||
+          JSON.stringify(resData);
+        this.logger.error(`Error de Meta al crear plantilla ${templateName}: ${JSON.stringify(metaErrorObj || resData)}`);
+        throw new BadRequestException(`Meta Graph API error al crear plantilla: ${metaError}`);
+      }
+
+      const metaTemplateId = resData.id;
+      const metaStatus = resData.status || 'APPROVED';
+
+      if (!baseTemplate) {
+        baseTemplate = this.whatsAppTemplateRepository.create({
+          channelConfigId,
+          isBase: true,
+        });
+      }
+
+      baseTemplate.templateId = metaTemplateId;
+      baseTemplate.name = templateName;
+      baseTemplate.category = category;
+      baseTemplate.language = targetLanguage;
+      baseTemplate.bodyText = bodyText;
+      baseTemplate.headerText = dto.headerText?.trim() || null;
+      baseTemplate.footerText = dto.footerText?.trim() || null;
+      baseTemplate.components = components;
+      baseTemplate.status = metaStatus;
+      baseTemplate.isBase = true;
+      baseTemplate.updatedAt = new Date();
+
+      return await this.whatsAppTemplateRepository.save(baseTemplate);
+    } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
+      throw new BadRequestException(`Error de conexión con Meta al crear plantilla: ${err.message}`);
+    }
+  }
+
+  /**
+   * Designa una plantilla preexistente aprobada en Meta como la plantilla base de inicio.
+   */
+  async selectExistingAsBaseTemplate(channelConfigId: string, dto: SelectExistingBaseTemplateDto): Promise<WhatsAppTemplate> {
+    const channelConfig = await this.channelConfigRepository.findOne({ where: { id: channelConfigId } });
+    if (!channelConfig) {
+      throw new NotFoundException('Configuración de canal no encontrada.');
+    }
+
+    // Desactivar cualquier plantilla base previa de este canal
+    await this.whatsAppTemplateRepository.update(
+      { channelConfigId, isBase: true },
+      { isBase: false, updatedAt: new Date() },
+    );
+
+    let template = await this.whatsAppTemplateRepository.findOne({
+      where: { channelConfigId, name: dto.templateName },
+    });
+
+    if (!template) {
+      template = this.whatsAppTemplateRepository.create({
+        channelConfigId,
+        name: dto.templateName,
+        templateId: dto.templateId || null,
+        language: dto.language || 'es',
+        category: dto.category || 'MARKETING',
+        bodyText: dto.bodyText || 'Hola {{1}}',
+        status: 'APPROVED',
+        isBase: true,
+      });
+    } else {
+      template.isBase = true;
+      if (dto.templateId) template.templateId = dto.templateId;
+      if (dto.bodyText) template.bodyText = dto.bodyText;
+      if (dto.language) template.language = dto.language;
+      if (dto.category) template.category = dto.category;
+      template.updatedAt = new Date();
+    }
+
+    return this.whatsAppTemplateRepository.save(template);
+  }
+
+  /**
+   * Obtiene la plantilla base configurada para la conversación activa.
+   */
+  async getConversationBaseTemplate(conversationId: string): Promise<any> {
+    const conversation = await this.conversationRepository.findOne({
+      where: { id: conversationId },
+      relations: ['channelConfig', 'client', 'client.company', 'client.ejecutivo', 'assignedUser'],
+    });
+    if (!conversation) {
+      throw new NotFoundException('Conversación no encontrada.');
+    }
+
+    if (conversation.channel !== 'whatsapp') {
+      return null;
+    }
+
+    let client = conversation.client;
+    if (!client && conversation.externalId) {
+      client = await this.clientRepository.findOne({
+        where: { telefono: conversation.externalId },
+        relations: ['company', 'ejecutivo'],
+      });
+      if (client && !conversation.clientId) {
+        conversation.clientId = client.id;
+        await this.conversationRepository.save(conversation);
+      }
+    }
+
+    let channelConfigId = conversation.channelConfigId;
+    if (!channelConfigId) {
+      const activeWhatsApp = await this.channelConfigRepository.findOne({
+        where: { channel: 'whatsapp', isActive: true },
+      });
+      channelConfigId = activeWhatsApp?.id || null;
+    }
+
+    const baseTemplate = await this.getBaseTemplate(channelConfigId || undefined);
+    if (!baseTemplate) return null;
+
+    const clientName = client
+      ? `${client.nombre || ''} ${client.apellido || ''}`.trim() || conversation.clientName
+      : conversation.clientName;
+    const contactCompanyName = client?.company?.nombre || client?.empresa || '';
+    const agentName = client?.ejecutivo?.username || conversation.assignedUser?.username || 'Asesor';
+
+    return {
+      ...baseTemplate,
+      resolvedVariables: {
+        1: clientName || 'Cliente',
+        2: contactCompanyName,
+        3: agentName || 'Asesor',
+      },
+      contact: {
+        id: client?.id || null,
+        name: clientName,
+        company: contactCompanyName,
+        agent: agentName,
+      },
+    };
+  }
+
 
   /**
    * Modifica el estatus de activación del Bot en una conversación.
@@ -824,12 +1715,46 @@ export class ConversationsService {
           const change = entry?.changes?.[0];
           const value = change?.value;
           const message = value?.messages?.[0];
+          const statuses = value?.statuses;
 
+          // 1. Procesar statuses (confirmaciones de entrega de Meta: sent, delivered, read, failed)
+          if (statuses && Array.isArray(statuses)) {
+            for (const statusObj of statuses) {
+              const wamid = statusObj.id;
+              const deliveryStatus = statusObj.status; // 'sent' | 'delivered' | 'read' | 'failed'
+              const errorObj = statusObj.errors?.[0];
+              const errorDetail = errorObj ? `${errorObj.code}: ${errorObj.title || errorObj.message}` : null;
+
+              if (wamid) {
+                const targetMsg = await this.messageRepository.findOne({
+                  where: { externalMessageId: wamid },
+                });
+                if (targetMsg) {
+                  targetMsg.status = deliveryStatus;
+                  if (errorDetail) {
+                    targetMsg.errorMessage = errorDetail;
+                  }
+                  await this.messageRepository.save(targetMsg);
+                  this.gateway.emitMessageStatusUpdated({
+                    messageId: targetMsg.id,
+                    conversationId: targetMsg.conversationId,
+                    status: deliveryStatus,
+                    externalMessageId: wamid,
+                    errorMessage: errorDetail || undefined,
+                  });
+                  this.logger.log(`[Webhook WHATSAPP STATUS] Mensaje ${targetMsg.id} (${wamid}) actualizado a '${deliveryStatus}'`);
+                }
+              }
+            }
+          }
+
+          // 2. Procesar mensaje entrante del cliente
           if (message && message.type === 'text') {
             const externalId = message.from;
             const text = message.text.body;
             const clientNickname = value.contacts?.[0]?.profile?.name || 'Cliente WhatsApp';
             const phoneNumberId = value.metadata?.phone_number_id;
+            const incomingWamid = message.id;
 
             const channelConfig = await this.channelConfigRepository.findOne({
               where: { channel: 'whatsapp', phoneNumberId, isActive: true },
@@ -841,6 +1766,7 @@ export class ConversationsService {
               clientNickname,
               text,
               channelConfig?.id,
+              incomingWamid,
             );
           }
         } else if (channel === 'facebook' || channel === 'messenger') {
@@ -939,20 +1865,28 @@ export class ConversationsService {
 
   // ── ENVÍO DE MENSAJES HACIA EL EXTERIOR ────────────────────────────────────
 
-  private async sendOutboundMessage(conversation: Conversation, content: string): Promise<void> {
+  private async sendOutboundMessage(
+    conversation: Conversation,
+    content: string,
+    messageEntity?: Message,
+  ): Promise<{ success: boolean; externalMessageId?: string; error?: string }> {
     let channelConfig = conversation.channelConfig;
     if (!channelConfig && conversation.channelConfigId) {
       channelConfig = await this.channelConfigRepository.findOne({ where: { id: conversation.channelConfigId } });
     }
     if (!channelConfig) {
       channelConfig = await this.channelConfigRepository.findOne({
-        where: { channel: conversation.channel, isActive: true }
+        where: { channel: conversation.channel, isActive: true },
       });
     }
 
     if (!channelConfig || !channelConfig.accessToken) {
       this.logger.log(`[SIMULADO / MOCK OUTBOUND] Canal: ${conversation.channel} | Para: ${conversation.externalId} | Mensaje: "${content}"`);
-      return;
+      if (messageEntity) {
+        messageEntity.status = 'delivered';
+        await this.messageRepository.save(messageEntity).catch(() => null);
+      }
+      return { success: true };
     }
 
     const { channel, externalId } = conversation;
@@ -963,7 +1897,11 @@ export class ConversationsService {
         const phoneId = channelConfig.phoneNumberId;
         if (!phoneId) {
           this.logger.warn(`WhatsApp configurado pero no tiene phoneNumberId. Mensaje simulado.`);
-          return;
+          if (messageEntity) {
+            messageEntity.status = 'delivered';
+            await this.messageRepository.save(messageEntity).catch(() => null);
+          }
+          return { success: true };
         }
 
         const url = `https://graph.facebook.com/v19.0/${phoneId}/messages`;
@@ -972,69 +1910,152 @@ export class ConversationsService {
           recipient_type: 'individual',
           to: externalId,
           type: 'text',
-          text: { body: content }
+          text: { body: content },
         };
 
         const res = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
+            'Authorization': `Bearer ${token}`,
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
         });
 
+        const data = await res.json().catch(() => ({}));
+
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(`Meta API error: ${JSON.stringify(errData)}`);
+          const metaError = data?.error?.message || JSON.stringify(data);
+          if (messageEntity) {
+            messageEntity.status = 'failed';
+            messageEntity.errorMessage = metaError;
+            await this.messageRepository.save(messageEntity).catch(() => null);
+            this.gateway.emitMessageStatusUpdated({
+              messageId: messageEntity.id,
+              conversationId: messageEntity.conversationId,
+              status: 'failed',
+              errorMessage: metaError,
+            });
+          }
+          throw new Error(`Meta API error: ${metaError}`);
         }
 
-        this.logger.log(`[REAL WHATSAPP OUTBOUND] Mensaje enviado con éxito a ${externalId}`);
+        const externalMessageId = data.messages?.[0]?.id || null;
+        if (messageEntity) {
+          messageEntity.status = 'sent';
+          messageEntity.externalMessageId = externalMessageId;
+          await this.messageRepository.save(messageEntity).catch(() => null);
+          this.gateway.emitMessageStatusUpdated({
+            messageId: messageEntity.id,
+            conversationId: messageEntity.conversationId,
+            status: 'sent',
+            externalMessageId,
+          });
+        }
+
+        this.logger.log(`[REAL WHATSAPP OUTBOUND] Mensaje enviado con éxito a ${externalId} (wamid: ${externalMessageId})`);
+        return { success: true, externalMessageId };
       } else if (channel === 'messenger' || channel === 'facebook') {
         const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${token}`;
         const body = {
           recipient: { id: externalId },
-          message: { text: content }
+          message: { text: content },
         };
 
         const res = await fetch(url, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
         });
 
+        const data = await res.json().catch(() => ({}));
+
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(`Meta API error: ${JSON.stringify(errData)}`);
+          const metaError = data?.error?.message || JSON.stringify(data);
+          if (messageEntity) {
+            messageEntity.status = 'failed';
+            messageEntity.errorMessage = metaError;
+            await this.messageRepository.save(messageEntity).catch(() => null);
+            this.gateway.emitMessageStatusUpdated({
+              messageId: messageEntity.id,
+              conversationId: messageEntity.conversationId,
+              status: 'failed',
+              errorMessage: metaError,
+            });
+          }
+          throw new Error(`Meta API error: ${metaError}`);
+        }
+
+        const externalMessageId = data.message_id || null;
+        if (messageEntity) {
+          messageEntity.status = 'sent';
+          messageEntity.externalMessageId = externalMessageId;
+          await this.messageRepository.save(messageEntity).catch(() => null);
         }
 
         this.logger.log(`[REAL MESSENGER OUTBOUND] Mensaje enviado con éxito a ${externalId}`);
+        return { success: true, externalMessageId };
       } else if (channel === 'instagram') {
         const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${token}`;
         const body = {
           recipient: { id: externalId },
-          message: { text: content }
+          message: { text: content },
         };
 
         const res = await fetch(url, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
         });
 
+        const data = await res.json().catch(() => ({}));
+
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(`Meta API error: ${JSON.stringify(errData)}`);
+          const metaError = data?.error?.message || JSON.stringify(data);
+          if (messageEntity) {
+            messageEntity.status = 'failed';
+            messageEntity.errorMessage = metaError;
+            await this.messageRepository.save(messageEntity).catch(() => null);
+            this.gateway.emitMessageStatusUpdated({
+              messageId: messageEntity.id,
+              conversationId: messageEntity.conversationId,
+              status: 'failed',
+              errorMessage: metaError,
+            });
+          }
+          throw new Error(`Meta API error: ${metaError}`);
+        }
+
+        const externalMessageId = data.message_id || null;
+        if (messageEntity) {
+          messageEntity.status = 'sent';
+          messageEntity.externalMessageId = externalMessageId;
+          await this.messageRepository.save(messageEntity).catch(() => null);
         }
 
         this.logger.log(`[REAL INSTAGRAM OUTBOUND] Mensaje enviado con éxito a ${externalId}`);
+        return { success: true, externalMessageId };
       }
-    } catch (err) {
+
+      return { success: true };
+    } catch (err: any) {
       this.logger.error(`Error enviando mensaje real por ${channel} a ${externalId}: ${err.message}`);
+      if (messageEntity && messageEntity.status !== 'failed') {
+        messageEntity.status = 'failed';
+        messageEntity.errorMessage = err.message;
+        await this.messageRepository.save(messageEntity).catch(() => null);
+        this.gateway.emitMessageStatusUpdated({
+          messageId: messageEntity.id,
+          conversationId: messageEntity.conversationId,
+          status: 'failed',
+          errorMessage: err.message,
+        });
+      }
+      throw err;
     }
   }
 

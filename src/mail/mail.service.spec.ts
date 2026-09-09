@@ -37,7 +37,7 @@ describe('MailService - Notice and ICS generation', () => {
   });
 
   it('debe generar un payload de iCalendar (.ics) válido con los campos requeridos', () => {
-    const ics = service.generateIcsCalendar({
+    const ics = (service as any).generateIcsCalendar({
       uid: 'test-uid-123',
       title: 'Reunión de demostración',
       description: 'Detalles de la reunión técnica',

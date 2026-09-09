@@ -64,6 +64,19 @@ export class ConversationsGateway implements OnGatewayInit, OnGatewayConnection,
     }
   }
 
+  emitMessageStatusUpdated(payload: {
+    messageId: string;
+    conversationId: string;
+    status: string;
+    externalMessageId?: string | null;
+    errorMessage?: string | null;
+  }) {
+    if (this.server) {
+      this.server.emit('message_status_updated', payload);
+      this.logger.log(`Emitted message_status_updated for message ${payload.messageId} (${payload.status})`);
+    }
+  }
+
   /**
    * Listener de evento para consumo de tokens de tenant.
    * Permite que AiAgentService notifique al Gateway sin inyectarlo directamente.
