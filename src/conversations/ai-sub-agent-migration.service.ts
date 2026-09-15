@@ -106,7 +106,7 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
       - [Producto 2]: [Cantidad] [Unidad de medida] ($[Precio] c/u)
       ¿Es correcta esta información para generar y enviarte tu cotización formal, o deseas corregir alguna cantidad o producto?"
   3. CORRECCIÓN Y RE-CONFIRMACIÓN: Si el cliente corrige algún dato (ej. 'cambia el producto X a 3 piezas', 'en vez de 5 ponme 2', 'quita el producto Z', 'agrega 1 pieza de W'), actualiza inmediatamente los productos y cantidades en tu memoria y VUELVE A SOLICITAR CONFIRMACIÓN con la lista actualizada completa antes de proceder.
-  4. CONFIRMACIÓN FINAL Y CREACIÓN DE OPORTUNIDAD: ÚNICAMENTE cuando el cliente confirme explícitamente de forma afirmativa (ej. 'sí', 'correcto', 'adelante', 'está bien', 'procede', 'genera la cotización'), llamarás a 'createOpportunity' pasando la propiedad 'items' estructurada con cada producto y su cantidad exacta confirmada (ej. items: [{ nombre: '...', cantidad: ... }]).`;
+  4. CONFIRMACIÓN FINAL Y CREACIÓN DE OPORTUNIDAD: ÚNICAMENTE cuando el cliente confirme explícitamente de forma afirmativa (ej. 'sí', 'correcto', 'adelante', 'está bien', 'procede', 'genera la cotización'), llamarás a 'createOpportunity' pasando la propiedad 'items' estructurada con cada producto y su cantidad exacta confirmada, enviando el 'productId' (UUID obtenido en consult_product_catalog) y el 'nombre' exacto (ej. items: [{ productId: '...', nombre: '...', cantidad: ... }]).`;
 
       const seguimientoInstructions = `[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]
 - Tu objetivo es agendar llamadas, demostraciones o reuniones con un ejecutivo especializado.
@@ -242,14 +242,19 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
                 }
               }
 
-              // Sincronizar comercial: actualizar contexto con confirmación previa de cotizaciones si no la tiene
+              // Sincronizar comercial: actualizar contexto con confirmación previa y productId si no la tiene
               const comSubContext = await this.aiAgentConfigRepository.query(
                 `SELECT id, context FROM "${sName}".ai_sub_agents WHERE key = 'comercial'`
               );
               for (const csa of comSubContext) {
-                if (!csa.context || !csa.context.includes('REGLA MANDATORIA DE CONFIRMACIÓN PREVIA')) {
+                if (!csa.context || !csa.context.includes('UUID obtenido en consult_product_catalog')) {
                   let updatedCtx = csa.context || '';
-                  if (updatedCtx.includes('COTIZACIONES MULTI-PRODUCTO')) {
+                  if (updatedCtx.includes('REGLA MANDATORIA DE CONFIRMACIÓN PREVIA')) {
+                    updatedCtx = updatedCtx.replace(
+                      /4\.\s*CONFIRMACIÓN FINAL Y CREACIÓN DE OPORTUNIDAD:[^\n]+/g,
+                      `4. CONFIRMACIÓN FINAL Y CREACIÓN DE OPORTUNIDAD: ÚNICAMENTE cuando el cliente confirme explícitamente de forma afirmativa (ej. 'sí', 'correcto', 'adelante', 'está bien', 'procede', 'genera la cotización'), llamarás a 'createOpportunity' pasando la propiedad 'items' estructurada con cada producto y su cantidad exacta confirmada, enviando el 'productId' (UUID obtenido en consult_product_catalog) y el 'nombre' exacto (ej. items: [{ productId: '...', nombre: '...', cantidad: ... }]).`
+                    );
+                  } else if (updatedCtx.includes('COTIZACIONES MULTI-PRODUCTO')) {
                     updatedCtx += '\n\n' + `- REGLA MANDATORIA DE CONFIRMACIÓN PREVIA DE PRODUCTOS Y CANTIDADES (ESTRICTA):
   1. PROHIBIDO GENERAR COTIZACIÓN/OPORTUNIDAD SIN CONFIRMACIÓN PREVIA: Cuando el cliente solicite cotizar productos o mencione cantidades y modelos, está TERMINANTEMENTE PROHIBIDO llamar a 'createOpportunity' o generar el PDF en ese mismo turno.
   2. DESGLOSE OBLIGATORIO DE PRODUCTOS Y CANTIDADES: Primero consulta los productos reales en el catálogo con 'consult_product_catalog'. Luego, responde al cliente con 'final_answer' presentando un desglose explícito y ordenado de CADA producto detectado junto con su CANTIDAD requerida y su PRECIO unitario.
@@ -259,7 +264,7 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
       - [Producto 2]: [Cantidad] [Unidad de medida] ($[Precio] c/u)
       ¿Es correcta esta información para generar y enviarte tu cotización formal, o deseas corregir alguna cantidad o producto?"
   3. CORRECCIÓN Y RE-CONFIRMACIÓN: Si el cliente corrige algún dato (ej. 'cambia el producto X a 3 piezas', 'en vez de 5 ponme 2', 'quita el producto Z', 'agrega 1 pieza de W'), actualiza inmediatamente los productos y cantidades en tu memoria y VUELVE A SOLICITAR CONFIRMACIÓN con la lista actualizada completa antes de proceder.
-  4. CONFIRMACIÓN FINAL Y CREACIÓN DE OPORTUNIDAD: ÚNICAMENTE cuando el cliente confirme explícitamente de forma afirmativa (ej. 'sí', 'correcto', 'adelante', 'está bien', 'procede', 'genera la cotización'), llamarás a 'createOpportunity' pasando la propiedad 'items' estructurada con cada producto y su cantidad exacta confirmada (ej. items: [{ nombre: '...', cantidad: ... }]).`;
+  4. CONFIRMACIÓN FINAL Y CREACIÓN DE OPORTUNIDAD: ÚNICAMENTE cuando el cliente confirme explícitamente de forma afirmativa (ej. 'sí', 'correcto', 'adelante', 'está bien', 'procede', 'genera la cotización'), llamarás a 'createOpportunity' pasando la propiedad 'items' estructurada con cada producto y su cantidad exacta confirmada, enviando el 'productId' (UUID obtenido en consult_product_catalog) y el 'nombre' exacto (ej. items: [{ productId: '...', nombre: '...', cantidad: ... }]).`;
                   } else {
                     updatedCtx = `${baseCommonPrompt}\n\n${comercialInstructions}`;
                   }
@@ -267,7 +272,7 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
                     `UPDATE "${sName}".ai_sub_agents SET context = $1 WHERE id = $2`,
                     [updatedCtx, csa.id]
                   );
-                  this.logger.log(`Tenant '${sName}': contexto de sub-agente comercial actualizado con regla de confirmación previa de cotizaciones.`);
+                  this.logger.log(`Tenant '${sName}': contexto de sub-agente comercial actualizado con regla de confirmación previa y productId.`);
                 }
               }
 

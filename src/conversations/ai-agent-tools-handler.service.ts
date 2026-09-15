@@ -84,7 +84,7 @@ export class AiAgentToolsHandlerService {
                   if (!seenProductIds.has(p.id)) {
                     seenProductIds.add(p.id);
                     cubeResults.push({
-                      content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p.observaciones?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
+                      content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nID del Producto (UUID): ${p.id}\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p.observaciones?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
                       metadata: { source: 'database-fallback', productId: p.id, productName: p.nombre, precioBase: p.precioBase },
                     });
                   }
@@ -104,7 +104,7 @@ export class AiAgentToolsHandlerService {
             }
             if (dbProducts.length > 0) {
               cubeResults = dbProducts.map(p => ({
-                content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p.observaciones?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
+                content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nID del Producto (UUID): ${p.id}\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p.observaciones?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
                 metadata: { source: 'database-fallback', productId: p.id, productName: p.nombre, precioBase: p.precioBase },
               }));
               this.logger.log(`[consult_product_catalog] Recuperados ${dbProducts.length} productos desde fallback de BD.`);
@@ -154,11 +154,14 @@ export class AiAgentToolsHandlerService {
               const qtyNum = Number(String(rawQty).replace(/[^0-9.-]/g, ''));
               const qty = isNaN(qtyNum) || qtyNum <= 0 ? 1 : qtyNum;
 
-              let pId = item.productId;
-              if (!pId && pName) {
-                const matched = await this.findProductsFromSemanticLayer(pName);
-                if (matched.length > 0) {
-                  pId = matched[0].id;
+              let pId = item.productId && this.isValidUuid(item.productId) ? item.productId : undefined;
+              if (!pId) {
+                const searchTarget = pName || (item.productId && typeof item.productId === 'string' ? item.productId : '');
+                if (searchTarget) {
+                  const matched = await this.findProductsFromSemanticLayer(searchTarget);
+                  if (matched.length > 0) {
+                    pId = matched[0].id;
+                  }
                 }
               }
               if (pId) {
@@ -182,13 +185,15 @@ export class AiAgentToolsHandlerService {
                 : (cleanQuantities.length === 1 && cleanProductNames.length === 1 ? cleanQuantities[0] : 1);
               const matched = await this.findProductsFromSemanticLayer(pName);
               if (matched.length > 0) {
-                for (const p of matched) {
-                  if (!finalProductIds.includes(p.id)) {
-                    finalProductIds.push(p.id);
-                  }
-                  if (!productItems.some(pi => pi.productId === p.id)) {
-                    productItems.push({ productId: p.id, cantidad: qty });
-                  }
+                const bestMatch = matched[0];
+                if (!finalProductIds.includes(bestMatch.id)) {
+                  finalProductIds.push(bestMatch.id);
+                }
+                const existing = productItems.find(pi => pi.productId === bestMatch.id);
+                if (existing) {
+                  existing.cantidad = qty;
+                } else {
+                  productItems.push({ productId: bestMatch.id, cantidad: qty });
                 }
               }
             }
@@ -196,10 +201,11 @@ export class AiAgentToolsHandlerService {
 
           if (finalProductIds.length === 0 && input.nombreProyecto) {
             const matched = await this.findProductsFromSemanticLayer(input.nombreProyecto);
-            for (const p of matched) {
-              if (!finalProductIds.includes(p.id)) finalProductIds.push(p.id);
-              if (!productItems.some(pi => pi.productId === p.id)) {
-                productItems.push({ productId: p.id, cantidad: cleanQuantities[0] || 1 });
+            if (matched.length > 0) {
+              const bestMatch = matched[0];
+              if (!finalProductIds.includes(bestMatch.id)) finalProductIds.push(bestMatch.id);
+              if (!productItems.some(pi => pi.productId === bestMatch.id)) {
+                productItems.push({ productId: bestMatch.id, cantidad: cleanQuantities[0] || 1 });
               }
             }
           }
@@ -338,10 +344,9 @@ export class AiAgentToolsHandlerService {
               const qty = cleanQuantities[i] ?? cleanQuantities[0] ?? 1;
               const matchedProducts = await this.findProductsFromSemanticLayer(pName);
               if (matchedProducts.length > 0) {
-                for (const p of matchedProducts) {
-                  itemMap.set(p.id, qty);
-                  this.logger.log(`[modifyOpportunity] Añadido/Actualizado producto '${p.nombre}' (ID: ${p.id}) con cantidad ${qty} en oportunidad ${input.id}`);
-                }
+                const best = matchedProducts[0];
+                itemMap.set(best.id, qty);
+                this.logger.log(`[modifyOpportunity] Añadido/Actualizado producto '${best.nombre}' (ID: ${best.id}) con cantidad ${qty} en oportunidad ${input.id}`);
               }
             }
           }
@@ -353,10 +358,13 @@ export class AiAgentToolsHandlerService {
               const rawQty = item.cantidad !== undefined && item.cantidad !== null ? item.cantidad : 1;
               const qtyNum = Number(String(rawQty).replace(/[^0-9.-]/g, ''));
               const qty = isNaN(qtyNum) || qtyNum <= 0 ? 1 : qtyNum;
-              let pId = item.productId;
-              if (!pId && item.nombre) {
-                const matched = await this.findProductsFromSemanticLayer(item.nombre);
-                if (matched.length > 0) pId = matched[0].id;
+              let pId = item.productId && this.isValidUuid(item.productId) ? item.productId : undefined;
+              if (!pId) {
+                const searchTarget = item.nombre || (item.productId && typeof item.productId === 'string' ? item.productId : '');
+                if (searchTarget) {
+                  const matched = await this.findProductsFromSemanticLayer(searchTarget);
+                  if (matched.length > 0) pId = matched[0].id;
+                }
               }
               if (pId) {
                 itemMap.set(pId, qty);
@@ -370,8 +378,8 @@ export class AiAgentToolsHandlerService {
                 itemMap.set(item.productId, Number(item.cantidad) || 1);
               } else if (item.nombreProducto) {
                 const matched = await this.findProductsFromSemanticLayer(item.nombreProducto);
-                for (const p of matched) {
-                  itemMap.set(p.id, Number(item.cantidad) || 1);
+                if (matched.length > 0) {
+                  itemMap.set(matched[0].id, Number(item.cantidad) || 1);
                 }
               }
             }
@@ -659,7 +667,8 @@ export class AiAgentToolsHandlerService {
         'disponibles', 'catalogo', 'catálogo', 'precios', 'precio', 'costo', 'cotizacion', 'cotización', 'comprar',
         'venta', 'adquirir', 'fichas', 'ficha', 'manual', 'manuales', 'disponibilidad', 'ver', 'mostrar', 'listar',
         'lista', 'cuales', 'cuáles', 'servicios', 'servicio', 'articulos', 'artículos', 'articulo', 'artículo',
-        'dispositivos', 'dispositivo', 'cosas'
+        'dispositivos', 'dispositivo', 'cosas',
+        'pieza', 'piezas', 'pza', 'pzas', 'caja', 'cajas', 'paquete', 'paquetes', 'unidades', 'unidad', 'necesito'
       ]);
       const words = cleanKeyword.split(/\s+/).filter(w => w.length >= 2 && !stopwords.has(w));
       const hasSearchTerm = words.length > 0;
@@ -686,10 +695,11 @@ export class AiAgentToolsHandlerService {
 
       const data: any = await response.json();
       if (data && data.data) {
-        return data.data.map((p: any) => ({
-          content: `[PRODUCTO EN EL CATALOGO - CAPA SEMÁNTICA CUBE.DEV]\nNombre del Producto: ${p['Productos.nombre']}\nPrecio Base: $${p['Productos.precioBase'] ?? 0} MXN por ${p['Productos.unidadMedida'] || 'Pieza'}\nUnidad de Medida: ${p['Productos.unidadMedida'] || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p['Productos.observaciones']?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p['Productos.descripcion'] || 'Sin descripción'}\nEstado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? 'Activo' : 'Inactivo'}`,
+        const mapped = data.data.map((p: any) => ({
+          content: `[PRODUCTO EN EL CATALOGO - CAPA SEMÁNTICA CUBE.DEV]\nID del Producto (UUID): ${p['Productos.id']}\nNombre del Producto: ${p['Productos.nombre']}\nPrecio Base: $${p['Productos.precioBase'] ?? 0} MXN por ${p['Productos.unidadMedida'] || 'Pieza'}\nUnidad de Medida: ${p['Productos.unidadMedida'] || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p['Productos.observaciones']?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p['Productos.descripcion'] || 'Sin descripción'}\nEstado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? 'Activo' : 'Inactivo'}`,
           metadata: { source: 'cube-semantic-layer', productId: p['Productos.id'], productName: p['Productos.nombre'], precioBase: p['Productos.precioBase'] },
         }));
+        return this.rankProductsByRelevance(mapped, queryText, (item) => item.metadata?.productName || '');
       }
       return [];
     } catch (error: any) {
@@ -703,9 +713,22 @@ export class AiAgentToolsHandlerService {
     return this.queryCubeProducts(productKey.replace(/-/g, ' ').toLowerCase());
   }
 
-  /** Finds products using Cube.dev semantic layer with DB fallback. */
+  /** Finds products using Cube.dev semantic layer and DB matching, with strict relevance ranking. */
   async findProductsFromSemanticLayer(searchText: string): Promise<Array<{ id: string; nombre: string }>> {
     if (!searchText || searchText.trim().length < 2) return [];
+
+    // 1. Primero consultar la base de datos directamente con filtro ILIKE y ranking estricto
+    const dbProducts = await this.findProductsByKeywords(searchText);
+    if (dbProducts.length > 0) {
+      const mappedDb = dbProducts.map(p => ({ id: p.id, nombre: p.nombre }));
+      const rankedDb = this.rankProductsByRelevance(mappedDb, searchText);
+      if (rankedDb.length > 0) {
+        this.logger.log(`[Búsqueda Productos BD] Encontrados para '${searchText}': ${rankedDb.map(p => p.nombre).join(', ')}`);
+        return rankedDb;
+      }
+    }
+
+    // 2. Si no hay resultado directo en BD, consultar la capa semántica de Cube.dev
     try {
       const cubeDocs = await this.queryCubeProducts(searchText);
       const semanticProducts: Array<{ id: string; nombre: string }> = [];
@@ -713,14 +736,15 @@ export class AiAgentToolsHandlerService {
         if (doc.metadata?.productId) semanticProducts.push({ id: doc.metadata.productId, nombre: doc.metadata.productName || 'Producto' });
       }
       if (semanticProducts.length > 0) {
-        this.logger.log(`[Capa Semántica Cube.dev] Productos encontrados para '${searchText}': ${semanticProducts.map(p => p.nombre).join(', ')}`);
-        return semanticProducts;
+        const ranked = this.rankProductsByRelevance(semanticProducts, searchText);
+        this.logger.log(`[Capa Semántica Cube.dev] Productos encontrados para '${searchText}': ${ranked.map(p => p.nombre).join(', ')}`);
+        return ranked;
       }
     } catch (err: any) {
       this.logger.warn(`Error al consultar la capa semántica de Cube.dev para productos: ${err.message}`);
     }
-    const dbFallback = await this.findProductsByKeywords(searchText);
-    return dbFallback.map(p => ({ id: p.id, nombre: p.nombre }));
+
+    return [];
   }
 
   /** Synchronises existing PDF product files to RAG vector store. */
@@ -793,13 +817,79 @@ export class AiAgentToolsHandlerService {
     return `${signatureInput}.${signature}`;
   }
 
+  private rankProductsByRelevance<T>(
+    products: T[],
+    searchText: string,
+    getName: (item: T) => string = (item: any) => item.nombre || '',
+  ): T[] {
+    if (!products || products.length === 0) return [];
+    const cleanSearch = searchText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const stopwords = new Set([
+      'de', 'del', 'la', 'las', 'el', 'los', 'en', 'para', 'con', 'sin', 'un', 'una', 'por',
+      'compra', 'interes', 'cotizacion', 'cotizar', 'cotiza', 'pieza', 'piezas', 'pza', 'pzas',
+      'caja', 'cajas', 'paquete', 'paquetes', 'unidades', 'unidad', 'quiero', 'necesito', 'dame',
+      'favor', 'porfa', 'piezas/unidades', 'producto', 'productos'
+    ]);
+
+    const searchWords = cleanSearch.split(/[\s,]+/).map(w => w.replace(/[^a-z0-9\-\/]/g, '')).filter(w => w.length >= 1 && !stopwords.has(w));
+    const searchGauges = searchWords.filter(w => /^\d+(?:[-\/]\d+)?$/.test(w));
+
+    const scored = products.map(p => {
+      const rawName = getName(p);
+      const cleanName = (rawName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      let score = 0;
+
+      // 1. Coincidencia exacta
+      if (cleanName === cleanSearch) {
+        score += 10000;
+      }
+
+      // 2. Coincidencia de subcadena completa
+      if (cleanName.includes(cleanSearch) || cleanSearch.includes(cleanName)) {
+        score += 5000 - Math.min(4000, Math.abs(cleanName.length - cleanSearch.length) * 10);
+      }
+
+      // 3. Coincidencia de palabras clave individuales
+      const nameWords = cleanName.split(/[\s,]+/).map(w => w.replace(/[^a-z0-9\-\/]/g, '')).filter(Boolean);
+      const nameGauges = nameWords.filter(w => /^\d+(?:[-\/]\d+)?$/.test(w));
+
+      let wordMatchCount = 0;
+      for (const sw of searchWords) {
+        if (nameWords.includes(sw)) {
+          score += 200;
+          wordMatchCount++;
+        } else if (nameWords.some(nw => nw.includes(sw) || sw.includes(nw))) {
+          score += 50;
+        }
+      }
+
+      if (searchWords.length > 0 && wordMatchCount === searchWords.length) {
+        score += 1000;
+      }
+
+      // 4. Regla crítica de calibres / medidas (ej. 6-0 vs 3-0 vs 10-0 vs 5-0):
+      for (const sg of searchGauges) {
+        if (nameGauges.includes(sg)) {
+          score += 3000;
+        } else if (nameGauges.length > 0) {
+          score -= 5000;
+        }
+      }
+
+      return { item: p, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.map(s => s.item);
+  }
+
   private async findProductsByKeywords(searchText: string): Promise<Product[]> {
     if (!searchText || searchText.trim().length < 2) return [];
     try {
       const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
       const cleanText = searchText.toLowerCase().trim();
       let products = await productRepo.createQueryBuilder('p').where('LOWER(p.nombre) LIKE :name', { name: `%${cleanText}%` }).andWhere('p.status = :status', { status: true }).getMany();
-      if (products.length > 0) return products;
+      if (products.length > 0) return this.rankProductsByRelevance(products, searchText);
       const stopWords = new Set([
         'de', 'del', 'la', 'las', 'el', 'los', 'en', 'para', 'con', 'sin', 'un', 'una', 'por', 
         'compra', 'interes', 'cotizacion', 'cotizar', 'cotiza', 'pieza', 'piezas', 'pza', 'pzas', 
@@ -815,14 +905,7 @@ export class AiAgentToolsHandlerService {
       words.forEach((w, idx) => { params[`word_${idx}`] = `%${w}%`; });
       qb.setParameters(params);
       const candidates = await qb.getMany();
-      candidates.sort((a, b) => {
-        const nameA = a.nombre.toLowerCase();
-        const nameB = b.nombre.toLowerCase();
-        const matchesA = words.filter(w => nameA.includes(w)).length;
-        const matchesB = words.filter(w => nameB.includes(w)).length;
-        return matchesB - matchesA;
-      });
-      return candidates;
+      return this.rankProductsByRelevance(candidates, searchText);
     } catch (err: any) {
       this.logger.error(`Error en findProductsByKeywords: ${err.message}`);
       return [];
@@ -851,5 +934,10 @@ export class AiAgentToolsHandlerService {
     } catch (err: any) {
       this.logger.warn(`No se pudo eliminar el cliente temporal ${oldClientId}: ${err.message}`);
     }
+  }
+
+  private isValidUuid(str: any): boolean {
+    if (!str || typeof str !== 'string') return false;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str.trim());
   }
 }

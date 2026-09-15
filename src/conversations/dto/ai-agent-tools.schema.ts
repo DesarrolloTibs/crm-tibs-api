@@ -15,7 +15,7 @@ export const UpdateContactSchema = z.object({
 export const OpportunityItemSchema = z.object({
   nombre: z.string().describe('Nombre del producto o servicio'),
   cantidad: z.union([z.number(), z.string()]).describe('Cantidad solicitada').default(1),
-  productId: z.string().uuid().optional().describe('ID UUID del producto si está disponible'),
+  productId: z.string().optional().describe('ID UUID o identificador del producto si está disponible'),
 });
 
 export const CreateOpportunitySchema = z.object({
