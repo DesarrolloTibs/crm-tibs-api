@@ -96,7 +96,17 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
 - Si el producto tiene manuales PDF en RAG, resume especificaciones clave.
 - Si solicita cotizar o comprar, crea una Oportunidad Comercial con createOpportunity.
 - Para detalles de compatibilidad, especificaciones o disponibilidad del catálogo, llama a consult_product_catalog.
-- COTIZACIONES MULTI-PRODUCTO (AGREGAR O MODIFICAR): Si el cliente solicita agregar un nuevo producto o piezas adicionales a una cotización u oportunidad existente, DEBES llamar a modifyOpportunity pasando el id de la oportunidad activa, el nombreProducto nuevo y la cantidad solicitada. El sistema mantendrá automáticamente los productos anteriores y agregará el nuevo producto, recalculando el monto total y generando la lista completa en el PDF.`;
+- COTIZACIONES MULTI-PRODUCTO (AGREGAR O MODIFICAR): Si el cliente solicita agregar un nuevo producto o piezas adicionales a una cotización u oportunidad existente, DEBES llamar a modifyOpportunity pasando el id de la oportunidad activa, el nombreProducto nuevo y la cantidad solicitada. El sistema mantendrá automáticamente los productos anteriores y agregará el nuevo producto, recalculando el monto total y generando la lista completa en el PDF.
+- REGLA MANDATORIA DE CONFIRMACIÓN PREVIA DE PRODUCTOS Y CANTIDADES (ESTRICTA):
+  1. PROHIBIDO GENERAR COTIZACIÓN/OPORTUNIDAD SIN CONFIRMACIÓN PREVIA: Cuando el cliente solicite cotizar productos o mencione cantidades y modelos, está TERMINANTEMENTE PROHIBIDO llamar a 'createOpportunity' o generar el PDF en ese mismo turno.
+  2. DESGLOSE OBLIGATORIO DE PRODUCTOS Y CANTIDADES: Primero consulta los productos reales en el catálogo con 'consult_product_catalog'. Luego, responde al cliente con 'final_answer' presentando un desglose explícito y ordenado de CADA producto detectado junto con su CANTIDAD requerida y su PRECIO unitario.
+     Ejemplo de formato obligatorio de confirmación:
+     "Con gusto preparo tu cotización. Por favor confirma si las cantidades y productos son correctos:
+      - [Producto 1]: [Cantidad] [Unidad de medida] ($[Precio] c/u)
+      - [Producto 2]: [Cantidad] [Unidad de medida] ($[Precio] c/u)
+      ¿Es correcta esta información para generar y enviarte tu cotización formal, o deseas corregir alguna cantidad o producto?"
+  3. CORRECCIÓN Y RE-CONFIRMACIÓN: Si el cliente corrige algún dato (ej. 'cambia el producto X a 3 piezas', 'en vez de 5 ponme 2', 'quita el producto Z', 'agrega 1 pieza de W'), actualiza inmediatamente los productos y cantidades en tu memoria y VUELVE A SOLICITAR CONFIRMACIÓN con la lista actualizada completa antes de proceder.
+  4. CONFIRMACIÓN FINAL Y CREACIÓN DE OPORTUNIDAD: ÚNICAMENTE cuando el cliente confirme explícitamente de forma afirmativa (ej. 'sí', 'correcto', 'adelante', 'está bien', 'procede', 'genera la cotización'), llamarás a 'createOpportunity' pasando la propiedad 'items' estructurada con cada producto y su cantidad exacta confirmada (ej. items: [{ nombre: '...', cantidad: ... }]).`;
 
       const seguimientoInstructions = `[INSTRUCCIONES DE SEGUIMIENTO Y AGENDAMIENTO]
 - Tu objetivo es agendar llamadas, demostraciones o reuniones con un ejecutivo especializado.
@@ -229,6 +239,35 @@ OCULTAR ENLACES/URLS DE PDF: Está estrictamente PROHIBIDO incluir enlaces, link
                     `UPDATE "${sName}".ai_sub_agents SET tools = $1::jsonb WHERE key = 'comercial'`,
                     [JSON.stringify(tools)]
                   );
+                }
+              }
+
+              // Sincronizar comercial: actualizar contexto con confirmación previa de cotizaciones si no la tiene
+              const comSubContext = await this.aiAgentConfigRepository.query(
+                `SELECT id, context FROM "${sName}".ai_sub_agents WHERE key = 'comercial'`
+              );
+              for (const csa of comSubContext) {
+                if (!csa.context || !csa.context.includes('REGLA MANDATORIA DE CONFIRMACIÓN PREVIA')) {
+                  let updatedCtx = csa.context || '';
+                  if (updatedCtx.includes('COTIZACIONES MULTI-PRODUCTO')) {
+                    updatedCtx += '\n\n' + `- REGLA MANDATORIA DE CONFIRMACIÓN PREVIA DE PRODUCTOS Y CANTIDADES (ESTRICTA):
+  1. PROHIBIDO GENERAR COTIZACIÓN/OPORTUNIDAD SIN CONFIRMACIÓN PREVIA: Cuando el cliente solicite cotizar productos o mencione cantidades y modelos, está TERMINANTEMENTE PROHIBIDO llamar a 'createOpportunity' o generar el PDF en ese mismo turno.
+  2. DESGLOSE OBLIGATORIO DE PRODUCTOS Y CANTIDADES: Primero consulta los productos reales en el catálogo con 'consult_product_catalog'. Luego, responde al cliente con 'final_answer' presentando un desglose explícito y ordenado de CADA producto detectado junto con su CANTIDAD requerida y su PRECIO unitario.
+     Ejemplo de formato obligatorio de confirmación:
+     "Con gusto preparo tu cotización. Por favor confirma si las cantidades y productos son correctos:
+      - [Producto 1]: [Cantidad] [Unidad de medida] ($[Precio] c/u)
+      - [Producto 2]: [Cantidad] [Unidad de medida] ($[Precio] c/u)
+      ¿Es correcta esta información para generar y enviarte tu cotización formal, o deseas corregir alguna cantidad o producto?"
+  3. CORRECCIÓN Y RE-CONFIRMACIÓN: Si el cliente corrige algún dato (ej. 'cambia el producto X a 3 piezas', 'en vez de 5 ponme 2', 'quita el producto Z', 'agrega 1 pieza de W'), actualiza inmediatamente los productos y cantidades en tu memoria y VUELVE A SOLICITAR CONFIRMACIÓN con la lista actualizada completa antes de proceder.
+  4. CONFIRMACIÓN FINAL Y CREACIÓN DE OPORTUNIDAD: ÚNICAMENTE cuando el cliente confirme explícitamente de forma afirmativa (ej. 'sí', 'correcto', 'adelante', 'está bien', 'procede', 'genera la cotización'), llamarás a 'createOpportunity' pasando la propiedad 'items' estructurada con cada producto y su cantidad exacta confirmada (ej. items: [{ nombre: '...', cantidad: ... }]).`;
+                  } else {
+                    updatedCtx = `${baseCommonPrompt}\n\n${comercialInstructions}`;
+                  }
+                  await this.aiAgentConfigRepository.query(
+                    `UPDATE "${sName}".ai_sub_agents SET context = $1 WHERE id = $2`,
+                    [updatedCtx, csa.id]
+                  );
+                  this.logger.log(`Tenant '${sName}': contexto de sub-agente comercial actualizado con regla de confirmación previa de cotizaciones.`);
                 }
               }
 

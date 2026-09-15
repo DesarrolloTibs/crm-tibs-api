@@ -57,9 +57,45 @@ export class AiAgentToolsHandlerService {
           const queryText = input.query || input.search || input.productName || '';
           this.logger.log(`[executeTool] Ejecutando búsqueda RAG y catálogo de productos para: '${queryText}'`);
           const ragResults = await this.ragService.searchSimilar(queryText, 3).catch(() => []);
-          let cubeResults = await this.queryCubeProducts(queryText).catch(() => []);
+          
+          // Segmentar posibles múltiples productos si el query viene separado por comas, saltos de línea o conjunciones
+          const subQueries = queryText
+            .split(/,|\n|\sy\s|\se\s/i)
+            .map((s: string) => s.trim())
+            .filter((s: string) => s.length >= 2);
 
-          // Fallback directo a base de datos PostgreSQL si Cube.dev o RAG están vacíos
+          let cubeResults: any[] = [];
+          const seenProductIds = new Set<string>();
+
+          if (subQueries.length > 1) {
+            for (const sq of subQueries) {
+              const res = await this.queryCubeProducts(sq).catch(() => []);
+              for (const r of res) {
+                const pId = r.metadata?.productId || r.metadata?.productName;
+                if (pId && !seenProductIds.has(pId)) {
+                  seenProductIds.add(pId);
+                  cubeResults.push(r);
+                }
+              }
+              // Si para este término en particular Cube.dev no devolvió coincidencias, fallback a BD
+              if (res.length === 0) {
+                const dbProd = await this.findProductsByKeywords(sq);
+                for (const p of dbProd) {
+                  if (!seenProductIds.has(p.id)) {
+                    seenProductIds.add(p.id);
+                    cubeResults.push({
+                      content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p.observaciones?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
+                      metadata: { source: 'database-fallback', productId: p.id, productName: p.nombre, precioBase: p.precioBase },
+                    });
+                  }
+                }
+              }
+            }
+          } else {
+            cubeResults = await this.queryCubeProducts(queryText).catch(() => []);
+          }
+
+          // Fallback global directo a base de datos PostgreSQL si Cube.dev o RAG están vacíos
           if (!cubeResults || cubeResults.length === 0) {
             let dbProducts = await this.findProductsByKeywords(queryText);
             if (dbProducts.length === 0) {
@@ -92,13 +128,13 @@ export class AiAgentToolsHandlerService {
             }
           }
 
-          // Parsear nombres de productos múltiples si vienen separados por coma o array
+          // Parsear nombres de productos legacy
           const rawProductNames = input.nombreProducto
             ? (Array.isArray(input.nombreProducto) ? input.nombreProducto : String(input.nombreProducto).split(','))
             : [];
           const cleanProductNames = rawProductNames.map((s: any) => String(s).trim()).filter((s: string) => s.length > 0);
 
-          // Parsear cantidades múltiples correspondientes
+          // Parsear cantidades múltiples
           const rawQuantities = input.cantidad !== undefined && input.cantidad !== null
             ? (Array.isArray(input.cantidad) ? input.cantidad : String(input.cantidad).split(','))
             : [1];
@@ -110,10 +146,40 @@ export class AiAgentToolsHandlerService {
           const finalProductIds: string[] = [...(input.productIds || [])];
           const productItems: Array<{ productId: string; cantidad: number }> = [];
 
-          if (cleanProductNames.length > 0) {
+          // 1. Procesar items estructurados si están presentes (recomendado y libre de alucinación)
+          if (Array.isArray(input.items) && input.items.length > 0) {
+            for (const item of input.items) {
+              const pName = item.nombre ? String(item.nombre).trim() : '';
+              const rawQty = item.cantidad !== undefined && item.cantidad !== null ? item.cantidad : 1;
+              const qtyNum = Number(String(rawQty).replace(/[^0-9.-]/g, ''));
+              const qty = isNaN(qtyNum) || qtyNum <= 0 ? 1 : qtyNum;
+
+              let pId = item.productId;
+              if (!pId && pName) {
+                const matched = await this.findProductsFromSemanticLayer(pName);
+                if (matched.length > 0) {
+                  pId = matched[0].id;
+                }
+              }
+              if (pId) {
+                if (!finalProductIds.includes(pId)) finalProductIds.push(pId);
+                const existingItem = productItems.find(pi => pi.productId === pId);
+                if (existingItem) {
+                  existingItem.cantidad = qty;
+                } else {
+                  productItems.push({ productId: pId, cantidad: qty });
+                }
+              }
+            }
+          }
+
+          // 2. Procesar nombres de productos legacy si no se especificaron items o quedaron vacíos
+          if (productItems.length === 0 && cleanProductNames.length > 0) {
             for (let i = 0; i < cleanProductNames.length; i++) {
               const pName = cleanProductNames[i];
-              const qty = cleanQuantities[i] ?? cleanQuantities[0] ?? 1;
+              const qty = cleanQuantities[i] !== undefined 
+                ? cleanQuantities[i] 
+                : (cleanQuantities.length === 1 && cleanProductNames.length === 1 ? cleanQuantities[0] : 1);
               const matched = await this.findProductsFromSemanticLayer(pName);
               if (matched.length > 0) {
                 for (const p of matched) {
@@ -281,6 +347,23 @@ export class AiAgentToolsHandlerService {
           }
 
           // 3. Soporte para array explícito de productItems si la IA lo proporciona
+          // Soporte para items estructurados en modifyOpportunity
+          if (Array.isArray(input.items) && input.items.length > 0) {
+            for (const item of input.items) {
+              const rawQty = item.cantidad !== undefined && item.cantidad !== null ? item.cantidad : 1;
+              const qtyNum = Number(String(rawQty).replace(/[^0-9.-]/g, ''));
+              const qty = isNaN(qtyNum) || qtyNum <= 0 ? 1 : qtyNum;
+              let pId = item.productId;
+              if (!pId && item.nombre) {
+                const matched = await this.findProductsFromSemanticLayer(item.nombre);
+                if (matched.length > 0) pId = matched[0].id;
+              }
+              if (pId) {
+                itemMap.set(pId, qty);
+              }
+            }
+          }
+
           if (Array.isArray(input.productItems) && input.productItems.length > 0) {
             for (const item of input.productItems) {
               if (item.productId) {
@@ -566,7 +649,7 @@ export class AiAgentToolsHandlerService {
   async queryCubeProducts(queryText: string): Promise<any[]> {
     const cubeApiUrl = process.env.CUBE_API_URL || 'http://localhost:4000';
     try {
-      const cleanKeyword = queryText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9\s]/g, '').trim();
+      const cleanKeyword = queryText.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9\s\-\/]/g, '').trim();
       const stopwords = new Set([
         'hola', 'holaa', 'buenos', 'buenas', 'dias', 'días', 'tardes', 'noches', 'saludos', 'hey', 'hi', 'hello',
         'porfa', 'favor', 'gracias', 'porfavor', 'que', 'qué', 'tal', 'como', 'cómo', 'estas', 'estás',
@@ -593,7 +676,7 @@ export class AiAgentToolsHandlerService {
       const response = await fetch(`${cubeApiUrl}/cubejs-api/v1/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: token, 'x-tenant-schema': tenantSchema, 'x-tenant-id': tenantSchema },
-        body: JSON.stringify({ query: { measures: ['Productos.count'], dimensions: ['Productos.nombre', 'Productos.descripcion', 'Productos.precioBase', 'Productos.unidadMedida', 'Productos.observaciones', 'Productos.status'], filters }, securityContext: { tenantSchema } }),
+        body: JSON.stringify({ query: { measures: ['Productos.count'], dimensions: ['Productos.id', 'Productos.nombre', 'Productos.descripcion', 'Productos.precioBase', 'Productos.unidadMedida', 'Productos.observaciones', 'Productos.status'], filters }, securityContext: { tenantSchema } }),
       });
 
       if (!response.ok) {
@@ -717,8 +800,13 @@ export class AiAgentToolsHandlerService {
       const cleanText = searchText.toLowerCase().trim();
       let products = await productRepo.createQueryBuilder('p').where('LOWER(p.nombre) LIKE :name', { name: `%${cleanText}%` }).andWhere('p.status = :status', { status: true }).getMany();
       if (products.length > 0) return products;
-      const stopWords = new Set(['de', 'del', 'la', 'las', 'el', 'los', 'en', 'para', 'con', 'sin', 'un', 'una', 'por', 'compra', 'interes', 'cotizacion', 'piezas', 'piezas/unidades']);
-      const words = cleanText.split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, '')).filter(w => w.length >= 2 && !stopWords.has(w));
+      const stopWords = new Set([
+        'de', 'del', 'la', 'las', 'el', 'los', 'en', 'para', 'con', 'sin', 'un', 'una', 'por', 
+        'compra', 'interes', 'cotizacion', 'cotizar', 'cotiza', 'pieza', 'piezas', 'pza', 'pzas', 
+        'caja', 'cajas', 'paquete', 'paquetes', 'unidades', 'unidad', 'quiero', 'necesito', 'dame', 
+        'favor', 'porfa', 'piezas/unidades'
+      ]);
+      const words = cleanText.split(/\s+/).map(w => w.replace(/[^a-z0-9\-\/]/g, '')).filter(w => w.length >= 2 && !stopWords.has(w));
       if (words.length === 0) return [];
       const qb = productRepo.createQueryBuilder('p').where('p.status = :status', { status: true });
       const wordConditions = words.map((_, idx) => `LOWER(p.nombre) LIKE :word_${idx}`);

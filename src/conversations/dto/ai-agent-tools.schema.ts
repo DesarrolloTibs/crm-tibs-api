@@ -12,7 +12,14 @@ export const UpdateContactSchema = z.object({
   telefono: z.string().min(8).nullable().optional(),
 });
 
+export const OpportunityItemSchema = z.object({
+  nombre: z.string().describe('Nombre del producto o servicio'),
+  cantidad: z.union([z.number(), z.string()]).describe('Cantidad solicitada').default(1),
+  productId: z.string().uuid().optional().describe('ID UUID del producto si está disponible'),
+});
+
 export const CreateOpportunitySchema = z.object({
+  items: z.array(OpportunityItemSchema).optional().describe('Lista desglosada de productos y cantidades a cotizar'),
   nombreProyecto: z.string().min(3, 'El nombre del proyecto debe tener al menos 3 caracteres.'),
   descripcion: z.string().optional().default('Creado por Agente IA'),
   montoTotal: z.union([z.number(), z.string()]).nullable().optional().default(null), // Nullable para desarrollos a la medida
@@ -30,6 +37,7 @@ export const CreateOpportunitySchema = z.object({
 });
 
 export const ModifyOpportunitySchema = z.object({
+  items: z.array(OpportunityItemSchema).optional().describe('Lista desglosada de productos y cantidades a cotizar o modificar'),
   id: z.string().uuid('ID de oportunidad no válido (debe ser UUID).'),
   nombreProyecto: z.string().min(3).optional(),
   descripcion: z.string().optional(),
