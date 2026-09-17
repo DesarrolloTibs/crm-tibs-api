@@ -74,3 +74,11 @@ Cada mutación de una oportunidad (cambio de etapa, modificación de monto estim
 * `comment`: Nota explicativa del cambio.
 * `created_at`: Marca temporal exacta con zona horaria.
 * Esto permite alimentar las gráficas de velocidad de ventas y embudo de conversión en el módulo de reportes.
+
+
+### 8. Reconciliación Contractual de Productos Confirmados por el Agente de IA
+
+Para evitar discrepancias entre lo confirmado por el agente conversacional en el chat y lo registrado en la oportunidad y cotización PDF, el manejador `createOpportunity` implementa **Reconciliación Determinista**:
+1. Extrae del historial reciente del chat el último mensaje del agente donde se presentó el desglose explícito de confirmación (formato `- [Producto]: [Cantidad] piezas ($[Precio] c/u)`).
+2. Si el modelo omite algún producto en la llamada a la herramienta o envía una lista parcial, el sistema contrasta automáticamente contra el desglose confirmado.
+3. Todo producto confirmado ausente se resuelve en la capa semántica/catálogo de base de datos (`findProductsFromSemanticLayer`) y se inyecta con su cantidad confirmada, garantizando 100% de fidelidad entre la confirmación del chat y el documento PDF emitido.

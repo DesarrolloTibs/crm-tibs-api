@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AiAgentConfig } from './entities/ai-agent-config.entity';
 import { Conversation } from './entities/conversation.entity';
+import { Message } from './entities/message.entity';
 import { Client } from '../clients/entities/client.entity';
 import { ProductFile } from '../products/entities/product-file.entity';
 import { Product } from '../products/entities/product.entity';
@@ -199,6 +200,63 @@ export class AiAgentToolsHandlerService {
             }
           }
 
+          // 2.5 Reconciliación con el desglose previamente confirmado por el agente en la conversación
+          // Si el agente envió al cliente un desglose de confirmación explícito (ej. "- Nylon 10-0: 5 piezas..."),
+          // este desglose es el acuerdo explícito con el cliente. Aseguramos que TODOS los productos
+          // confirmados estén presentes en la oportunidad y PDF, evitando que omisiones del modelo descarten productos.
+          if (conversation?.id) {
+            try {
+              const messageRepo = this.aiAgentConfigRepository.manager.getRepository(Message);
+              const recentAgentMsgs = await messageRepo.find({
+                where: { conversation: { id: conversation.id }, sender: 'agent' },
+                order: { createdAt: 'DESC' },
+                take: 5,
+              });
+              const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
+              for (const m of recentAgentMsgs) {
+                if (m.content && m.content.toLowerCase().includes('confirma') && (m.content.includes('- ') || m.content.includes('* '))) {
+                  const lines = m.content.split('\n');
+                  for (const line of lines) {
+                    const match = line.match(/^[-*•]\s*([^:]+):\s*(\d+(?:\.\d+)?)\s*([a-zA-ZáéíóúÁÉÍÓÚñÑ\/]+)?/);
+                    if (match) {
+                      const confirmedName = match[1].trim();
+                      const confirmedQty = parseFloat(match[2]) || 1;
+                      if (confirmedName.length >= 2) {
+                        let alreadyPresent = false;
+                        for (const pi of productItems) {
+                          const p = await productRepo.findOne({ where: { id: pi.productId } });
+                          if (p && (
+                            p.nombre.toLowerCase().includes(confirmedName.toLowerCase()) ||
+                            confirmedName.toLowerCase().includes(p.nombre.toLowerCase())
+                          )) {
+                            alreadyPresent = true;
+                            // Asegurar la cantidad confirmada si vino en 1 por defecto
+                            if (pi.cantidad <= 1 && confirmedQty > 1) {
+                              pi.cantidad = confirmedQty;
+                            }
+                            break;
+                          }
+                        }
+                        if (!alreadyPresent) {
+                          const matched = await this.findProductsFromSemanticLayer(confirmedName);
+                          if (matched.length > 0) {
+                            const pId = matched[0].id;
+                            if (!finalProductIds.includes(pId)) finalProductIds.push(pId);
+                            productItems.push({ productId: pId, cantidad: confirmedQty });
+                            this.logger.log(`[createOpportunity] Producto confirmado en chat reconciliado: ${matched[0].nombre} x ${confirmedQty}`);
+                          }
+                        }
+                      }
+                    }
+                  }
+                  break;
+                }
+              }
+            } catch (reconErr: any) {
+              this.logger.warn(`Error al reconciliar productos confirmados en chat: ${reconErr.message}`);
+            }
+          }
+
           if (finalProductIds.length === 0 && input.nombreProyecto) {
             const matched = await this.findProductsFromSemanticLayer(input.nombreProyecto);
             if (matched.length > 0) {
@@ -215,6 +273,13 @@ export class AiAgentToolsHandlerService {
             const id = finalProductIds[i];
             if (!productItems.some(pi => pi.productId === id)) {
               productItems.push({ productId: id, cantidad: cleanQuantities[i] ?? cleanQuantities[0] ?? 1 });
+            }
+          }
+
+          // Asegurar que todos los productos en productItems estén en finalProductIds
+          for (const pi of productItems) {
+            if (!finalProductIds.includes(pi.productId)) {
+              finalProductIds.push(pi.productId);
             }
           }
 

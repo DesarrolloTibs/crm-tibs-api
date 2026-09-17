@@ -635,7 +635,8 @@ Genera el JSON de salida:
         const subAgents = await this.aiSubAgentRepository.find({ where: { isActive: true } });
         let subAgent = subAgents.find(sa => sa.key === state.route) || subAgents.find(sa => sa.key === 'general');
         let preFetchCatalogText = '';
-        if (state.route === 'comercial' && !state.toolCallResult) {
+        const isAffirmativeConfirmation = /^(s[ií]|correcto|adelante|est[aá]\s*bien|procede|genera(?:r)?(?:\s+la)?\s+cotizaci[oó]n|ok|de\s*acuerdo|perfecto|confirmo|si\s+por\s*fa(?:vor)?)/i.test(incomingContent.trim());
+        if (state.route === 'comercial' && !state.toolCallResult && !isAffirmativeConfirmation) {
           try {
             const preRagResults = await this.toolsHandler.ragService.searchSimilar(incomingContent, 3);
             const preDetectedKeys = [...new Set(preRagResults.map(r => r.metadata?.product).filter(Boolean))];
@@ -653,7 +654,10 @@ Genera el JSON de salida:
         }
 
         const ALL_TOOL_PROMPTS: Record<string, string> = {
-          createOpportunity: `1. createOpportunity: Registra oportunidad comercial.\nCampos: nombreProyecto(str), descripcion(str), montoTotal(num|null), moneda("MXN"|"USD"), nombreProducto(str, opc), cantidad(num, opc), lineaNegocio(str, opc), tipoEntrega(str, opc), licenciamiento(str, opc).\n{"thought": "...", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "Compra Laptop", "montoTotal": null, "moneda": "MXN"}}`,
+          createOpportunity: `1. createOpportunity: Registra oportunidad comercial o cotización formal.
+Campos: items(array de {productId: UUID, nombre: str, cantidad: num}), nombreProyecto(str), descripcion(str), montoTotal(num|null), moneda("MXN"|"USD"), lineaNegocio(str, opc), tipoEntrega(str, opc), licenciamiento(str, opc).
+REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa SIEMPRE la propiedad 'items' estructurada incluyendo ABSOLUTAMENTE TODOS los productos confirmados con sus cantidades exactas (ej: [{"productId": "uuid-1", "nombre": "Nylon 10-0", "cantidad": 5}, {"productId": "uuid-2", "nombre": "Vicryl 6-0", "cantidad": 2}, {"productId": "uuid-3", "nombre": "Prolene 6-0", "cantidad": 1}]). NUNCA omitas ningún producto confirmado.
+{"thought": "...", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "Cotización Formal", "items": [{"productId": "uuid-1", "nombre": "Nylon 10-0", "cantidad": 5}, {"productId": "uuid-2", "nombre": "Vicryl 6-0", "cantidad": 2}], "moneda": "MXN"}}`,
           modifyOpportunity: `2. modifyOpportunity: Edita oportunidad existente.\nCampos: id(UUID), nombreProyecto, descripcion, montoTotal, cantidad, moneda.\n{"thought": "...", "tool_name": "modifyOpportunity", "tool_input": {"id": "uuid-real", "cantidad": 4}}`,
           updateContact: `3. updateContact: Actualiza contacto vinculado.\nCampos opcionales: nombre(str), correo(str), telefono(str).\n{"thought": "...", "tool_name": "updateContact", "tool_input": {"correo": "cliente@correo.com"}}`,
           checkAvailability: `4. checkAvailability: Valida disponibilidad de ejecutivo especializado únicamente para el día y hora indicados explícitamente por el cliente.\nCampos: proposedDate(ISO 8601 UTC en Ciudad de México UTC-6, suma 6 horas a la hora local). Ejemplo: 15:00 hora local = 21:00 UTC.\n{"thought": "...", "tool_name": "checkAvailability", "tool_input": {"proposedDate": "2026-07-30T21:00:00.000Z"}}`,

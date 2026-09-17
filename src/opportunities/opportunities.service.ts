@@ -137,14 +137,29 @@ export class OpportunitiesService {
 
     const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
 
+    const hasProductItems = resolvedProductItems.length > 0;
+
     // Validar e inyectar valores por defecto para linea_negocio_id
     if (!opportunityData.linea_negocio_id || opportunityData.linea_negocio_id === 'default') {
       const blRepo = this.opportunityRepository.manager.getRepository(BusinessLineOption);
-      const defaultBL = await blRepo.findOne({
-        where: { blnstatus: true },
-        order: { strname: 'ASC' }
-      });
-      opportunityData.linea_negocio_id = defaultBL ? defaultBL.id : null;
+      let targetBL: BusinessLineOption | null = null;
+      if (hasProductItems) {
+        targetBL = await blRepo.createQueryBuilder('bl')
+          .where('bl.blnstatus = :status', { status: true })
+          .andWhere('(LOWER(bl.strname) LIKE :p1 OR LOWER(bl.strname) LIKE :p2 OR LOWER(bl.strname) LIKE :p3)', {
+            p1: '%producto%',
+            p2: '%comercial%',
+            p3: '%material%',
+          })
+          .getOne();
+      }
+      if (!targetBL) {
+        targetBL = await blRepo.findOne({
+          where: { blnstatus: true },
+          order: { strname: 'ASC' }
+        });
+      }
+      opportunityData.linea_negocio_id = targetBL ? targetBL.id : null;
     } else if (!isUuid(opportunityData.linea_negocio_id)) {
       throw new BadRequestException('El ID de Línea de negocio no tiene un formato UUID válido.');
     }
@@ -152,23 +167,41 @@ export class OpportunitiesService {
     // Validar e inyectar valores por defecto para tipo_entrega_id
     if (!opportunityData.tipo_entrega_id || opportunityData.tipo_entrega_id === 'default') {
       const dtRepo = this.opportunityRepository.manager.getRepository(DeliveryTypeOption);
-      const defaultDT = await dtRepo.findOne({
-        where: { blnstatus: true },
-        order: { strname: 'ASC' }
-      });
-      opportunityData.tipo_entrega_id = defaultDT ? defaultDT.id : null;
+      let targetDT: DeliveryTypeOption | null = null;
+      if (hasProductItems) {
+        targetDT = await dtRepo.createQueryBuilder('dt')
+          .where('dt.blnstatus = :status', { status: true })
+          .andWhere('(LOWER(dt.strname) LIKE :d1 OR LOWER(dt.strname) LIKE :d2 OR LOWER(dt.strname) LIKE :d3)', {
+            d1: '%entrega%',
+            d2: '%envio%',
+            d3: '%venta%',
+          })
+          .getOne();
+      }
+      if (!targetDT) {
+        targetDT = await dtRepo.findOne({
+          where: { blnstatus: true },
+          order: { strname: 'ASC' }
+        });
+      }
+      opportunityData.tipo_entrega_id = targetDT ? targetDT.id : null;
     } else if (!isUuid(opportunityData.tipo_entrega_id)) {
       throw new BadRequestException('El ID de Tipo de entrega no tiene un formato UUID válido.');
     }
 
     // Validar e inyectar valores por defecto para licenciamiento_id
     if (!opportunityData.licenciamiento_id || opportunityData.licenciamiento_id === 'default') {
-      const licRepo = this.opportunityRepository.manager.getRepository(LicensingOption);
-      const defaultLic = await licRepo.findOne({
-        where: { blnstatus: true },
-        order: { strname: 'ASC' }
-      });
-      opportunityData.licenciamiento_id = defaultLic ? defaultLic.id : null;
+      if (hasProductItems) {
+        // En cotización/venta de productos físicos, no aplica licenciamiento por defecto
+        opportunityData.licenciamiento_id = null;
+      } else {
+        const licRepo = this.opportunityRepository.manager.getRepository(LicensingOption);
+        const defaultLic = await licRepo.findOne({
+          where: { blnstatus: true },
+          order: { strname: 'ASC' }
+        });
+        opportunityData.licenciamiento_id = defaultLic ? defaultLic.id : null;
+      }
     } else if (!isUuid(opportunityData.licenciamiento_id)) {
       throw new BadRequestException('El ID de Licenciamiento no tiene un formato UUID válido.');
     }
