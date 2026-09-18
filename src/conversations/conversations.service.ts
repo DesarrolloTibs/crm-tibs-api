@@ -1563,8 +1563,155 @@ export class ConversationsService {
 
   // ── MÉTODOS CRUD DE CONFIGURACIÓN DE CANALES ───────────────────────────────
 
-  async findChannels(): Promise<ChannelConfig[]> {
-    return this.channelConfigRepository.find({ order: { createdAt: 'DESC' } });
+  async findChannels(): Promise<any[]> {
+    const channels = await this.channelConfigRepository.find({ order: { createdAt: 'DESC' } });
+
+    // 1. Identificar si hay canal de Facebook para resolver también Instagram vinculado
+    const fbChannel = channels.find((c) => (c.channel || '').toLowerCase() === 'facebook' || (c.channel || '').toLowerCase() === 'messenger');
+    let linkedIgFromFb: any = null;
+
+    if (fbChannel && fbChannel.accessToken) {
+      try {
+        const targetId = fbChannel.accountId || 'me';
+        const fbUrl = `https://graph.facebook.com/v19.0/${targetId}?fields=name,id,picture,instagram_business_account{id,username,name,profile_picture_url}&access_token=${fbChannel.accessToken}`;
+        const res = await fetch(fbUrl, { signal: AbortSignal.timeout(4000) });
+        if (res.ok) {
+          const fbData: any = await res.json();
+          if (fbData.instagram_business_account) {
+            linkedIgFromFb = fbData.instagram_business_account;
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`[findChannels] Error consultando FB page e Instagram vinculado: ${err.message}`);
+      }
+    }
+
+    // 2. Enriquecer cada canal
+    const enrichedChannels = await Promise.all(
+      channels.map(async (channel) => {
+        const metaInfo = await this.fetchMetaDetails(channel, linkedIgFromFb);
+        return {
+          ...channel,
+          igUsername: metaInfo.igUsername,
+          fbPageName: metaInfo.fbPageName,
+          waVerifiedName: metaInfo.waVerifiedName,
+          metaProfileName: metaInfo.metaProfileName,
+          metaDetails: metaInfo.metaDetails,
+        };
+      }),
+    );
+
+    return enrichedChannels;
+  }
+
+  private async fetchMetaDetails(
+    channel: ChannelConfig,
+    linkedIgFromFb?: any,
+  ): Promise<{
+    igUsername: string | null;
+    fbPageName: string | null;
+    waVerifiedName: string | null;
+    metaProfileName: string | null;
+    metaDetails: Record<string, any> | null;
+  }> {
+    const result = {
+      igUsername: null as string | null,
+      fbPageName: null as string | null,
+      waVerifiedName: null as string | null,
+      metaProfileName: null as string | null,
+      metaDetails: null as Record<string, any> | null,
+    };
+
+    const ch = (channel.channel || '').toLowerCase();
+    const token = channel.accessToken;
+
+    try {
+      if (ch === 'instagram') {
+        // Prioridad 1: Si la Fan Page de Facebook conectada ya resolvió la cuenta de Instagram
+        if (
+          linkedIgFromFb &&
+          (!channel.accountId || linkedIgFromFb.id === channel.accountId)
+        ) {
+          result.igUsername = linkedIgFromFb.username || null;
+          result.metaProfileName = linkedIgFromFb.username ? `@${linkedIgFromFb.username}` : (linkedIgFromFb.name || null);
+          result.metaDetails = linkedIgFromFb;
+          return result;
+        }
+
+        // Prioridad 2: Consulta directa con el token del canal de Instagram
+        if (token) {
+          const targetId = channel.accountId || 'me';
+          const url = `https://graph.facebook.com/v19.0/${targetId}?fields=username,name,profile_picture_url&access_token=${token}`;
+          const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+          if (res.ok) {
+            const data: any = await res.json();
+            result.igUsername = data.username || null;
+            result.metaProfileName = data.username ? `@${data.username}` : (data.name || null);
+            result.metaDetails = data;
+            return result;
+          }
+        }
+
+        // Fallback: Si no coincidía el ID pero hay una cuenta vinculada en FB
+        if (linkedIgFromFb) {
+          result.igUsername = linkedIgFromFb.username || null;
+          result.metaProfileName = linkedIgFromFb.username ? `@${linkedIgFromFb.username}` : (linkedIgFromFb.name || null);
+          result.metaDetails = linkedIgFromFb;
+          return result;
+        }
+      } else if (ch === 'facebook' || ch === 'messenger') {
+        if (token) {
+          const targetId = channel.accountId || 'me';
+          const url = `https://graph.facebook.com/v19.0/${targetId}?fields=name,id,picture&access_token=${token}`;
+          const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+          if (res.ok) {
+            const data: any = await res.json();
+            result.fbPageName = data.name || null;
+            result.metaProfileName = data.name || null;
+            result.metaDetails = data;
+          } else if (targetId !== 'me') {
+            const fallbackRes = await fetch(
+              `https://graph.facebook.com/v19.0/me?fields=name,id&access_token=${token}`,
+              { signal: AbortSignal.timeout(4000) },
+            );
+            if (fallbackRes.ok) {
+              const data: any = await fallbackRes.json();
+              result.fbPageName = data.name || null;
+              result.metaProfileName = data.name || null;
+              result.metaDetails = data;
+            }
+          }
+        }
+      } else if (ch === 'whatsapp') {
+        if (token) {
+          if (channel.phoneNumberId) {
+            const url = `https://graph.facebook.com/v19.0/${channel.phoneNumberId}?fields=verified_name,display_phone_number,quality_rating,name_status&access_token=${token}`;
+            const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+            if (res.ok) {
+              const data: any = await res.json();
+              result.waVerifiedName = data.verified_name || null;
+              result.metaProfileName = data.verified_name || data.display_phone_number || null;
+              result.metaDetails = data;
+            }
+          } else if (channel.accountId) {
+            const url = `https://graph.facebook.com/v19.0/${channel.accountId}?fields=name,id&access_token=${token}`;
+            const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+            if (res.ok) {
+              const data: any = await res.json();
+              result.waVerifiedName = data.name || null;
+              result.metaProfileName = data.name || null;
+              result.metaDetails = data;
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `[findChannels] Error al obtener metadatos de Meta para canal ${channel.channel} (${channel.id}): ${err.message}`,
+      );
+    }
+
+    return result;
   }
 
   async saveChannel(dto: Partial<ChannelConfig>): Promise<ChannelConfig> {
@@ -1998,13 +2145,14 @@ export class ConversationsService {
         this.logger.log(`[REAL MESSENGER OUTBOUND] Mensaje enviado con éxito a ${externalId}`);
         return { success: true, externalMessageId };
       } else if (channel === 'instagram') {
-        const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${token}`;
+        let sendToken = token;
+        let url = `https://graph.facebook.com/v19.0/me/messages?access_token=${sendToken}`;
         const body = {
           recipient: { id: externalId },
           message: { text: content },
         };
 
-        const res = await fetch(url, {
+        let res = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -2012,7 +2160,27 @@ export class ConversationsService {
           body: JSON.stringify(body),
         });
 
-        const data = await res.json().catch(() => ({}));
+        let data = await res.json().catch(() => ({}));
+
+        // Fallback: si Meta no encuentra el usuario con el token de IG (ej. por ser IGSID vinculado a la Fan Page), reintentar con el token de Facebook
+        if (!res.ok && (data?.error?.code === 100 || data?.error?.error_subcode === 2018001 || data?.error?.message?.includes('coincidente'))) {
+          const fbChannel = await this.channelConfigRepository.findOne({
+            where: { channel: 'facebook', isActive: true },
+          });
+          if (fbChannel && fbChannel.accessToken && fbChannel.accessToken !== token) {
+            this.logger.log(`[INSTAGRAM OUTBOUND] Reintentando envío con token de Fan Page vinculada (${fbChannel.name})...`);
+            sendToken = fbChannel.accessToken;
+            url = `https://graph.facebook.com/v19.0/me/messages?access_token=${sendToken}`;
+            res = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(body),
+            });
+            data = await res.json().catch(() => ({}));
+          }
+        }
 
         if (!res.ok) {
           const metaError = data?.error?.message || JSON.stringify(data);

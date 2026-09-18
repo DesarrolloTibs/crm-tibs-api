@@ -124,3 +124,11 @@ Para iniciar conversaciones o reabrir el canal tras la expiración de la ventana
   * `GET /api/conversations/:id/templates`: Retorna exclusivamente la plantilla base con su ID de Meta.
   * `POST /api/conversations/:id/template-message`: Si no se pasan componentes explícitos, autocompleta automáticamente las variables con el nombre del contacto, la empresa vinculada al contacto (`TIBS MX` o vacía si no existe) y el asesor asignado. Sanitiza parámetros vacíos para que Meta Graph API nunca falle con código 100.
 
+##### 5.5. Enriquecimiento en Vivo de Metadatos de Canales (`GET /api/conversations/channels`)
+Para asegurar la total alineación con Meta App Review y la visualización de activos en la UI:
+- `findChannels()` consulta en vivo a Meta Graph API (`v19.0`) con timeout seguro (`AbortSignal.timeout(4000)`) y resiliencia ante errores:
+  - **Instagram:** Consulta `fields=username,name,profile_picture_url` devolviendo `igUsername` y `metaProfileName` (ej. `@tibsbilly`).
+  - **Facebook / Messenger:** Consulta `fields=name,id,picture` con fallback a `/me`, retornando `fbPageName`.
+  - **WhatsApp:** Consulta `fields=verified_name,display_phone_number` retornando `waVerifiedName`.
+- Retorna el objeto enriquecido con propiedades de primer nivel (`igUsername`, `fbPageName`, `waVerifiedName`, `metaProfileName`, `metaDetails`).
+
