@@ -1,15 +1,20 @@
-import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { Tenant } from './entities/tenant.entity';
 import { TenantRenewalQueue } from './entities/tenant-renewal-queue.entity';
 import { User } from '../users/entities/user.entity';
+import { Plan } from '../plans/entities/plan.entity';
 import { TenantProvisionerService } from '../tenancy/tenant-provisioner.service';
 import { ProvisionTenantDto } from './dto/provision-tenant.dto';
+import { UpdateTenantPlanDto } from './dto/update-tenant-plan.dto';
+import { EnqueueRenewalDto } from './dto/enqueue-renewal.dto';
+import { UpdateQueueItemDto } from './dto/update-queue-item.dto';
 
 import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { addBillingMonths, subtractBillingMonths } from '../common/utils/billing-date.util';
 
 @Injectable()
 export class TenantsService implements OnModuleInit {
@@ -20,6 +25,8 @@ export class TenantsService implements OnModuleInit {
     private readonly queueRepository: Repository<TenantRenewalQueue>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(Plan)
+    private readonly planRepository: Repository<Plan>,
     private readonly tenantProvisioner: TenantProvisionerService,
     private readonly subscriptionValidator: SubscriptionValidatorService,
     private readonly dataSource: DataSource
@@ -62,8 +69,7 @@ export class TenantsService implements OnModuleInit {
 
     if (tenantInfo && nextRenewal) {
       const months = tenantInfo.billing_period_months || 1;
-      const periodStart = new Date(nextRenewal);
-      periodStart.setMonth(periodStart.getMonth() - months);
+      const periodStart = subtractBillingMonths(new Date(nextRenewal), months);
       const periodEnd = nextRenewal;
 
       const consumptionResult = await this.subscriptionValidator.getTokensConsumptionInPeriod(
@@ -171,32 +177,308 @@ export class TenantsService implements OnModuleInit {
     return tenant;
   }
 
-  async updatePlan(tenantId: number, planId: number, months: number = 1, allowExtra?: boolean) {
+  /**
+   * Obtiene la cola de renovación de un tenant con la proyección encadenada de inicio y fin de cada período.
+   */
+  async getRenewalQueue(tenantId: number) {
     const tenant = await this.findOne(tenantId);
-    
-    // Calcular nueva fecha de renovación
+    const queueItems = await this.queueRepository.find({
+      where: { tenant_id: String(tenant.id) },
+      relations: ['plan'],
+      order: { created_at: 'ASC', id: 'ASC' },
+    });
+
     const now = new Date();
-    const nextRenewal = new Date(now);
-    nextRenewal.setMonth(nextRenewal.getMonth() + months);
+    // La base de inicio es next_renewal_date si está vigente en el futuro, o NOW() si ya venció
+    let cursorDate = tenant.next_renewal_date && tenant.next_renewal_date > now
+      ? new Date(tenant.next_renewal_date)
+      : new Date(now);
 
-    tenant.plan_id = planId;
-    tenant.next_renewal_date = nextRenewal;
-    tenant.is_active = true;
-    if (allowExtra !== undefined) {
-      tenant.allow_extra = allowExtra;
-    }
+    const projectedItems = queueItems.map((item, index) => {
+      const months = item.billing_period_months || item.plan?.billing_period_months || 1;
+      const periodStart = new Date(cursorDate);
+      const periodEnd = addBillingMonths(cursorDate, months);
 
-    return this.tenantRepository.save(tenant);
+      // Avanzar cursor para el siguiente período de la cadena
+      cursorDate = new Date(periodEnd);
+
+      return {
+        queue_id: item.id,
+        tenant_id: item.tenant_id,
+        queue_position: index + 1,
+        plan_id: item.plan_id,
+        plan_name: item.plan?.plan_name || 'Desconocido',
+        tokens_limit: item.plan?.tokens_limit || 0,
+        price: item.plan?.price || 0,
+        billing_period_months: months,
+        projected_start_date: periodStart,
+        projected_end_date: periodEnd,
+        created_at: item.created_at,
+      };
+    });
+
+    const totalMonths = queueItems.reduce((acc, it) => acc + (it.billing_period_months || 1), 0);
+
+    return {
+      tenant_id: tenant.id,
+      tenant_name: tenant.name,
+      current_plan: tenant.plan ? {
+        plan_id: tenant.plan.plan_id,
+        plan_name: tenant.plan.plan_name,
+        tokens_limit: tenant.plan.tokens_limit,
+        billing_period_months: tenant.plan.billing_period_months,
+      } : null,
+      current_next_renewal_date: tenant.next_renewal_date,
+      is_active: tenant.is_active,
+      total_queued_periods: queueItems.length,
+      total_queued_months: totalMonths,
+      coverage_until: queueItems.length > 0 ? cursorDate : tenant.next_renewal_date,
+      items: projectedItems,
+    };
   }
 
-  async enqueueRenewal(tenantId: number, planId: number, months: number = 1) {
+  /**
+   * Actualiza el plan del tenant con soporte de:
+   * - Cambio inmediato ('immediate'): reiniciando fecha ('reset_date') o conservando fecha actual ('keep_current_date').
+   * - Cambio al próximo período ('next_period'): programa el nuevo plan en la cola de renovación sin alterar el período activo.
+   */
+  async updatePlan(
+    tenantId: number,
+    dtoOrPlanId: UpdateTenantPlanDto | number,
+    legacyMonths: number = 1,
+    legacyAllowExtra?: boolean
+  ) {
     const tenant = await this.findOne(tenantId);
-    const item = this.queueRepository.create({
-      tenant_id: String(tenant.id),
-      plan_id: planId,
-      billing_period_months: months,
+
+    // Normalizar DTO para soportar tanto objeto como parámetros individuales legados
+    let dto: UpdateTenantPlanDto;
+    if (typeof dtoOrPlanId === 'number') {
+      dto = {
+        planId: dtoOrPlanId,
+        months: legacyMonths,
+        allowExtra: legacyAllowExtra,
+        changeType: 'immediate',
+        immediatePolicy: 'reset_date',
+      };
+    } else {
+      dto = dtoOrPlanId;
+    }
+
+    const targetPlan = await this.planRepository.findOne({ where: { plan_id: dto.planId } });
+    if (!targetPlan || !targetPlan.blnstatus) {
+      throw new NotFoundException(`Plan con ID ${dto.planId} no encontrado o se encuentra inactivo.`);
+    }
+
+    const changeType = dto.changeType || 'immediate';
+    const months = dto.months || targetPlan.billing_period_months || 1;
+
+    if (dto.allowExtra !== undefined) {
+      tenant.allow_extra = dto.allowExtra;
+    }
+
+    if (changeType === 'immediate') {
+      // 1. Cambio Inmediato
+      tenant.plan_id = targetPlan.plan_id;
+      tenant.plan = targetPlan;
+      tenant.is_active = true;
+
+      const now = new Date();
+      if (dto.immediatePolicy === 'keep_current_date' && tenant.next_renewal_date && tenant.next_renewal_date > now) {
+        // Conservar la fecha de renovación actual
+      } else {
+        // Reiniciar ciclo calculando desde ahora con protección de bisiestos y fin de mes
+        const nextRenewal = addBillingMonths(now, months);
+        tenant.next_renewal_date = nextRenewal;
+      }
+
+      const savedTenant = await this.tenantRepository.save(tenant);
+
+      // Si se solicita actualizar las colas pendientes al nuevo plan
+      if (dto.updateQueuedPlans) {
+        await this.queueRepository.update(
+          { tenant_id: String(tenant.id) },
+          { plan_id: targetPlan.plan_id, billing_period_months: months }
+        );
+      }
+
+      const refreshed = await this.findOne(savedTenant.id);
+      return {
+        message: `Plan actualizado de forma inmediata a '${targetPlan.plan_name}'.`,
+        change_type: 'immediate',
+        tenant: refreshed,
+      };
+    } else {
+      // 2. Cambio al Próximo Período de Facturación
+      // No modificamos el plan_id activo ni next_renewal_date del tenant
+      const existingQueueItems = await this.queueRepository.find({
+        where: { tenant_id: String(tenant.id) },
+        order: { created_at: 'ASC' },
+      });
+
+      if (existingQueueItems.length > 0) {
+        // Si el usuario especificó actualizar todos o solo el primero
+        if (dto.updateQueuedPlans !== false) {
+          await this.queueRepository.update(
+            { tenant_id: String(tenant.id) },
+            { plan_id: targetPlan.plan_id, billing_period_months: months }
+          );
+        } else {
+          const first = existingQueueItems[0];
+          first.plan_id = targetPlan.plan_id;
+          first.billing_period_months = months;
+          await this.queueRepository.save(first);
+        }
+      } else {
+        // Si no hay períodos en cola, encolamos automáticamente el primer período del nuevo plan
+        const newItem = this.queueRepository.create({
+          tenant_id: String(tenant.id),
+          plan_id: targetPlan.plan_id,
+          billing_period_months: months,
+        });
+        await this.queueRepository.save(newItem);
+      }
+
+      await this.tenantRepository.save(tenant);
+      const refreshed = await this.findOne(tenant.id);
+
+      return {
+        message: `Cambio programado con éxito: el plan '${targetPlan.plan_name}' se aplicará automáticamente a partir del próximo período de facturación (${tenant.next_renewal_date ? tenant.next_renewal_date.toISOString() : 'próximo vencimiento'}).`,
+        change_type: 'next_period',
+        scheduled_plan: {
+          plan_id: targetPlan.plan_id,
+          plan_name: targetPlan.plan_name,
+          billing_period_months: months,
+        },
+        tenant: refreshed,
+      };
+    }
+  }
+
+  /**
+   * Encola una o varias renovaciones para el tenant, respetando meses y planes.
+   */
+  async enqueueRenewal(
+    tenantId: number,
+    dtoOrPlanId: EnqueueRenewalDto | number,
+    legacyMonths: number = 1
+  ) {
+    const tenant = await this.findOne(tenantId);
+
+    let planId: number | undefined;
+    let months: number | undefined;
+    let periodsCount: number = 1;
+
+    if (typeof dtoOrPlanId === 'number') {
+      planId = dtoOrPlanId;
+      months = legacyMonths;
+    } else if (dtoOrPlanId) {
+      planId = dtoOrPlanId.planId;
+      months = dtoOrPlanId.months;
+      periodsCount = dtoOrPlanId.periodsCount || 1;
+    }
+
+    const resolvedPlanId = planId || tenant.plan_id;
+    if (!resolvedPlanId) {
+      throw new BadRequestException(`La organización '${tenant.name}' no tiene un plan asignado y no se especificó un planId.`);
+    }
+
+    const targetPlan = await this.planRepository.findOne({ where: { plan_id: resolvedPlanId } });
+    if (!targetPlan || !targetPlan.blnstatus) {
+      throw new NotFoundException(`Plan con ID ${resolvedPlanId} no encontrado o inactivo.`);
+    }
+
+    const resolvedMonths = months || targetPlan.billing_period_months || 1;
+
+    const itemsToCreate: TenantRenewalQueue[] = [];
+    for (let i = 0; i < periodsCount; i++) {
+      itemsToCreate.push(
+        this.queueRepository.create({
+          tenant_id: String(tenant.id),
+          plan_id: targetPlan.plan_id,
+          billing_period_months: resolvedMonths,
+        })
+      );
+    }
+
+    const savedItems = await this.queueRepository.save(itemsToCreate);
+    const queueSummary = await this.getRenewalQueue(tenant.id);
+
+    return {
+      message: `Se encolaron exitosamente ${periodsCount} período(s) de renovación para '${tenant.name}' con el plan '${targetPlan.plan_name}'.`,
+      periods_enqueued: savedItems.length,
+      plan: {
+        plan_id: targetPlan.plan_id,
+        plan_name: targetPlan.plan_name,
+        price: targetPlan.price,
+      },
+      billing_period_months: resolvedMonths,
+      total_queued_periods: queueSummary.total_queued_periods,
+      coverage_until: queueSummary.coverage_until,
+    };
+  }
+
+  /**
+   * Modifica los datos de un período ya encolado (cambio de plan o meses).
+   */
+  async updateQueueItem(queueItemId: number, dto: UpdateQueueItemDto) {
+    const item = await this.queueRepository.findOne({
+      where: { id: queueItemId },
+      relations: ['plan'],
     });
-    return this.queueRepository.save(item);
+
+    if (!item) {
+      throw new NotFoundException(`Elemento de cola con ID ${queueItemId} no encontrado.`);
+    }
+
+    if (dto.planId) {
+      const newPlan = await this.planRepository.findOne({ where: { plan_id: dto.planId } });
+      if (!newPlan || !newPlan.blnstatus) {
+        throw new NotFoundException(`Plan con ID ${dto.planId} no encontrado o inactivo.`);
+      }
+      item.plan_id = newPlan.plan_id;
+      if (!dto.billing_period_months) {
+        item.billing_period_months = newPlan.billing_period_months || 1;
+      }
+    }
+
+    if (dto.billing_period_months) {
+      item.billing_period_months = dto.billing_period_months;
+    }
+
+    await this.queueRepository.save(item);
+
+    const tenantIdNum = parseInt(item.tenant_id, 10);
+    return isNaN(tenantIdNum) ? item : this.getRenewalQueue(tenantIdNum);
+  }
+
+  /**
+   * Elimina un período específico de la cola de renovación.
+   */
+  async removeQueueItem(queueItemId: number) {
+    const item = await this.queueRepository.findOne({ where: { id: queueItemId } });
+    if (!item) {
+      throw new NotFoundException(`Elemento de cola con ID ${queueItemId} no encontrado.`);
+    }
+
+    await this.queueRepository.remove(item);
+    return {
+      message: `Período de renovación en cola (ID ${queueItemId}) cancelado y eliminado correctamente.`,
+      queue_id: queueItemId,
+      tenant_id: item.tenant_id,
+    };
+  }
+
+  /**
+   * Vacía la cola completa de renovación de un tenant.
+   */
+  async clearRenewalQueue(tenantId: number) {
+    const tenant = await this.findOne(tenantId);
+    const deleteResult = await this.queueRepository.delete({ tenant_id: String(tenant.id) });
+    return {
+      message: `Cola de renovación para '${tenant.name}' eliminada correctamente.`,
+      deleted_periods: deleteResult.affected || 0,
+      tenant_id: tenant.id,
+    };
   }
 
   async updateAllowExtra(tenantId: number, allowExtra: boolean) {

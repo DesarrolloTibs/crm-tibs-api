@@ -34,8 +34,12 @@ Esta tabla relaciona exhaustivamente las rutas HTTP del backend NestJS 11, los c
 | **Tenants** | `/api/tenants` | GET | `TenantsController` | `TenantsService.findAll()` | SuperAdmin | `Tenant` |
 | **Tenants** | `/api/tenants/:id` | GET | `TenantsController` | `TenantsService.findOne()` | SuperAdmin | `Tenant` |
 | **Tenants** | `/api/tenants/:id/logo` | POST | `TenantsController` | `TenantsService.updateLogo()` | JWT | `Tenant.logo` |
-| **Tenants** | `/api/tenants/:id/plan` | PUT | `TenantsController` | `TenantsService.updatePlan()` | SuperAdmin | `Tenant.plan_id` |
-| **Tenants** | `/api/tenants/:id/enqueue-renewal`| POST | `TenantsController` | `TenantsService.enqueueRenewal()` | SuperAdmin | `tenant_renewal_queue` |
+| **Tenants** | `/api/tenants/:id/renewal-queue` | GET | `TenantsController` | `TenantsService.getRenewalQueue()` | SuperAdmin | Proyección cronológica de colas |
+| **Tenants** | `/api/tenants/:id/plan` | PUT | `TenantsController` | `TenantsService.updatePlan()` | SuperAdmin | `Tenant.plan_id` (inmediato / prox. período) |
+| **Tenants** | `/api/tenants/:id/enqueue-renewal`| POST | `TenantsController` | `TenantsService.enqueueRenewal()` | SuperAdmin | `tenant_renewal_queue` (lotes N) |
+| **Tenants** | `/api/tenants/renewal-queue/:queueItemId`| PATCH | `TenantsController` | `TenantsService.updateQueueItem()` | SuperAdmin | Edición de período en cola |
+| **Tenants** | `/api/tenants/renewal-queue/:queueItemId`| DELETE | `TenantsController` | `TenantsService.removeQueueItem()` | SuperAdmin | Cancelación de período en cola |
+| **Tenants** | `/api/tenants/:id/renewal-queue` | DELETE | `TenantsController` | `TenantsService.clearRenewalQueue()` | SuperAdmin | Purga de cola de tenant |
 | **Tenants** | `/api/tenants/:id/allow-extra` | PUT | `TenantsController` | `TenantsService.updateAllowExtra()` | SuperAdmin | `Tenant.allow_extra` |
 | **Tenants** | `/api/tenants/:id` | PUT | `TenantsController` | `TenantsService.update()` | SuperAdmin | `Tenant` |
 | **Tenants** | `/api/tenants/:id` | DELETE | `TenantsController` | `TenantsService.remove()` | SuperAdmin | `Tenant` / DROP SCHEMA |
@@ -114,3 +118,4 @@ Esta tabla relaciona exhaustivamente las rutas HTTP del backend NestJS 11, los c
 * [[CRM TIBS API]] — Hub Central del Backend.
 * [[Diccionario de Entidades y Modelos]] — Diccionario de entidades TypeORM y DTOs.
 * [[CRM TIBS - Multi-Tenancy Architecture]] — Middleware de resolución de esquemas.
+* [[CRM TIBS - Aprovisionamiento de Tenants, Planes SaaS & Renovaciones]] — Guía de Aprovisionamiento y Ciclo de Vida SaaS.

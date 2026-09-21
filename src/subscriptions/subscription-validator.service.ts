@@ -1,5 +1,6 @@
 import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { subtractBillingMonths } from '../common/utils/billing-date.util';
 
 export interface CheckSubscriptionResult {
   is_extra: boolean;
@@ -147,8 +148,7 @@ export class SubscriptionValidatorService {
 
     // b) Calcular fecha de inicio del período de facturación actual [next_renewal_date - billing_period_months, next_renewal_date]
     const months = tenantInfo.billing_period_months;
-    const periodStart = new Date(nextRenewal!);
-    periodStart.setMonth(periodStart.getMonth() - months);
+    const periodStart = subtractBillingMonths(nextRenewal!, months);
     const periodEnd = nextRenewal!;
 
     // Sumar consumo actual
@@ -195,8 +195,7 @@ export class SubscriptionValidatorService {
         const tenantInfo = await this.getTenantPlanInfo(schemaName);
         if (tenantInfo && tenantInfo.next_renewal_date && tenantInfo.tokens_limit > 0) {
           const months = tenantInfo.billing_period_months || 1;
-          const periodStart = new Date(tenantInfo.next_renewal_date);
-          periodStart.setMonth(periodStart.getMonth() - months);
+          const periodStart = subtractBillingMonths(new Date(tenantInfo.next_renewal_date), months);
           
           const currentTotal = await this.getTokensUsedInPeriod(schemaName, periodStart, tenantInfo.next_renewal_date);
           if (currentTotal >= tenantInfo.tokens_limit) {

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
+import { addBillingMonths } from '../common/utils/billing-date.util';
 
 @Injectable()
 export class SubscriptionRenewalCron {
@@ -51,23 +52,26 @@ export class SubscriptionRenewalCron {
           const months = parseInt(queueItem.billing_period_months, 10) || 1;
           const newPlanId = queueItem.plan_id;
 
-          // Recalcular y avanzar la fecha de renovación agregando los meses contratados
-          const newRenewalDate = new Date(currentRenewalDate);
-          newRenewalDate.setMonth(newRenewalDate.getMonth() + months);
+          // Protección contra fechas retroactivas: si la fecha vencida era muy antigua (tenant inactivo por semanas/meses),
+          // la base debe ser NOW() para que el nuevo período comience hoy y no en el pasado.
+          const now = new Date();
+          const baseDate = currentRenewalDate > now ? currentRenewalDate : now;
+          const newRenewalDate = addBillingMonths(baseDate, months);
 
-          // Actualizar el tenant
-          await this.dataSource.query(
-            `UPDATE public.tenants 
-             SET plan_id = $1, next_renewal_date = $2, is_active = true 
-             WHERE id = $3`,
-            [newPlanId, newRenewalDate, tenant.id]
-          );
+          // Ejecutar en transacción atómica la actualización del tenant y la remoción de la cola
+          await this.dataSource.transaction(async (manager) => {
+            await manager.query(
+              `UPDATE public.tenants 
+               SET plan_id = $1, next_renewal_date = $2, is_active = true 
+               WHERE id = $3`,
+              [newPlanId, newRenewalDate, tenant.id]
+            );
 
-          // Eliminar el ítem consumido de la cola
-          await this.dataSource.query(
-            `DELETE FROM public.tenant_renewal_queue WHERE id = $1`,
-            [queueItem.id]
-          );
+            await manager.query(
+              `DELETE FROM public.tenant_renewal_queue WHERE id = $1`,
+              [queueItem.id]
+            );
+          });
 
           this.logger.log(
             `Organización '${schemaName}' (ID ${tenant.id}) renovada exitosamente → Plan ID ${newPlanId}. Nueva fecha de renovación: ${newRenewalDate.toISOString()}`

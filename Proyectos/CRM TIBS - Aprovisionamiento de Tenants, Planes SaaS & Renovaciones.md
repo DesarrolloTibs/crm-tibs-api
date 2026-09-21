@@ -90,3 +90,49 @@ Ubicado en `src/subscriptions/subscription-renewal.cron.ts`, corre periódicamen
    * Si NO existe renovación confirmada:
      * Si ha vencido el periodo de gracia, actualiza `is_active = false`.
      * Invalida la entrada en la caché LRU de `TenantMiddleware`, provocando que cualquier petición subsiguiente de los usuarios del tenant sea rechazada inmediatamente con `403 Forbidden`.
+
+
+---
+
+## 5. Gestión Avanzada de Colas de Renovación & Cambio de Planes (`src/tenants`)
+
+### 5.1. Proyección Encadenada de Períodos en Cola
+El endpoint `GET /api/tenants/:id/renewal-queue` calcula dinámicamente la secuencia cronológica de cada período registrado en `public.tenant_renewal_queue`:
+* **Punto de Partida:** `baseDate = max(tenant.next_renewal_date, NOW())`.
+* **Cálculo Recursivo:**
+  $$\text{Período}_1: [\text{baseDate}, \text{baseDate} + \text{months}_1]$$
+  $$\text{Período}_k: [\text{fin}_{k-1}, \text{fin}_{k-1} + \text{months}_k]$$
+* **Metadata Expuesta:** `total_queued_periods`, `total_queued_months`, `coverage_until` e información del plan (`tokens_limit`, `price`).
+
+### 5.2. Encolado Masivo de Períodos
+* `POST /api/tenants/:id/enqueue-renewal` acepta `periodsCount` (de 1 a 60 períodos) para registrar renovaciones prepagadas en bloque.
+* Si se omite `planId` o `months`, se resuelven automáticamente a partir de la configuración del plan o del tenant actual.
+
+### 5.3. Estrategias de Cambio de Plan (`PUT /api/tenants/:id/plan`)
+Permite definir mediante `UpdateTenantPlanDto`:
+1. **Cambio Inmediato (`changeType: 'immediate'`):**
+   * Actualiza `tenant.plan_id` de forma inmediata.
+   * `immediatePolicy: 'reset_date'` $\rightarrow$ Reinicia el ciclo computando desde la fecha actual: `next_renewal_date = NOW() + months`.
+   * `immediatePolicy: 'keep_current_date'` $\rightarrow$ Mantiene intacta la fecha de corte actual (upgrade de cuota sin perder vigencia pagada).
+   * `updateQueuedPlans: true` $\rightarrow$ Actualiza en cascada los períodos ya encolados para que hereden el nuevo plan.
+2. **Cambio al Próximo Período (`changeType: 'next_period'`):**
+   * Mantiene el plan y la fecha de corte vigentes.
+   * Modifica los ítems en cola (`tenant_renewal_queue`) o encola un nuevo período con el nuevo `plan_id` para que el Cron lo aplique automáticamente cuando venza el período actual.
+
+### 5.4. Manipulación Atómica de la Cola
+* `PATCH /api/tenants/renewal-queue/:queueItemId`: Modifica `plan_id` o `billing_period_months` de un ítem en cola.
+* `DELETE /api/tenants/renewal-queue/:queueItemId`: Cancela un período individual.
+* `DELETE /api/tenants/:id/renewal-queue`: Purgado total de la cola.
+
+
+---
+
+### 5.5. Cálculo de Fechas con Protección de Fin de Mes ("Month-End Clamping")
+Para prevenir el desbordamiento involuntario de días en JavaScript al calcular renovaciones en **febrero**, **años bisiestos** o **meses de 30 días**, se implementó la utilidad `addBillingMonths` y `subtractBillingMonths` (`src/common/utils/billing-date.util.ts`):
+* **Regla de Clamping:**
+  $$\text{targetDay} = \min(\text{originalDay}, \text{daysInTargetMonth})$$
+* **Garantías:**
+  * Una suscripción con corte el **31 de Enero** avanzará al **28 de Febrero** (o **29 de Febrero** en bisiesto), en lugar de desbordar al 3 de Marzo.
+  * Una suscripción con corte el **29 de Febrero (bisiesto)** con plan anual avanzará al **28 de Febrero** del siguiente año.
+  * Fechas de meses con 30 días (ej. 31 de Marzo $\rightarrow$ 30 de Abril) no saltarán al primer día del mes posterior.
+  * Preservación exacta de la hora, minutos y segundos del corte original.

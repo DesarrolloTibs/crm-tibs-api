@@ -1,12 +1,14 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, ParseIntPipe, Query, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Delete, Body, Param, ParseIntPipe, Query, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle } from '@nestjs/throttler';
 
 import { TenantsService } from './tenants.service';
 import { ProvisionTenantDto } from './dto/provision-tenant.dto';
+import { UpdateTenantPlanDto } from './dto/update-tenant-plan.dto';
+import { EnqueueRenewalDto } from './dto/enqueue-renewal.dto';
+import { UpdateQueueItemDto } from './dto/update-queue-item.dto';
 
 @Controller('tenants')
-
 export class TenantsController {
   constructor(private readonly tenantsService: TenantsService) {}
 
@@ -44,26 +46,52 @@ export class TenantsController {
     return this.tenantsService.updateLogo(id, logoUrl);
   }
 
-
   @Get(':id')
   async findOne(@Param('id', ParseIntPipe) id: number) {
     return this.tenantsService.findOne(id);
   }
 
+  @Get(':id/renewal-queue')
+  async getRenewalQueue(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.getRenewalQueue(id);
+  }
+
   @Put(':id/plan')
   async updatePlan(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { planId: number; months?: number; allowExtra?: boolean }
+    @Body() body: UpdateTenantPlanDto
   ) {
-    return this.tenantsService.updatePlan(id, body.planId, body.months, body.allowExtra);
+    return this.tenantsService.updatePlan(id, body);
   }
 
   @Post(':id/enqueue-renewal')
   async enqueueRenewal(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { planId: number; months?: number }
+    @Body() body: EnqueueRenewalDto
   ) {
-    return this.tenantsService.enqueueRenewal(id, body.planId, body.months);
+    return this.tenantsService.enqueueRenewal(id, body);
+  }
+
+  @Patch('renewal-queue/:queueItemId')
+  async updateQueueItem(
+    @Param('queueItemId', ParseIntPipe) queueItemId: number,
+    @Body() body: UpdateQueueItemDto
+  ) {
+    return this.tenantsService.updateQueueItem(queueItemId, body);
+  }
+
+  @Delete('renewal-queue/:queueItemId')
+  async removeQueueItem(
+    @Param('queueItemId', ParseIntPipe) queueItemId: number
+  ) {
+    return this.tenantsService.removeQueueItem(queueItemId);
+  }
+
+  @Delete(':id/renewal-queue')
+  async clearRenewalQueue(
+    @Param('id', ParseIntPipe) id: number
+  ) {
+    return this.tenantsService.clearRenewalQueue(id);
   }
 
   @Put(':id/allow-extra')

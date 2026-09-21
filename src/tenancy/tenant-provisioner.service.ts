@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import { TenantContextService } from './tenant-context.service';
 
 import { ProvisionTenantDto } from '../tenants/dto/provision-tenant.dto';
+import { addBillingMonths } from '../common/utils/billing-date.util';
 
 
 export interface ProvisionResult {
@@ -763,10 +764,9 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
       );
 
 
-      // d) Calcular fecha de renovación inicial
+      // d) Calcular fecha de renovación inicial con protección de fin de mes y bisiestos
       const now = new Date();
-      const nextRenewalDate = new Date(now);
-      nextRenewalDate.setMonth(nextRenewalDate.getMonth() + billingPeriodMonths);
+      const nextRenewalDate = addBillingMonths(now, billingPeriodMonths);
 
       // e) Registrar tenant en public.tenants
       const tenantInsertRes = await queryRunner.query(
