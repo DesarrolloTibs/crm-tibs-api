@@ -27,7 +27,8 @@ import {
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
-
+import { MetaOauthService } from './meta-oauth.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @ApiTags('conversations')
 @ApiBearerAuth()
@@ -36,6 +37,7 @@ export class ConversationsController {
   constructor(
     private readonly conversationsService: ConversationsService,
     private readonly aiAgentService: AiAgentService,
+    private readonly metaOauthService: MetaOauthService,
   ) {}
 
   @Get()
@@ -100,6 +102,31 @@ export class ConversationsController {
   @ApiOperation({ summary: 'Eliminar la configuración de un canal' })
   async deleteChannel(@Param('id', ParseUUIDPipe) id: string) {
     return this.conversationsService.deleteChannel(id);
+  }
+
+  @Get('oauth/facebook/auth-url')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Obtener la URL de autorización oficial de Meta OAuth2 para Facebook o Instagram' })
+  async getMetaAuthUrl(
+    @GetUser() user: User,
+    @Query('channel') channel?: string,
+  ) {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const authUrl = this.metaOauthService.getAuthUrl(tenantSchema, user.id, channel);
+    return { authUrl };
+  }
+
+  @Get('oauth/facebook/callback')
+  @ApiOperation({ summary: 'Callback de redireccionamiento OAuth2 para Facebook Login for Business' })
+  async handleMetaCallback(@Query() query: any, @Res() res: any) {
+    const { code, state, error, error_description } = query;
+    if (error) {
+      const html = this.metaOauthService.renderPopupResponse(false, error_description || error);
+      return res.type('text/html').send(html);
+    }
+    const result = await this.metaOauthService.handleCallback(code, state);
+    const html = this.metaOauthService.renderPopupResponse(result.success, result.message, result.data);
+    return res.type('text/html').send(html);
   }
 
   @Get('channels/:channelConfigId/base-template')

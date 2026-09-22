@@ -1566,14 +1566,39 @@ export class ConversationsService {
   async findChannels(): Promise<any[]> {
     const channels = await this.channelConfigRepository.find({ order: { createdAt: 'DESC' } });
 
-    // 1. Identificar si hay canal de Facebook para resolver también Instagram vinculado
+    // 1. Recolectar páginas de Facebook administradas usando los tokens disponibles que cuenten con pages_show_list
+    const knownFbPages = new Map<string, any>();
+    for (const c of channels) {
+      if (!c.accessToken) continue;
+      try {
+        const accUrl = `https://graph.facebook.com/v19.0/me/accounts?fields=name,id,picture{url},category,access_token&access_token=${c.accessToken}`;
+        const accRes = await fetch(accUrl, { signal: AbortSignal.timeout(4000) });
+        if (accRes.ok) {
+          const accData: any = await accRes.json();
+          if (Array.isArray(accData.data)) {
+            for (const page of accData.data) {
+              if (page.id) {
+                knownFbPages.set(page.id, {
+                  ...page,
+                  profile_picture_url: page.picture?.data?.url || null,
+                });
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        // Ignorar si el token no es de usuario/sistema o no tiene pages_show_list
+      }
+    }
+
+    // 2. Identificar si hay canal de Facebook para resolver también Instagram vinculado
     const fbChannel = channels.find((c) => (c.channel || '').toLowerCase() === 'facebook' || (c.channel || '').toLowerCase() === 'messenger');
     let linkedIgFromFb: any = null;
 
     if (fbChannel && fbChannel.accessToken) {
       try {
         const targetId = fbChannel.accountId || 'me';
-        const fbUrl = `https://graph.facebook.com/v19.0/${targetId}?fields=name,id,picture,instagram_business_account{id,username,name,profile_picture_url}&access_token=${fbChannel.accessToken}`;
+        const fbUrl = `https://graph.facebook.com/v19.0/${targetId}?fields=name,id,picture{url},instagram_business_account{id,username,name,profile_picture_url}&access_token=${fbChannel.accessToken}`;
         const res = await fetch(fbUrl, { signal: AbortSignal.timeout(4000) });
         if (res.ok) {
           const fbData: any = await res.json();
@@ -1586,10 +1611,10 @@ export class ConversationsService {
       }
     }
 
-    // 2. Enriquecer cada canal
+    // 3. Enriquecer cada canal
     const enrichedChannels = await Promise.all(
       channels.map(async (channel) => {
-        const metaInfo = await this.fetchMetaDetails(channel, linkedIgFromFb);
+        const metaInfo = await this.fetchMetaDetails(channel, linkedIgFromFb, knownFbPages);
         return {
           ...channel,
           igUsername: metaInfo.igUsername,
@@ -1607,6 +1632,7 @@ export class ConversationsService {
   private async fetchMetaDetails(
     channel: ChannelConfig,
     linkedIgFromFb?: any,
+    knownFbPages?: Map<string, any>,
   ): Promise<{
     igUsername: string | null;
     fbPageName: string | null;
@@ -1660,27 +1686,47 @@ export class ConversationsService {
           return result;
         }
       } else if (ch === 'facebook' || ch === 'messenger') {
-        if (token) {
-          const targetId = channel.accountId || 'me';
-          const url = `https://graph.facebook.com/v19.0/${targetId}?fields=name,id,picture&access_token=${token}`;
+        const targetId = channel.accountId;
+        // Prioridad 1: Resolver desde knownFbPages (obtenido mediante pages_show_list en /me/accounts)
+        if (targetId && knownFbPages?.has(targetId)) {
+          const pageInfo = knownFbPages.get(targetId);
+          result.fbPageName = pageInfo.name || null;
+          result.metaProfileName = pageInfo.name || null;
+          result.metaDetails = pageInfo;
+        } else if (token) {
+          // Prioridad 2: Consulta directa por Graph API
+          const queryId = channel.accountId || 'me';
+          const url = `https://graph.facebook.com/v19.0/${queryId}?fields=name,id,picture{url}&access_token=${token}`;
           const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
           if (res.ok) {
             const data: any = await res.json();
             result.fbPageName = data.name || null;
             result.metaProfileName = data.name || null;
-            result.metaDetails = data;
-          } else if (targetId !== 'me') {
+            result.metaDetails = {
+              ...data,
+              profile_picture_url: data.picture?.data?.url || null,
+            };
+          } else if (queryId !== 'me') {
             const fallbackRes = await fetch(
-              `https://graph.facebook.com/v19.0/me?fields=name,id&access_token=${token}`,
+              `https://graph.facebook.com/v19.0/me?fields=name,id,picture{url}&access_token=${token}`,
               { signal: AbortSignal.timeout(4000) },
             );
             if (fallbackRes.ok) {
               const data: any = await fallbackRes.json();
               result.fbPageName = data.name || null;
               result.metaProfileName = data.name || null;
-              result.metaDetails = data;
+              result.metaDetails = {
+                ...data,
+                profile_picture_url: data.picture?.data?.url || null,
+              };
             }
           }
+        }
+
+        // Prioridad 3: Fallback al nombre guardado en base de datos si Meta no devolvió nombre
+        if (!result.fbPageName) {
+          result.fbPageName = channel.name || null;
+          result.metaProfileName = channel.name || null;
         }
       } else if (ch === 'whatsapp') {
         if (token) {

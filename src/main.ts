@@ -26,6 +26,11 @@ async function bootstrap() {
   });
   app.useLogger(new NestAppLogger());
 
+  // Responder 200 OK en la raíz para verificadores de Meta y servicios de túnel (ngrok)
+  app.getHttpAdapter().getInstance().get('/', (req: any, res: any) => {
+    res.status(200).send('CRM TIBS API OK');
+  });
+
   // --- Seguridad: Helmet (headers HTTP seguros) ---
   // contentSecurityPolicy:false para no romper Swagger UI
   app.use((helmet as any).default({

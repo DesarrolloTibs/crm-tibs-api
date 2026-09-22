@@ -132,3 +132,18 @@ Para asegurar la total alineación con Meta App Review y la visualización de ac
   - **WhatsApp:** Consulta `fields=verified_name,display_phone_number` retornando `waVerifiedName`.
 - Retorna el objeto enriquecido con propiedades de primer nivel (`igUsername`, `fbPageName`, `waVerifiedName`, `metaProfileName`, `metaDetails`).
 
+### 5.6. Facebook Login for Business & Meta OAuth2 (`MetaOauthService`)
+Para eliminar la necesidad de configuración manual de credenciales (App ID, Page ID, token permanente y webhook verify token) por parte de los clientes:
+* **Flujo OAuth2 Centralizado con Aislamiento Multi-Tenant:**
+  * `GET /api/conversations/oauth/facebook/auth-url`: Genera la URL oficial de autorización de Meta (`https://www.facebook.com/v19.0/dialog/oauth`) codificando en el parámetro `state` el `tenantSchema`, `userId` y timestamp en Base64.
+  * Scopes solicitados: `pages_show_list`, `pages_manage_metadata`, `pages_messaging`, `instagram_basic`, `instagram_manage_messages`, `public_profile`.
+* **Canje y Auto-Suscripción de Webhooks:**
+  * `GET /api/conversations/oauth/facebook/callback`:
+    1. Decodifica el `state` y extrae el `tenantSchema`.
+    2. Canjea el código de autorización por un token de usuario y luego por un `Long-Lived User Access Token` (60 días).
+    3. Consulta `GET /me/accounts` obteniendo las Páginas administradas y sus cuentas de Instagram Business vinculadas (`instagram_business_account`).
+    4. Auto-suscribe automáticamente la página seleccionada a los Webhooks de Meta mediante `POST /{page-id}/subscribed_apps?subscribed_fields=messages,messaging_postbacks`.
+    5. Ejecuta la persistencia dentro de `TenantContextService.run({ tenantSchema }, ...)` para registrar o actualizar los registros en `channel_configs` (canal `facebook` y canal `instagram`).
+    6. Responde con `renderPopupResponse`: emite `window.opener.postMessage({ type: 'META_OAUTH_SUCCESS' })` y cierra la ventana emergente automáticamente.
+
+
