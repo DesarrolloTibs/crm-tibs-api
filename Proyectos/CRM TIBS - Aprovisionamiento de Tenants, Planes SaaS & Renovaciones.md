@@ -71,11 +71,20 @@ Cada plan define:
 * `tokens_limit`: Cuota mensual de tokens consumibles por los agentes de IA (ej. 50,000 / 250,000 / 1,000,000 tokens).
 * `features`: Objeto JSONB que habilita o inhabilita módulos (módulos de tickets, calendarios externos, cotizador avanzado).
 
-### 3.2. Medición y Validación de Consumo (`SubscriptionValidatorService`)
-* Cada inferencia realizada por el agente de IA o el procesador RAG consulta el consumo acumulado del tenant en el periodo actual.
-* Si el consumo supera `tokens_limit`:
-  * Si `allow_extra === true`: Se permite la ejecución pero se registra un evento de sobreconsumo en `transaction_history` para su posterior facturación.
-  * Si `allow_extra === false`: Se bloquea la ejecución de la IA con `HttpException` indicando cuota excedida y se notifica al usuario para actualizar su plan.
+### 3.2. Medición y Validación de Consumo (`SubscriptionValidatorService` y `TenantsService`)
+* Cada inferencia realizada por el agente de IA o el procesador RAG consulta el consumo acumulado del tenant en el período activo $[T_{\text{inicio}}, T_{\text{corte}}[$.
+* Si el consumo acumulado supera `tokens_limit`:
+  * Si `allow_extra === true`: Se permite la ejecución de sobreconsumo sujeto a un **Hard Cap del 100% adicional** ($2 \times \text{tokens\_limit}$).
+    * Si $\text{consumo} \le 2 \times \text{tokens\_limit}$: Permite la ejecución y registra la transacción con `is_extra = true` en `transaction_history`.
+    * Si $\text{consumo} > 2 \times \text{tokens\_limit}$: Bloquea con `HttpException(402, EXTRA_TOKENS_LIMIT_EXCEEDED)`.
+  * Si `allow_extra === false`: Se bloquea la ejecución inmediatamente con `HttpException(402, TOKENS_LIMIT_EXCEEDED)`.
+    * **Política de Absorción por Cortesía Técnica:** El desborde producido por la última llamada aprobada se cataloga como cortesía técnica absorbida por el sistema (`tokens_overage_absorbed`). Al cliente se le reporta `tokens_extra_used = 0` para evitar confusiones de facturación no autorizada.
+* **Supervisión y Auditoría para SuperAdmin:**
+  * `GET /api/tenants/courtesy-overages`: Reporte global consolidado de todas las organizaciones con el total de tokens de cortesía absorbidos (`total_tokens_absorbed`) y la lista de tenants en desborde.
+  * `GET /api/tenants/:id/consumption`: Detalle atómico del tenant exponiendo `total_tokens_consumed`, `tokens_overage_absorbed` y `has_courtesy_overage`.
+* Operaciones auditadas en `transaction_history`:
+  * Inferencia de LLM (`gemini_execution`, `openai_execution`, `watsonx_execution`).
+  * Ingesta y búsqueda vectorial en RAG (`rag_pdf_ingest`, `rag_similarity_search`, `rag_catalog_sync`).
 
 ---
 

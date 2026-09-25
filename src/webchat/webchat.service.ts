@@ -170,7 +170,9 @@ Genera tu respuesta JSON:`;
         const code = payload?.code || 'SUBSCRIPTION_ERROR';
         let msg = 'No es posible procesar consultas de IA en este momento.';
         if (code === 'TOKENS_LIMIT_EXCEEDED') {
-          msg = 'Se ha alcanzado el límite de recursos de IA del plan actual. Contacte a un administrador para ampliar su suscripción.';
+          msg = 'Se ha alcanzado el límite de recursos de IA del plan actual. Contacte a un administrador para ampliar su suscripción o habilitar consumo extra.';
+        } else if (code === 'EXTRA_TOKENS_LIMIT_EXCEEDED') {
+          msg = 'Se ha alcanzado el límite máximo de consumo extra permitido (100% adicional del plan). Contacte a un administrador para renovar o actualizar su suscripción.';
         } else if (code === 'SUBSCRIPTION_EXPIRED') {
           msg = 'La suscripción de la organización ha expirado. Contacte a un administrador para renovarla.';
         } else if (code === 'PLAN_NOT_ASSIGNED') {

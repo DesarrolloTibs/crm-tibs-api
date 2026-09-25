@@ -315,6 +315,13 @@ export class RagService implements OnModuleInit {
     // 4. Guardar embeddings en pgvector
     await store.addDocuments(documents);
     this.logger.log(`Ingestados con éxito ${documents.length} fragmentos de '${fileName}' para el producto '${productKey}'.`);
+
+    // Registrar consumo de tokens de embedding para tenants
+    if (activeSchema && activeSchema !== 'public') {
+      const estimatedTokens = Math.max(1, Math.ceil(fullText.length / 4));
+      this.subscriptionValidator.recordConsumption(activeSchema, estimatedTokens, 0, estimatedTokens, false, 'rag_pdf_ingest')
+        .catch((err: any) => this.logger.warn(`Error registrando consumo RAG PDF: ${err.message}`));
+    }
     
     return documents.length;
   }
@@ -352,6 +359,13 @@ export class RagService implements OnModuleInit {
       limit,
       productKey ? { product: productKey } : undefined
     );
+
+    // Registrar consumo de tokens del query para tenants
+    if (activeSchema && activeSchema !== 'public') {
+      const queryTokens = Math.max(1, Math.ceil(query.length / 4));
+      this.subscriptionValidator.recordConsumption(activeSchema, queryTokens, 0, queryTokens, false, 'rag_similarity_search')
+        .catch((err: any) => this.logger.warn(`Error registrando consumo RAG Search: ${err.message}`));
+    }
 
     return results.map(doc => ({
       pageContent: doc.pageContent,
@@ -453,6 +467,13 @@ export class RagService implements OnModuleInit {
       // 4. Guardar en pgvector
       await store.addDocuments([document]);
       this.logger.log(`Catálogo indexado en RAG: '${nombre}' (${productKey})`);
+
+      // Registrar consumo de tokens de embedding para tenants
+      if (activeSchema && activeSchema !== 'public') {
+        const estimatedTokens = Math.max(1, Math.ceil(contentText.length / 4));
+        this.subscriptionValidator.recordConsumption(activeSchema, estimatedTokens, 0, estimatedTokens, false, 'rag_catalog_sync')
+          .catch((err: any) => this.logger.warn(`Error registrando consumo RAG Catálogo: ${err.message}`));
+      }
     } catch (error: any) {
       this.logger.error(`Error al indexar producto '${nombre}' en RAG: ${error.message}`);
     }

@@ -106,6 +106,17 @@ export class TenantsService implements OnModuleInit {
 
     const documentsLimit = 101;
 
+    const rawExtraTokens = tokensExtraUsed;
+    const visibleTokensExtraUsed = allowExtra ? rawExtraTokens : 0;
+    const overageAbsorbed = !allowExtra ? rawExtraTokens : 0;
+
+    const tokensExtraLimit = allowExtra ? tokensLimit : 0;
+    const totalTokensLimit = tokensLimit + tokensExtraLimit;
+    const totalTokensConsumed = tokensUsed + rawExtraTokens;
+    const extraPercentageUsed = tokensExtraLimit > 0 
+      ? Math.min(100, Math.round((visibleTokensExtraUsed / tokensExtraLimit) * 100)) 
+      : 0;
+
     return {
       tenant_id: tenantId,
       tenant_name: tenantName,
@@ -116,11 +127,53 @@ export class TenantsService implements OnModuleInit {
       documents_used: documentsUsed,
       documents_limit: documentsLimit,
       tokens_used: tokensUsed,
-      tokens_extra_used: tokensExtraUsed,
+      tokens_extra_used: visibleTokensExtraUsed,
       tokens_limit: tokensLimit,
+      tokens_extra_limit: tokensExtraLimit,
+      total_tokens_limit: totalTokensLimit,
+      total_tokens_consumed: totalTokensConsumed,
+      tokens_overage_absorbed: overageAbsorbed,
+      has_courtesy_overage: overageAbsorbed > 0,
+      extra_percentage_used: extraPercentageUsed,
       next_renewal_date: nextRenewal,
       plan_name: planName,
       price: price,
+    };
+  }
+
+  /**
+   * Reporte global para SuperAdmin con el desglose de consumo, tokens extra y desbordes absorbidos por cortesía.
+   */
+  async getCourtesyOveragesReport() {
+    const tenants = await this.tenantRepository.find({ relations: ['plan'], order: { name: 'ASC' } });
+    const report = [];
+
+    for (const tenant of tenants) {
+      if (tenant.schema_name === 'public') continue;
+
+      const consumption = await this.getConsumption(tenant.schema_name);
+      report.push({
+        tenant_id: tenant.id,
+        tenant_name: tenant.name,
+        schema_name: tenant.schema_name,
+        plan_name: consumption.plan_name,
+        is_active: tenant.is_active,
+        allow_extra: tenant.allow_extra,
+        tokens_limit: consumption.tokens_limit,
+        tokens_used: consumption.tokens_used,
+        tokens_extra_used: consumption.tokens_extra_used,
+        tokens_overage_absorbed: consumption.tokens_overage_absorbed,
+        has_courtesy_overage: consumption.has_courtesy_overage,
+        total_tokens_consumed: consumption.total_tokens_consumed,
+        next_renewal_date: consumption.next_renewal_date,
+      });
+    }
+
+    return {
+      total_tenants: report.length,
+      tenants_with_courtesy_overage: report.filter(r => r.has_courtesy_overage).length,
+      total_tokens_absorbed: report.reduce((acc, r) => acc + r.tokens_overage_absorbed, 0),
+      report,
     };
   }
 

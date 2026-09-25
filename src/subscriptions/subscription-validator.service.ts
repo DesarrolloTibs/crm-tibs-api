@@ -7,10 +7,12 @@ export interface CheckSubscriptionResult {
 }
 
 export interface SubscriptionErrorPayload {
-  code: 'PLAN_NOT_ASSIGNED' | 'SUBSCRIPTION_EXPIRED' | 'TOKENS_LIMIT_EXCEEDED';
+  code: 'PLAN_NOT_ASSIGNED' | 'SUBSCRIPTION_EXPIRED' | 'TOKENS_LIMIT_EXCEEDED' | 'EXTRA_TOKENS_LIMIT_EXCEEDED';
   message: string;
   tokens_used?: number;
   tokens_limit?: number;
+  tokens_extra_used?: number;
+  tokens_extra_limit?: number;
   next_renewal_date?: Date | null;
 }
 
@@ -68,7 +70,7 @@ export class SubscriptionValidatorService {
         `SELECT COALESCE(SUM(total_tokens), 0) AS total 
          FROM "${schemaName}".transaction_history 
          WHERE fecha_procesamiento >= $1 
-           AND fecha_procesamiento <= $2`,
+           AND fecha_procesamiento < $2`,
         [periodStart, periodEnd]
       );
 
@@ -96,7 +98,7 @@ export class SubscriptionValidatorService {
         `SELECT COALESCE(SUM(total_tokens), 0) AS total 
          FROM "${schemaName}".transaction_history 
          WHERE fecha_procesamiento >= $1 
-           AND fecha_procesamiento <= $2`,
+           AND fecha_procesamiento < $2`,
         [periodStart, periodEnd]
       );
 
@@ -108,6 +110,7 @@ export class SubscriptionValidatorService {
 
   /**
    * Valida la suscripción y los límites de consumo por tokens antes de procesar llamadas a modelos / LLMs.
+   * Si allow_extra es true, permite consumo extra hasta un máximo del 100% adicional del plan (Hard Cap: 2x tokens_limit).
    */
   async checkSubscriptionLimits(
     schemaName: string,
@@ -155,14 +158,34 @@ export class SubscriptionValidatorService {
     const tokensUsed = await this.getTokensUsedInPeriod(schemaName, periodStart, periodEnd);
     const tokensLimit = tenantInfo.tokens_limit;
 
-    // c) Verificar límite de tokens
+    // c) Verificar límite de tokens base
     if (tokensUsed + estimatedTokens <= tokensLimit) {
       return { is_extra: false };
     }
 
-    // Excede límite: verificar si allow_extra == True
+    // Excede límite base: verificar si allow_extra == True
     if (tenantInfo.allow_extra) {
-      return { is_extra: true };
+      const maxExtraTokens = tokensLimit; // Límite de consumo extra del 100% del plan
+      const totalAllowedTokens = tokensLimit + maxExtraTokens; // Hard Cap: 2x tokens_limit
+
+      if (tokensUsed + estimatedTokens <= totalAllowedTokens) {
+        return { is_extra: true };
+      }
+
+      // Excede el 100% de tokens extra -> Rechazar con HTTP 402 EXTRA_TOKENS_LIMIT_EXCEEDED
+      const tokensExtraUsed = Math.max(0, tokensUsed - tokensLimit);
+      throw new HttpException(
+        {
+          code: 'EXTRA_TOKENS_LIMIT_EXCEEDED',
+          message: `Ha alcanzado el límite máximo de consumo extra permitido (100% adicional del plan: ${maxExtraTokens.toLocaleString()} tokens). Total consumido: ${tokensUsed.toLocaleString()}.`,
+          tokens_used: tokensUsed,
+          tokens_limit: tokensLimit,
+          tokens_extra_used: tokensExtraUsed,
+          tokens_extra_limit: maxExtraTokens,
+          next_renewal_date: nextRenewal,
+        } as SubscriptionErrorPayload,
+        HttpStatus.PAYMENT_REQUIRED
+      );
     }
 
     // Excede límite y allow_extra == False -> Rechazar con HTTP 402 TOKENS_LIMIT_EXCEEDED
@@ -193,12 +216,12 @@ export class SubscriptionValidatorService {
     if (!calculatedIsExtra) {
       try {
         const tenantInfo = await this.getTenantPlanInfo(schemaName);
-        if (tenantInfo && tenantInfo.next_renewal_date && tenantInfo.tokens_limit > 0) {
+        if (tenantInfo && tenantInfo.allow_extra && tenantInfo.next_renewal_date && tenantInfo.tokens_limit > 0) {
           const months = tenantInfo.billing_period_months || 1;
           const periodStart = subtractBillingMonths(new Date(tenantInfo.next_renewal_date), months);
           
           const currentTotal = await this.getTokensUsedInPeriod(schemaName, periodStart, tenantInfo.next_renewal_date);
-          if (currentTotal >= tenantInfo.tokens_limit) {
+          if (currentTotal + totalTokens > tenantInfo.tokens_limit) {
             calculatedIsExtra = true;
           }
         }

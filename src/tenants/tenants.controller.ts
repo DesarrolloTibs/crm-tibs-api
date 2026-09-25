@@ -19,8 +19,20 @@ export class TenantsController {
 
   @SkipThrottle()
   @Get('consumption')
-  async getConsumption(@Query('schemaName') schemaName?: string) {
+  async getConsumption(
+    @Query('schemaName') schemaName?: string,
+    @Query('tenantId') tenantId?: number,
+  ) {
+    if (tenantId) {
+      const tenant = await this.tenantsService.findOne(Number(tenantId));
+      return this.tenantsService.getConsumption(tenant.schema_name);
+    }
     return this.tenantsService.getConsumption(schemaName);
+  }
+
+  @Get('courtesy-overages')
+  async getCourtesyOverages() {
+    return this.tenantsService.getCourtesyOveragesReport();
   }
 
   @Get('my-tenant')
@@ -44,6 +56,12 @@ export class TenantsController {
     }
     const logoUrl = `/${file.path.replace(/\\/g, '/')}`;
     return this.tenantsService.updateLogo(id, logoUrl);
+  }
+
+  @Get(':id/consumption')
+  async getTenantConsumptionById(@Param('id', ParseIntPipe) id: number) {
+    const tenant = await this.tenantsService.findOne(id);
+    return this.tenantsService.getConsumption(tenant.schema_name);
   }
 
   @Get(':id')
