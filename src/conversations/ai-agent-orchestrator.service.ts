@@ -13,6 +13,7 @@ import { PhoneUtils } from '../common/utils/phone.utils';
 import { ActivitiesService } from '../activities/activities.service';
 import { ClientsService } from '../clients/clients.service';
 import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
+import { TenantConcurrencyService } from '../subscriptions/tenant-concurrency.service';
 import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
 import {
@@ -74,6 +75,7 @@ export class AiAgentOrchestratorService {
     private readonly activitiesService: ActivitiesService,
     private readonly clientsService: ClientsService,
     private readonly subscriptionValidator: SubscriptionValidatorService,
+    private readonly tenantConcurrency: TenantConcurrencyService,
     private readonly toolsHandler: AiAgentToolsHandlerService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
@@ -243,13 +245,22 @@ export class AiAgentOrchestratorService {
 
   /**
    * Routes to the configured LLM provider (Gemini / OpenAI / Watsonx).
-   * Validates subscription limits before each call for tenant schemas.
+   * Runs under TenantConcurrencyService to regulate concurrent LLM calls per tenant,
+   * with an unlimited waiting queue and instant circuit-breaker purge on quota limits.
    */
   async callLLM(config: AiAgentConfig, prompt: string, temperatureOverride?: number): Promise<string> {
     const activeSchema = TenantContextService.getTenantSchema();
-    if (activeSchema && activeSchema !== 'public') {
-      await this.subscriptionValidator.checkSubscriptionLimits(activeSchema);
+    if (!activeSchema || activeSchema === 'public') {
+      return this.executeLLM(config, prompt, temperatureOverride);
     }
+
+    return this.tenantConcurrency.runWithSlot(activeSchema, async () => {
+      await this.subscriptionValidator.checkSubscriptionLimits(activeSchema);
+      return this.executeLLM(config, prompt, temperatureOverride);
+    });
+  }
+
+  private async executeLLM(config: AiAgentConfig, prompt: string, temperatureOverride?: number): Promise<string> {
     const provider = config.modelProvider;
     const model = config.modelName;
     const maxTokens = config.maxNewTokens || 2048;
@@ -287,7 +298,7 @@ export class AiAgentOrchestratorService {
     const outputTokens = data.usageMetadata?.candidatesTokenCount || 0;
     const totalTokens = data.usageMetadata?.totalTokenCount || 0;
     this.logger.log(`[Token Usage] Gemini - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
-    this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, 'gemini_execution');
+    await this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, 'gemini_execution');
     return text.trim();
   }
 
@@ -310,7 +321,7 @@ export class AiAgentOrchestratorService {
     const outputTokens = data.usage?.completion_tokens || 0;
     const totalTokens = data.usage?.total_tokens || 0;
     this.logger.log(`[Token Usage] ${isAzure ? 'Azure ' : ''}OpenAI - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
-    this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, isAzure ? 'azure_openai_execution' : 'openai_execution');
+    await this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, isAzure ? 'azure_openai_execution' : 'openai_execution');
     return text.trim();
   }
 
@@ -401,16 +412,19 @@ export class AiAgentOrchestratorService {
     const inputTokens = data.results?.[0]?.input_token_count || 0;
     const outputTokens = data.results?.[0]?.generated_token_count || 0;
     this.logger.log(`[Token Usage] WatsonX - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${inputTokens + outputTokens}`);
-    this.recordTokenConsumption(inputTokens, outputTokens, inputTokens + outputTokens, 'watsonx_execution');
+    await this.recordTokenConsumption(inputTokens, outputTokens, inputTokens + outputTokens, 'watsonx_execution');
     return rawText.trim();
   }
 
-  private recordTokenConsumption(promptTokens: number, completionTokens: number, totalTokens: number, actionName = 'ai_execution') {
+  private async recordTokenConsumption(promptTokens: number, completionTokens: number, totalTokens: number, actionName = 'ai_execution'): Promise<void> {
     const activeSchema = TenantContextService.getTenantSchema() || 'public';
     if (activeSchema !== 'public' && totalTokens > 0) {
-      this.subscriptionValidator.recordConsumption(activeSchema, promptTokens, completionTokens, totalTokens, false, actionName)
-        .then(() => { this.eventEmitter.emit(CONVERSATION_EVENTS.TENANT_CONSUMPTION_UPDATED, { schemaName: activeSchema }); })
-        .catch((err: any) => { this.logger.error(`Error al registrar consumo de tokens para tenant ${activeSchema}: ${err.message}`); });
+      try {
+        await this.subscriptionValidator.recordConsumption(activeSchema, promptTokens, completionTokens, totalTokens, false, actionName);
+        this.eventEmitter.emit(CONVERSATION_EVENTS.TENANT_CONSUMPTION_UPDATED, { schemaName: activeSchema });
+      } catch (err: any) {
+        this.logger.error(`Error al registrar consumo de tokens para tenant ${activeSchema}: ${err.message}`);
+      }
     }
   }
 

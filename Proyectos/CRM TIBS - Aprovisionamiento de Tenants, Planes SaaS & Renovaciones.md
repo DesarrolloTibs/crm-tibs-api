@@ -86,6 +86,12 @@ Cada plan define:
   * Inferencia de LLM (`gemini_execution`, `openai_execution`, `watsonx_execution`).
   * Ingesta y búsqueda vectorial en RAG (`rag_pdf_ingest`, `rag_similarity_search`, `rag_catalog_sync`).
 
+### 3.3. Semáforo de Concurrencia y Circuit Breaker (`TenantConcurrencyService`)
+* **Control de Concurrencia por Tenant:** Regula el número de llamadas simultáneas activas al LLM (máximo 2 por organización por defecto) para eliminar condiciones de carrera y ráfagas in-flight que puedan rebasar desmedidamente la cuota contratada.
+* **Cola FIFO Ilimitada:** Las peticiones adicionales se forman en una cola de espera en memoria sin límite de tamaño, evitando rechazos artificiales de tipo "429 Too Many Requests" y garantizando que la operación habitual del CRM no sufra interrupciones.
+* **Circuit Breaker / Purga Inmediata ante Límite de Cuota:** Si una petición es rechazada por alcanzar el límite de tokens (`TOKENS_LIMIT_EXCEEDED` o `EXTRA_TOKENS_LIMIT_EXCEEDED` — HTTP 402), el semáforo **drena y rechaza inmediatamente todas las peticiones restantes en cola**, impidiendo que se envíen más llamadas al LLM y notificando al instante a los usuarios en espera.
+* **Sincronización Atómica:** La persistencia del consumo de tokens (`recordConsumption`) se ejecuta con `await` dentro de la sesión protegida por el semáforo antes de liberar el slot, garantizando que la siguiente petición encolada consulte un saldo 100% fresco y consistente en PostgreSQL.
+
 ---
 
 ## 4. Motor Automático de Renovaciones (`SubscriptionRenewalCron`)
