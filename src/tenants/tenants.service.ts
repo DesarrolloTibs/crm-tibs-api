@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { Tenant } from './entities/tenant.entity';
 import { TenantRenewalQueue } from './entities/tenant-renewal-queue.entity';
+import { TenantBillingCycle } from './entities/tenant-billing-cycle.entity';
 import { User } from '../users/entities/user.entity';
 import { Plan } from '../plans/entities/plan.entity';
 import { TenantProvisionerService } from '../tenancy/tenant-provisioner.service';
@@ -18,11 +19,15 @@ import { addBillingMonths, subtractBillingMonths } from '../common/utils/billing
 
 @Injectable()
 export class TenantsService implements OnModuleInit {
+  private readonly logger = new Logger(TenantsService.name);
+
   constructor(
     @InjectRepository(Tenant)
     private readonly tenantRepository: Repository<Tenant>,
     @InjectRepository(TenantRenewalQueue)
     private readonly queueRepository: Repository<TenantRenewalQueue>,
+    @InjectRepository(TenantBillingCycle)
+    private readonly billingCycleRepository: Repository<TenantBillingCycle>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     @InjectRepository(Plan)
@@ -37,12 +42,16 @@ export class TenantsService implements OnModuleInit {
     if (logo.startsWith('http://') || logo.startsWith('https://')) {
       return logo;
     }
-    const baseUrl = (process.env.API_URL || process.env.PUBLIC_SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const port = process.env.PORT || '3091';
+    const baseUrl = (process.env.API_URL || process.env.PUBLIC_SERVER_URL || `http://localhost:${port}`).replace(/\/$/, '');
     const cleanLogo = logo.startsWith('/') ? logo : `/${logo}`;
     return `${baseUrl}${cleanLogo}`;
   }
 
-  async getConsumption(schemaName?: string) {
+  async getConsumption(
+    schemaName?: string,
+    overridePeriod?: { startDate: Date; endDate: Date; cycleId?: number }
+  ) {
     const activeSchema = schemaName || TenantContextService.getTenantSchema() || 'public';
 
     // 1. Obtener información del plan de la organización
@@ -50,6 +59,8 @@ export class TenantsService implements OnModuleInit {
 
     let tokensUsed = 0;
     let tokensExtraUsed = 0;
+    let tokensCourtesyUsed = 0;
+    let totalTokensAccumulated = 0;
     let tokensLimit = tenantInfo?.tokens_limit || 300000;
     let nextRenewal = tenantInfo?.next_renewal_date || null;
     let planName = tenantInfo?.plan_name || 'Plan Pro';
@@ -59,15 +70,41 @@ export class TenantsService implements OnModuleInit {
     let isActive = tenantInfo?.is_active ?? true;
     let tenantId = tenantInfo?.tenant_id || null;
     let logo: string | null = null;
+    let cycleId: number | null = overridePeriod?.cycleId || null;
 
-    if (tenantInfo?.tenant_id) {
+    if (tenantInfo?.logo) {
+      logo = this.formatLogoUrl(tenantInfo.logo);
+    } else if (tenantInfo?.tenant_id) {
       const fullTenant = await this.tenantRepository.findOne({ where: { id: tenantInfo.tenant_id } });
-      if (fullTenant) {
+      if (fullTenant?.logo) {
         logo = this.formatLogoUrl(fullTenant.logo);
       }
     }
 
-    if (tenantInfo && nextRenewal) {
+    // Si se especifica un cycleId, tomar la configuración y límites de dicho ciclo histórico
+    if (cycleId) {
+      const cycle = await this.billingCycleRepository.findOne({ where: { id: cycleId } });
+      if (cycle) {
+        planName = cycle.plan_name;
+        tokensLimit = cycle.tokens_limit;
+        price = Number(cycle.price);
+        allowExtra = cycle.allow_extra;
+        nextRenewal = cycle.end_date;
+      }
+    }
+
+    if (overridePeriod) {
+      const consumptionResult = await this.subscriptionValidator.getTokensConsumptionInPeriod(
+        activeSchema,
+        overridePeriod.startDate,
+        overridePeriod.endDate,
+        tokensLimit
+      );
+      tokensUsed = consumptionResult.tokensUsed;
+      tokensExtraUsed = consumptionResult.tokensExtraUsed;
+      tokensCourtesyUsed = consumptionResult.tokensCourtesyUsed;
+      totalTokensAccumulated = consumptionResult.totalAccumulated;
+    } else if (tenantInfo && nextRenewal) {
       const months = tenantInfo.billing_period_months || 1;
       const periodStart = subtractBillingMonths(new Date(nextRenewal), months);
       const periodEnd = nextRenewal;
@@ -80,6 +117,8 @@ export class TenantsService implements OnModuleInit {
       );
       tokensUsed = consumptionResult.tokensUsed;
       tokensExtraUsed = consumptionResult.tokensExtraUsed;
+      tokensCourtesyUsed = consumptionResult.tokensCourtesyUsed;
+      totalTokensAccumulated = consumptionResult.totalAccumulated;
     } else if (activeSchema !== 'public') {
       const now = new Date();
       const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -91,28 +130,34 @@ export class TenantsService implements OnModuleInit {
       );
       tokensUsed = consumptionResult.tokensUsed;
       tokensExtraUsed = consumptionResult.tokensExtraUsed;
+      tokensCourtesyUsed = consumptionResult.tokensCourtesyUsed;
+      totalTokensAccumulated = consumptionResult.totalAccumulated;
     }
 
-    // 2. Conteo de documentos ingestados en RAG
+    // 2. Conteo de documentos ingestados en RAG en el esquema del tenant
     let documentsUsed = 0;
     try {
+      const targetTable = activeSchema && activeSchema !== 'public'
+        ? `"${activeSchema}".product_knowledge_base`
+        : `public.product_knowledge_base`;
       const docRes = await this.dataSource.query(
-        `SELECT COUNT(DISTINCT metadata->>'source') AS count FROM public.product_knowledge_base`
+        `SELECT COUNT(DISTINCT metadata->>'source') AS count FROM ${targetTable}`
       );
-      documentsUsed = docRes[0]?.count ? parseInt(docRes[0].count, 10) : 12;
+      documentsUsed = docRes[0]?.count ? parseInt(docRes[0].count, 10) : 0;
     } catch (e) {
-      documentsUsed = 12;
+      documentsUsed = 0;
     }
 
-    const documentsLimit = 101;
+    // Cortesía técnica absorbida permanente (inmune al toggle de allow_extra)
+    const overageAbsorbed = tokensCourtesyUsed;
+    const hasCourtesyOverage = overageAbsorbed > 0;
 
-    const rawExtraTokens = tokensExtraUsed;
-    const visibleTokensExtraUsed = allowExtra ? rawExtraTokens : 0;
-    const overageAbsorbed = !allowExtra ? rawExtraTokens : 0;
+    // Tokens extra utilizados: exclusivamente transacciones con is_extra = true
+    const visibleTokensExtraUsed = allowExtra ? tokensExtraUsed : 0;
 
     const tokensExtraLimit = allowExtra ? tokensLimit : 0;
     const totalTokensLimit = tokensLimit + tokensExtraLimit;
-    const totalTokensConsumed = tokensUsed + rawExtraTokens;
+    const totalTokensConsumed = totalTokensAccumulated;
     const extraPercentageUsed = tokensExtraLimit > 0 
       ? Math.min(100, Math.round((visibleTokensExtraUsed / tokensExtraLimit) * 100)) 
       : 0;
@@ -121,11 +166,11 @@ export class TenantsService implements OnModuleInit {
       tenant_id: tenantId,
       tenant_name: tenantName,
       schema_name: activeSchema,
+      cycle_id: cycleId,
       is_active: isActive,
       allow_extra: allowExtra,
       logo: logo,
       documents_used: documentsUsed,
-      documents_limit: documentsLimit,
       tokens_used: tokensUsed,
       tokens_extra_used: visibleTokensExtraUsed,
       tokens_limit: tokensLimit,
@@ -177,6 +222,292 @@ export class TenantsService implements OnModuleInit {
     };
   }
 
+  /**
+   * Obtiene un desglose analítico del consumo de tokens en un periodo de facturación (activo o histórico) o rango de fechas:
+   * - Agrupado por canal (whatsapp, webchat_interno, rag, etc.)
+   * - Top usuarios internos con mayor consumo (webchat)
+   * - Top clientes externos con mayor consumo (whatsapp, etc.)
+   * - Consumo por modelo LLM (gemini-1.5-flash, gpt-4o, etc.)
+   * - Línea de tiempo diaria de consumo
+   * - Últimas transacciones detalladas
+   */
+  async getConsumptionBreakdown(
+    schemaName?: string,
+    tenantId?: number,
+    cycleId?: number,
+    startDate?: string,
+    endDate?: string
+  ) {
+    let targetSchema = schemaName;
+    let targetTenantId = tenantId;
+
+    if (!targetSchema && targetTenantId) {
+      const tenant = await this.tenantRepository.findOne({ where: { id: targetTenantId } });
+      if (tenant) {
+        targetSchema = tenant.schema_name;
+      }
+    }
+
+    if (!targetSchema) {
+      targetSchema = TenantContextService.getTenantSchema() || 'public';
+    }
+
+    let periodStart: Date | null = null;
+    let periodEnd: Date | null = null;
+    let selectedCycle: TenantBillingCycle | null = null;
+
+    // 1. Si se solicita un ciclo de facturación específico
+    if (cycleId) {
+      selectedCycle = await this.billingCycleRepository.findOne({ where: { id: cycleId } });
+      if (selectedCycle) {
+        periodStart = new Date(selectedCycle.start_date);
+        periodEnd = selectedCycle.closed_at ? new Date(selectedCycle.closed_at) : new Date(selectedCycle.end_date);
+      }
+    }
+
+    // 2. Si se solicitó un rango de fechas personalizado
+    if (!selectedCycle && startDate && endDate) {
+      periodStart = new Date(startDate);
+      const end = new Date(endDate);
+      if (endDate.length <= 10) {
+        end.setHours(23, 59, 59, 999);
+      }
+      periodEnd = end;
+    }
+
+    // 3. Si no hay periodo especificado, resolver el ciclo activo por defecto
+    if (!periodStart || !periodEnd) {
+      const tenantInfo = await this.subscriptionValidator.getTenantPlanInfo(targetSchema);
+      if (tenantInfo?.next_renewal_date) {
+        const months = tenantInfo.billing_period_months || 1;
+        periodStart = subtractBillingMonths(new Date(tenantInfo.next_renewal_date), months);
+        periodEnd = new Date(tenantInfo.next_renewal_date);
+      } else {
+        const now = new Date();
+        periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        periodEnd = now;
+      }
+    }
+
+    if (!targetSchema || targetSchema === 'public') {
+      const summary = await this.getConsumption(targetSchema);
+      return {
+        schema_name: targetSchema,
+        cycle_id: selectedCycle?.id || null,
+        cycle_info: null,
+        period: { start: null, end: null },
+        summary,
+        by_channel: [],
+        top_users: [],
+        top_clients: [],
+        by_model: [],
+        daily_timeline: [],
+        recent_transactions: [],
+      };
+    }
+
+    try {
+      // 2. Ejecutar Summary y las 6 consultas analíticas en PARALELO
+      const [
+        summary,
+        byChannelRaw,
+        topUsersRaw,
+        topClientsRaw,
+        byModelRaw,
+        dailyTimelineRaw,
+        recentTransactionsRaw,
+      ] = await Promise.all([
+        this.getConsumption(targetSchema, {
+          startDate: periodStart,
+          endDate: periodEnd,
+          cycleId: selectedCycle?.id,
+        }),
+        // Agrupación por canal
+        this.dataSource.query(
+          `SELECT 
+            COALESCE(channel, 'otro') AS channel,
+            COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+            COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens,
+            COALESCE(SUM(completion_tokens), 0)::bigint AS completion_tokens,
+            COUNT(*)::int AS request_count
+           FROM "${targetSchema}".transaction_history
+           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2
+           GROUP BY channel
+           ORDER BY total_tokens DESC`,
+          [periodStart, periodEnd],
+        ),
+
+
+        // Top usuarios internos (Webchat CRM, etc.)
+        this.dataSource.query(
+          `SELECT 
+            user_id,
+            COALESCE(user_name, 'Usuario ' || user_id::text) AS user_name,
+            COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+            COUNT(*)::int AS request_count
+           FROM "${targetSchema}".transaction_history
+           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2 AND user_id IS NOT NULL
+           GROUP BY user_id, user_name
+           ORDER BY total_tokens DESC
+           LIMIT 10`,
+          [periodStart, periodEnd],
+        ),
+
+        // Top clientes externos (WhatsApp, etc.)
+        this.dataSource.query(
+          `SELECT 
+            client_id,
+            COALESCE(client_name, 'Cliente ' || client_id::text) AS client_name,
+            COALESCE(channel, 'whatsapp') AS channel,
+            COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+            COUNT(*)::int AS request_count
+           FROM "${targetSchema}".transaction_history
+           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2 AND client_id IS NOT NULL
+           GROUP BY client_id, client_name, channel
+           ORDER BY total_tokens DESC
+           LIMIT 10`,
+          [periodStart, periodEnd],
+        ),
+
+        // Consumo por modelo LLM
+        this.dataSource.query(
+          `SELECT 
+            COALESCE(model_name, 'No especificado') AS model_name,
+            COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+            COUNT(*)::int AS request_count
+           FROM "${targetSchema}".transaction_history
+           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2
+           GROUP BY model_name
+           ORDER BY total_tokens DESC`,
+          [periodStart, periodEnd],
+        ),
+
+        // Línea de tiempo diaria
+        this.dataSource.query(
+          `SELECT 
+            TO_CHAR(fecha_procesamiento, 'YYYY-MM-DD') AS date,
+            COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+            COUNT(*)::int AS request_count
+           FROM "${targetSchema}".transaction_history
+           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2
+           GROUP BY TO_CHAR(fecha_procesamiento, 'YYYY-MM-DD')
+           ORDER BY date ASC`,
+          [periodStart, periodEnd],
+        ),
+
+        // Últimas transacciones detalladas
+        this.dataSource.query(
+          `SELECT 
+            id,
+            fecha_procesamiento,
+            action_name AS accion,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            is_extra,
+            user_id,
+            user_name,
+            client_id,
+            client_name,
+            conversation_id,
+            channel,
+            model_name,
+            metadata
+           FROM "${targetSchema}".transaction_history
+           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2
+           ORDER BY fecha_procesamiento DESC
+           LIMIT 50`,
+          [periodStart, periodEnd],
+        ),
+      ]);
+
+      return {
+        schema_name: targetSchema,
+        cycle_id: selectedCycle?.id || null,
+        cycle_info: selectedCycle ? {
+          id: selectedCycle.id,
+          plan_name: selectedCycle.plan_name,
+          tokens_limit: selectedCycle.tokens_limit,
+          price: Number(selectedCycle.price),
+          status: selectedCycle.status,
+          start_date: selectedCycle.start_date,
+          end_date: selectedCycle.end_date,
+          closed_at: selectedCycle.closed_at,
+          close_reason: selectedCycle.close_reason,
+          allow_extra: selectedCycle.allow_extra,
+        } : null,
+        period: {
+          start: periodStart,
+          end: periodEnd,
+        },
+        summary,
+        by_channel: byChannelRaw.map((r: any) => ({
+          channel: r.channel,
+          total_tokens: Number(r.total_tokens),
+          prompt_tokens: Number(r.prompt_tokens),
+          completion_tokens: Number(r.completion_tokens),
+          request_count: Number(r.request_count),
+        })),
+        top_users: topUsersRaw.map((r: any) => ({
+          user_id: r.user_id,
+          user_name: r.user_name,
+          total_tokens: Number(r.total_tokens),
+          request_count: Number(r.request_count),
+        })),
+        top_clients: topClientsRaw.map((r: any) => ({
+          client_id: r.client_id,
+          client_name: r.client_name,
+          channel: r.channel,
+          total_tokens: Number(r.total_tokens),
+          request_count: Number(r.request_count),
+        })),
+        by_model: byModelRaw.map((r: any) => ({
+          model_name: r.model_name,
+          total_tokens: Number(r.total_tokens),
+          request_count: Number(r.request_count),
+        })),
+        daily_timeline: dailyTimelineRaw.map((r: any) => ({
+          date: r.date,
+          total_tokens: Number(r.total_tokens),
+          request_count: Number(r.request_count),
+        })),
+        recent_transactions: recentTransactionsRaw.map((r: any) => ({
+          id: r.id,
+          fecha_procesamiento: r.fecha_procesamiento,
+          accion: r.accion,
+          prompt_tokens: Number(r.prompt_tokens),
+          completion_tokens: Number(r.completion_tokens),
+          total_tokens: Number(r.total_tokens),
+          is_extra: r.is_extra,
+          user_id: r.user_id,
+          user_name: r.user_name,
+          client_id: r.client_id,
+          client_name: r.client_name,
+          conversation_id: r.conversation_id,
+          channel: r.channel,
+          model_name: r.model_name,
+          metadata: r.metadata,
+        })),
+      };
+    } catch (err: any) {
+      this.logger.error(`Error al obtener desglose de consumo para ${targetSchema}: ${err.message}`);
+      const fallbackSummary = await this.getConsumption(targetSchema).catch(() => null);
+      return {
+        schema_name: targetSchema,
+        cycle_id: selectedCycle?.id || null,
+        cycle_info: null,
+        period: { start: periodStart, end: periodEnd },
+        summary: fallbackSummary,
+        by_channel: [],
+        top_users: [],
+        top_clients: [],
+        by_model: [],
+        daily_timeline: [],
+        recent_transactions: [],
+      };
+    }
+  }
+
   async getCurrentTenant(schemaName?: string) {
     const activeSchema = schemaName || TenantContextService.getTenantSchema() || 'public';
     const tenantInfo = await this.subscriptionValidator.getTenantPlanInfo(activeSchema);
@@ -203,7 +534,143 @@ export class TenantsService implements OnModuleInit {
     return tenant;
   }
 
-  async onModuleInit() {}
+  async onModuleInit() {
+    try {
+      await this.dataSource.query(`
+        CREATE TABLE IF NOT EXISTS public.tenant_billing_cycles (
+          id SERIAL PRIMARY KEY,
+          tenant_id VARCHAR(63) NOT NULL,
+          plan_id INTEGER NULL,
+          plan_name VARCHAR(255) NOT NULL,
+          tokens_limit INTEGER NOT NULL DEFAULT 0,
+          price NUMERIC(10, 2) NOT NULL DEFAULT 0,
+          billing_period_months INTEGER NOT NULL DEFAULT 1,
+          start_date TIMESTAMPTZ NOT NULL,
+          end_date TIMESTAMPTZ NOT NULL,
+          closed_at TIMESTAMPTZ NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'active',
+          close_reason VARCHAR(50) NULL,
+          allow_extra BOOLEAN NOT NULL DEFAULT false,
+          tokens_used_at_close INTEGER NULL DEFAULT 0,
+          tokens_extra_used_at_close INTEGER NULL DEFAULT 0,
+          tokens_courtesy_at_close INTEGER NULL DEFAULT 0,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT fk_billing_cycle_plan FOREIGN KEY (plan_id) REFERENCES public.plans(plan_id) ON DELETE SET NULL
+        );
+      `);
+
+      // Backfill automático para tenants existentes que aún no tengan ciclo registrado
+      const tenants = await this.tenantRepository.find({ relations: ['plan'] });
+      for (const t of tenants) {
+        if (t.schema_name === 'public') continue;
+        const count = await this.billingCycleRepository.count({ where: { tenant_id: String(t.id) } });
+        if (count === 0) {
+          const months = t.plan?.billing_period_months || 1;
+          const now = new Date();
+          let startDate: Date;
+          let endDate: Date;
+
+          if (t.next_renewal_date) {
+            endDate = new Date(t.next_renewal_date);
+            startDate = subtractBillingMonths(endDate, months);
+          } else {
+            startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+            endDate = addBillingMonths(startDate, 1);
+          }
+
+          const initialCycle = this.billingCycleRepository.create({
+            tenant_id: String(t.id),
+            plan_id: t.plan_id || null,
+            plan_name: t.plan?.plan_name || 'Plan Pro',
+            tokens_limit: t.plan?.tokens_limit || 300000,
+            price: t.plan?.price || 0,
+            billing_period_months: months,
+            start_date: startDate,
+            end_date: endDate,
+            status: t.is_active ? 'active' : 'closed',
+            allow_extra: t.allow_extra ?? false,
+            tokens_used_at_close: 0,
+            tokens_extra_used_at_close: 0,
+            tokens_courtesy_at_close: 0,
+          });
+          await this.billingCycleRepository.save(initialCycle);
+          this.logger.log(`Backfill de ciclo inicial creado para organización '${t.name}' (ID ${t.id}).`);
+        }
+      }
+    } catch (err: any) {
+      this.logger.error(`Error en onModuleInit de TenantsService: ${err.message}`);
+    }
+  }
+
+  /**
+   * Obtiene el historial completo de ciclos de facturación de un tenant (activos y pasados)
+   * calculando el consumo dinámico en tiempo real para el ciclo activo.
+   */
+  async getBillingCycles(tenantId?: number, schemaName?: string) {
+    let targetTenant: Tenant | null = null;
+    if (tenantId) {
+      targetTenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
+    } else if (schemaName) {
+      targetTenant = await this.tenantRepository.findOne({ where: { schema_name: schemaName } });
+    } else {
+      const activeSchema = TenantContextService.getTenantSchema() || 'public';
+      targetTenant = await this.tenantRepository.findOne({ where: { schema_name: activeSchema } });
+    }
+
+    if (!targetTenant) {
+      return [];
+    }
+
+    const cycles = await this.billingCycleRepository.find({
+      where: { tenant_id: String(targetTenant.id) },
+      order: { start_date: 'DESC', id: 'DESC' },
+    });
+
+    const result = await Promise.all(
+      cycles.map(async (cycle) => {
+        let tokensUsed = cycle.tokens_used_at_close || 0;
+        let tokensExtraUsed = cycle.tokens_extra_used_at_close || 0;
+        let tokensCourtesyUsed = cycle.tokens_courtesy_at_close || 0;
+        let totalAccumulated = tokensUsed + tokensExtraUsed + tokensCourtesyUsed;
+
+        if (cycle.status === 'active' && targetTenant) {
+          const consumption = await this.subscriptionValidator.getTokensConsumptionInPeriod(
+            targetTenant.schema_name,
+            cycle.start_date,
+            cycle.end_date,
+            cycle.tokens_limit
+          );
+          tokensUsed = consumption.tokensUsed;
+          tokensExtraUsed = cycle.allow_extra ? consumption.tokensExtraUsed : 0;
+          tokensCourtesyUsed = consumption.tokensCourtesyUsed;
+          totalAccumulated = consumption.totalAccumulated;
+        }
+
+        return {
+          id: cycle.id,
+          tenant_id: cycle.tenant_id,
+          plan_id: cycle.plan_id,
+          plan_name: cycle.plan_name,
+          tokens_limit: cycle.tokens_limit,
+          price: Number(cycle.price),
+          billing_period_months: cycle.billing_period_months,
+          start_date: cycle.start_date,
+          end_date: cycle.end_date,
+          closed_at: cycle.closed_at,
+          status: cycle.status,
+          close_reason: cycle.close_reason,
+          allow_extra: cycle.allow_extra,
+          tokens_used: tokensUsed,
+          tokens_extra_used: tokensExtraUsed,
+          tokens_courtesy_used: tokensCourtesyUsed,
+          total_tokens_consumed: totalAccumulated,
+          created_at: cycle.created_at,
+        };
+      })
+    );
+
+    return result;
+  }
 
   async provision(dto: ProvisionTenantDto) {
     return this.tenantProvisioner.provisionTenant(dto);
@@ -336,12 +803,79 @@ export class TenantsService implements OnModuleInit {
       tenant.is_active = true;
 
       const now = new Date();
+      let activeCycle = await this.billingCycleRepository.findOne({
+        where: { tenant_id: String(tenant.id), status: 'active' },
+        order: { start_date: 'DESC' },
+      });
+
       if (dto.immediatePolicy === 'keep_current_date' && tenant.next_renewal_date && tenant.next_renewal_date > now) {
         // Conservar la fecha de renovación actual
+        if (activeCycle) {
+          activeCycle.plan_id = targetPlan.plan_id;
+          activeCycle.plan_name = targetPlan.plan_name;
+          activeCycle.tokens_limit = targetPlan.tokens_limit;
+          activeCycle.price = targetPlan.price;
+          activeCycle.billing_period_months = months;
+          activeCycle.close_reason = 'immediate_keep_date';
+          if (dto.allowExtra !== undefined) {
+            activeCycle.allow_extra = dto.allowExtra;
+          }
+          await this.billingCycleRepository.save(activeCycle);
+        } else {
+          activeCycle = this.billingCycleRepository.create({
+            tenant_id: String(tenant.id),
+            plan_id: targetPlan.plan_id,
+            plan_name: targetPlan.plan_name,
+            tokens_limit: targetPlan.tokens_limit,
+            price: targetPlan.price,
+            billing_period_months: months,
+            start_date: tenant.created_at || now,
+            end_date: tenant.next_renewal_date,
+            status: 'active',
+            close_reason: 'immediate_keep_date',
+            allow_extra: tenant.allow_extra,
+          });
+          await this.billingCycleRepository.save(activeCycle);
+        }
       } else {
         // Reiniciar ciclo calculando desde ahora con protección de bisiestos y fin de mes
         const nextRenewal = addBillingMonths(now, months);
         tenant.next_renewal_date = nextRenewal;
+
+        // Congelar y cerrar ciclo activo previo
+        if (activeCycle) {
+          const consumption = await this.subscriptionValidator.getTokensConsumptionInPeriod(
+            tenant.schema_name,
+            activeCycle.start_date,
+            now,
+            activeCycle.tokens_limit
+          );
+          activeCycle.status = 'closed';
+          activeCycle.closed_at = now;
+          activeCycle.close_reason = 'immediate_reset';
+          activeCycle.tokens_used_at_close = consumption.tokensUsed;
+          activeCycle.tokens_extra_used_at_close = activeCycle.allow_extra ? consumption.tokensExtraUsed : 0;
+          activeCycle.tokens_courtesy_at_close = consumption.tokensCourtesyUsed;
+          await this.billingCycleRepository.save(activeCycle);
+        }
+
+        // Abrir nuevo ciclo activo
+        const newCycle = this.billingCycleRepository.create({
+          tenant_id: String(tenant.id),
+          plan_id: targetPlan.plan_id,
+          plan_name: targetPlan.plan_name,
+          tokens_limit: targetPlan.tokens_limit,
+          price: targetPlan.price,
+          billing_period_months: months,
+          start_date: now,
+          end_date: nextRenewal,
+          status: 'active',
+          allow_extra: tenant.allow_extra,
+          tokens_used_at_close: 0,
+          tokens_extra_used_at_close: 0,
+          tokens_courtesy_at_close: 0,
+        });
+        await this.billingCycleRepository.save(newCycle);
       }
 
       const savedTenant = await this.tenantRepository.save(tenant);
@@ -537,14 +1071,25 @@ export class TenantsService implements OnModuleInit {
   async updateAllowExtra(tenantId: number, allowExtra: boolean) {
     const tenant = await this.findOne(tenantId);
     tenant.allow_extra = allowExtra;
-    return this.tenantRepository.save(tenant);
+    const saved = await this.tenantRepository.save(tenant);
+    await this.billingCycleRepository.update(
+      { tenant_id: String(tenant.id), status: 'active' },
+      { allow_extra: allowExtra }
+    );
+    return saved;
   }
 
   async update(id: number, dto: { name?: string; is_active?: boolean; allow_extra?: boolean }) {
     const tenant = await this.findOne(id);
     if (dto.name !== undefined) tenant.name = dto.name;
     if (dto.is_active !== undefined) tenant.is_active = dto.is_active;
-    if (dto.allow_extra !== undefined) tenant.allow_extra = dto.allow_extra;
+    if (dto.allow_extra !== undefined) {
+      tenant.allow_extra = dto.allow_extra;
+      await this.billingCycleRepository.update(
+        { tenant_id: String(tenant.id), status: 'active' },
+        { allow_extra: dto.allow_extra }
+      );
+    }
     return this.tenantRepository.save(tenant);
   }
 
@@ -552,6 +1097,8 @@ export class TenantsService implements OnModuleInit {
     const tenant = await this.findOne(id);
     const schemaName = tenant.schema_name;
 
+    await this.billingCycleRepository.delete({ tenant_id: String(tenant.id) });
+    await this.queueRepository.delete({ tenant_id: String(tenant.id) });
     await this.tenantRepository.remove(tenant);
 
     if (schemaName && schemaName !== 'public' && /^[a-z0-9_]+$/.test(schemaName)) {

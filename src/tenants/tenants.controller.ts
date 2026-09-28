@@ -30,6 +30,36 @@ export class TenantsController {
     return this.tenantsService.getConsumption(schemaName);
   }
 
+  @SkipThrottle()
+  @Get('consumption/breakdown')
+  async getConsumptionBreakdown(
+    @Query('schemaName') schemaName?: string,
+    @Query('tenantId') tenantId?: number,
+    @Query('cycleId') cycleId?: number,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    return this.tenantsService.getConsumptionBreakdown(
+      schemaName,
+      tenantId ? Number(tenantId) : undefined,
+      cycleId ? Number(cycleId) : undefined,
+      startDate,
+      endDate
+    );
+  }
+
+  @SkipThrottle()
+  @Get('billing-cycles')
+  async getBillingCycles(
+    @Query('tenantId') tenantId?: number,
+    @Query('schemaName') schemaName?: string,
+  ) {
+    return this.tenantsService.getBillingCycles(
+      tenantId ? Number(tenantId) : undefined,
+      schemaName,
+    );
+  }
+
   @Get('courtesy-overages')
   async getCourtesyOverages() {
     return this.tenantsService.getCourtesyOveragesReport();
@@ -72,6 +102,12 @@ export class TenantsController {
   @Get(':id/renewal-queue')
   async getRenewalQueue(@Param('id', ParseIntPipe) id: number) {
     return this.tenantsService.getRenewalQueue(id);
+  }
+
+  @SkipThrottle()
+  @Get(':id/billing-cycles')
+  async getTenantBillingCyclesById(@Param('id', ParseIntPipe) id: number) {
+    return this.tenantsService.getBillingCycles(id);
   }
 
   @Put(':id/plan')

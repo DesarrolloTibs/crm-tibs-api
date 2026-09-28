@@ -5,6 +5,7 @@ import { AiSubAgent } from './entities/ai-sub-agent.entity';
 import { AiAgentOrchestratorService, AgentStateAnnotation, AgentState } from './ai-agent-orchestrator.service';
 import { AiSubAgentMigrationService } from './ai-sub-agent-migration.service';
 import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
+import { ConsumptionAuditContext, TurnTokenAccumulator } from '../subscriptions/subscription-validator.service';
 
 // Re-export types consumed by other modules (WebchatService, etc.)
 export type { AgentState };
@@ -76,9 +77,14 @@ export class AiAgentService implements OnModuleInit {
   // ── Public helpers used by external modules ─────────────────────────────
 
   /** Invokes the LLM with the active config. Used by WebchatService. */
-  async invokeLanguageModel(prompt: string, temperatureOverride?: number): Promise<string> {
+  async invokeLanguageModel(prompt: string, temperatureOverride?: number, auditContext?: ConsumptionAuditContext): Promise<string> {
     const config = await this.orchestrator.getOrInitConfig();
-    return this.orchestrator.callLLM(config, prompt, temperatureOverride);
+    return this.orchestrator.callLLM(config, prompt, temperatureOverride, auditContext);
+  }
+
+  /** Commits the accumulated tokens for a completed turn/interaction into a single transaction. */
+  async commitTurnConsumption(turnAccumulator: TurnTokenAccumulator, actionName: string, auditContext: ConsumptionAuditContext): Promise<void> {
+    return this.orchestrator.commitTurnConsumption(turnAccumulator, actionName, auditContext);
   }
 
   /** Sanitizes LLM JSON output. Used by WebchatService. */

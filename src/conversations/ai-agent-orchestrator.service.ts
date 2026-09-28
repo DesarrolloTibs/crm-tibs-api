@@ -12,7 +12,7 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 import { PhoneUtils } from '../common/utils/phone.utils';
 import { ActivitiesService } from '../activities/activities.service';
 import { ClientsService } from '../clients/clients.service';
-import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
+import { SubscriptionValidatorService, ConsumptionAuditContext, TurnTokenAccumulator } from '../subscriptions/subscription-validator.service';
 import { TenantConcurrencyService } from '../subscriptions/tenant-concurrency.service';
 import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
@@ -248,19 +248,19 @@ export class AiAgentOrchestratorService {
    * Runs under TenantConcurrencyService to regulate concurrent LLM calls per tenant,
    * with an unlimited waiting queue and instant circuit-breaker purge on quota limits.
    */
-  async callLLM(config: AiAgentConfig, prompt: string, temperatureOverride?: number): Promise<string> {
+  async callLLM(config: AiAgentConfig, prompt: string, temperatureOverride?: number, auditContext?: ConsumptionAuditContext): Promise<string> {
     const activeSchema = TenantContextService.getTenantSchema();
     if (!activeSchema || activeSchema === 'public') {
-      return this.executeLLM(config, prompt, temperatureOverride);
+      return this.executeLLM(config, prompt, temperatureOverride, auditContext);
     }
 
     return this.tenantConcurrency.runWithSlot(activeSchema, async () => {
       await this.subscriptionValidator.checkSubscriptionLimits(activeSchema);
-      return this.executeLLM(config, prompt, temperatureOverride);
+      return this.executeLLM(config, prompt, temperatureOverride, auditContext);
     });
   }
 
-  private async executeLLM(config: AiAgentConfig, prompt: string, temperatureOverride?: number): Promise<string> {
+  private async executeLLM(config: AiAgentConfig, prompt: string, temperatureOverride?: number, auditContext?: ConsumptionAuditContext): Promise<string> {
     const provider = config.modelProvider;
     const model = config.modelName;
     const maxTokens = config.maxNewTokens || 2048;
@@ -269,21 +269,21 @@ export class AiAgentOrchestratorService {
     if (provider === 'openai') {
       const apiKey = config.openaiApiKey || process.env.OPENAI_API_KEY;
       if (!apiKey) throw new Error('API Key de OpenAI no configurada.');
-      return this.callOpenAI(model, apiKey, prompt, temperature, config.openaiEndpoint || null, config.openaiApiVersion || null, maxTokens);
+      return this.callOpenAI(model, apiKey, prompt, temperature, config.openaiEndpoint || null, config.openaiApiVersion || null, maxTokens, auditContext);
     } else if (provider === 'watsonx') {
       const apiKey = config.watsonxApiKey || process.env.WATSONX_API_KEY;
       const projectId = config.watsonxProjectId || process.env.WATSONX_PROJECT_ID;
       const region = config.watsonxRegion || process.env.WATSONX_REGION || 'us-south';
       if (!apiKey || !projectId) throw new Error('Credenciales de IBM WatsonX no configuradas.');
-      return this.callWatsonx(model, apiKey, projectId, region, prompt, temperature, maxTokens);
+      return this.callWatsonx(model, apiKey, projectId, region, prompt, temperature, maxTokens, auditContext);
     } else {
       const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
       if (!apiKey) throw new Error('API Key de Gemini no configurada.');
-      return this.callGemini(model, apiKey, prompt, temperature, maxTokens);
+      return this.callGemini(model, apiKey, prompt, temperature, maxTokens, auditContext);
     }
   }
 
-  private async callGemini(model: string, apiKey: string, prompt: string, temperature: number, maxNewTokens = 2048): Promise<string> {
+  private async callGemini(model: string, apiKey: string, prompt: string, temperature: number, maxNewTokens = 2048, auditContext?: ConsumptionAuditContext): Promise<string> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     const numericTemp = typeof temperature === 'number' ? temperature : parseFloat(String(temperature || 0.7));
     const response = await fetch(url, {
@@ -298,11 +298,11 @@ export class AiAgentOrchestratorService {
     const outputTokens = data.usageMetadata?.candidatesTokenCount || 0;
     const totalTokens = data.usageMetadata?.totalTokenCount || 0;
     this.logger.log(`[Token Usage] Gemini - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
-    await this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, 'gemini_execution');
+    await this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, 'gemini_execution', { ...auditContext, modelName: model });
     return text.trim();
   }
 
-  private async callOpenAI(model: string, apiKey: string, prompt: string, temperature: number, endpoint?: string | null, apiVersion?: string | null, maxNewTokens = 2048): Promise<string> {
+  private async callOpenAI(model: string, apiKey: string, prompt: string, temperature: number, endpoint?: string | null, apiVersion?: string | null, maxNewTokens = 2048, auditContext?: ConsumptionAuditContext): Promise<string> {
     const isAzure = !!endpoint;
     const url = isAzure
       ? `${endpoint.replace(/\/$/, '')}/openai/deployments/${model}/chat/completions?api-version=${apiVersion || '2024-12-01-preview'}`
@@ -321,7 +321,7 @@ export class AiAgentOrchestratorService {
     const outputTokens = data.usage?.completion_tokens || 0;
     const totalTokens = data.usage?.total_tokens || 0;
     this.logger.log(`[Token Usage] ${isAzure ? 'Azure ' : ''}OpenAI - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
-    await this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, isAzure ? 'azure_openai_execution' : 'openai_execution');
+    await this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, isAzure ? 'azure_openai_execution' : 'openai_execution', { ...auditContext, modelName: model });
     return text.trim();
   }
 
@@ -364,7 +364,7 @@ export class AiAgentOrchestratorService {
     throw new Error(`No se pudo autenticar con IBM Cloud para WatsonX tras reintentos: ${lastErr?.message}`);
   }
 
-  private async callWatsonx(model: string, apiKey: string, projectId: string, region: string, prompt: string, temperature: number, maxNewTokens = 2048): Promise<string> {
+  private async callWatsonx(model: string, apiKey: string, projectId: string, region: string, prompt: string, temperature: number, maxNewTokens = 2048, auditContext?: ConsumptionAuditContext): Promise<string> {
     const iamToken = await this.getWatsonxIamToken(apiKey);
     const rawRegion = region || 'us-south';
     const baseUrl = rawRegion.startsWith('http') ? rawRegion.replace(/\/$/, '') : `https://${rawRegion}.ml.cloud.ibm.com`;
@@ -412,18 +412,87 @@ export class AiAgentOrchestratorService {
     const inputTokens = data.results?.[0]?.input_token_count || 0;
     const outputTokens = data.results?.[0]?.generated_token_count || 0;
     this.logger.log(`[Token Usage] WatsonX - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${inputTokens + outputTokens}`);
-    await this.recordTokenConsumption(inputTokens, outputTokens, inputTokens + outputTokens, 'watsonx_execution');
+    await this.recordTokenConsumption(inputTokens, outputTokens, inputTokens + outputTokens, 'watsonx_execution', { ...auditContext, modelName: model });
     return rawText.trim();
   }
 
-  private async recordTokenConsumption(promptTokens: number, completionTokens: number, totalTokens: number, actionName = 'ai_execution'): Promise<void> {
+  private async recordTokenConsumption(
+    promptTokens: number,
+    completionTokens: number,
+    totalTokens: number,
+    actionName = 'ai_execution',
+    auditContext?: ConsumptionAuditContext,
+  ): Promise<void> {
+    const step = auditContext?.metadata?.step;
+    const route = auditContext?.metadata?.route;
+    let effectiveAction = auditContext?.metadata?.action || actionName;
+    if (step === 'router') {
+      effectiveAction = 'router';
+    } else if (step === 'subagent') {
+      effectiveAction = route ? `subagent_${route}` : 'subagent';
+    } else if (step) {
+      effectiveAction = step;
+    }
+
+    if (auditContext?.turnAccumulator) {
+      auditContext.turnAccumulator.promptTokens += promptTokens;
+      auditContext.turnAccumulator.completionTokens += completionTokens;
+      auditContext.turnAccumulator.totalTokens += totalTokens;
+      auditContext.turnAccumulator.steps.push(effectiveAction);
+      if (auditContext.modelName && !auditContext.turnAccumulator.models.includes(auditContext.modelName)) {
+        auditContext.turnAccumulator.models.push(auditContext.modelName);
+      }
+      return;
+    }
+
     const activeSchema = TenantContextService.getTenantSchema() || 'public';
     if (activeSchema !== 'public' && totalTokens > 0) {
       try {
-        await this.subscriptionValidator.recordConsumption(activeSchema, promptTokens, completionTokens, totalTokens, false, actionName);
+        await this.subscriptionValidator.recordConsumption(
+          activeSchema,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          false,
+          effectiveAction,
+          auditContext,
+        );
         this.eventEmitter.emit(CONVERSATION_EVENTS.TENANT_CONSUMPTION_UPDATED, { schemaName: activeSchema });
       } catch (err: any) {
         this.logger.error(`Error al registrar consumo de tokens para tenant ${activeSchema}: ${err.message}`);
+      }
+    }
+  }
+
+  async commitTurnConsumption(
+    turnAccumulator: TurnTokenAccumulator,
+    actionName: string,
+    auditContext: ConsumptionAuditContext,
+  ): Promise<void> {
+    const activeSchema = TenantContextService.getTenantSchema() || 'public';
+    if (activeSchema !== 'public' && turnAccumulator.totalTokens > 0) {
+      try {
+        const primaryModel = turnAccumulator.models.join(', ') || auditContext.modelName || null;
+        await this.subscriptionValidator.recordConsumption(
+          activeSchema,
+          turnAccumulator.promptTokens,
+          turnAccumulator.completionTokens,
+          turnAccumulator.totalTokens,
+          false,
+          actionName,
+          {
+            ...auditContext,
+            turnAccumulator: undefined,
+            modelName: primaryModel,
+            metadata: {
+              ...(auditContext.metadata || {}),
+              steps: turnAccumulator.steps,
+            },
+          },
+        );
+        this.eventEmitter.emit(CONVERSATION_EVENTS.TENANT_CONSUMPTION_UPDATED, { schemaName: activeSchema });
+      } catch (err: any) {
+        this.logger.error(`Error al registrar consumo acumulado de mensaje para tenant ${activeSchema}: ${err.message}`);
       }
     }
   }
@@ -477,7 +546,15 @@ ${conversation.summary || 'No hay historial previo registrado.'}
 ${recentTurnText}
 
 NUEVO RESUMEN ACUMULADO:`;
-      const newSummary = await this.callLLM(config, summaryPrompt);
+      const summaryAuditContext: ConsumptionAuditContext = {
+        conversationId: conversation.id,
+        clientId: conversation.clientId,
+        clientName: conversation.clientName,
+        channel: (conversation.channel as any) || 'whatsapp',
+        userId: conversation.assignedUserId,
+        metadata: { action: 'conversation_summary' },
+      };
+      const newSummary = await this.callLLM(config, summaryPrompt, undefined, summaryAuditContext);
       if (newSummary && newSummary.trim() !== '') {
         conversation.summary = newSummary.trim();
         await this.aiAgentConfigRepository.manager.save(Conversation, conversation);
@@ -501,7 +578,26 @@ NUEVO RESUMEN ACUMULADO:`;
     const config = await this.getOrInitConfig();
     if (!config.isActive) return { reply: '', route: 'inactive', isHandedOff: false };
 
+    const turnAccumulator: TurnTokenAccumulator = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      steps: [],
+      models: [],
+    };
+
+    const baseAuditContext: ConsumptionAuditContext = {
+      conversationId: conversation.id,
+      clientId: conversation.clientId,
+      clientName: conversation.clientName,
+      channel: (conversation.channel as any) || 'whatsapp',
+      userId: conversation.assignedUserId,
+      turnAccumulator,
+    };
+
+    let finalState: any = null;
     try {
+
       // 1. Build omni-channel history
       const historyLimit = config.historyMessageLimit && config.historyMessageLimit > 0 ? config.historyMessageLimit : 10;
       let messages: Message[] = [];
@@ -571,7 +667,7 @@ Cliente: ${incomingContent}
 
 Genera la clasificación en formato JSON (iniciando con { y terminando con }):`;
 
-        let routerResponse = await this.callLLM(config, routerPrompt);
+        let routerResponse = await this.callLLM(config, routerPrompt, undefined, { ...baseAuditContext, metadata: { step: 'router' } });
         this.logger.log(`[DEBUG - Router Raw Response] Salida: "${routerResponse}"`);
         routerResponse = this.cleanJsonOutput(routerResponse);
         let selectedRoute = 'general';
@@ -631,7 +727,7 @@ Cliente: ${incomingContent}
 
 Genera el JSON de salida:
 {"thought": "`;
-        let identResponse = await this.callLLM(config, identPrompt);
+        let identResponse = await this.callLLM(config, identPrompt, undefined, { ...baseAuditContext, metadata: { step: 'identification' } });
         identResponse = this.cleanJsonOutput(identResponse);
         try {
           const action = JSON.parse(identResponse);
@@ -736,7 +832,7 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
         }
 
         const prompt = `${systemPrompt}${preFetchCatalogText}\n\n[HISTORIAL]\n${historyText}\n\n[CLIENTE] ${incomingContent}${toolExecutionText}\n\nJSON:`;
-        let agentResponse = await this.callLLM(config, prompt, subAgent?.temperature ?? config.temperature);
+        let agentResponse = await this.callLLM(config, prompt, subAgent?.temperature ?? config.temperature, { ...baseAuditContext, metadata: { step: 'subagent', route: state.route } });
         this.logger.log(`[DEBUG - SubAgent Raw Response] Salida: "${agentResponse}"`);
 
         const isTemplateOnly = agentResponse.includes('"..."') || agentResponse.includes('{"thought": "..."') || agentResponse.includes('tool_name": "..."');
@@ -756,7 +852,7 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
             } catch (err: any) { this.logger.error(`Error en RAG/Capa Semántica para rescate: ${err.message}`); }
           }
           const rescuePrompt = `Eres el asistente de IA del CRM. Responde de forma amigable, natural y muy breve al cliente en su mismo idioma. No utilices formato JSON.\n\n${ragContextText || 'REGLAS: Está estrictamente PROHIBIDO inventar nombres de productos, marcas, precios o servicios.'}\n\n[RESUMEN DE LAS CONVERSACIONES PASADAS]\n${conversation.summary || 'No hay historial previo registrado.'}\n\n[HISTORIAL DE CONVERSACIÓN RECIENTE]\n${historyText}\n\n[ÚLTIMO MENSAJE]\nCliente: ${incomingContent}\n\nAsistente:`;
-          const rescueResponse = await this.callLLM(config, rescuePrompt);
+          const rescueResponse = await this.callLLM(config, rescuePrompt, undefined, { ...baseAuditContext, metadata: { step: 'rescue' } });
           if (rescueResponse && rescueResponse.trim() !== '') {
             this.logger.log(`[LangGraph - SubAgent Rescue] Respuesta conversacional libre generada con éxito.`);
             return { nextAction: 'respond', response: rescueResponse.trim() };
@@ -967,7 +1063,7 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
       workflow.addConditionalEdges('executeToolNode', () => 'subAgentNode', { subAgentNode: 'subAgentNode' });
 
       const app = workflow.compile();
-      const finalState = await app.invoke({ clientId: conversation.clientId || null, route: 'general', nextAction: null, toolCallName: null, toolCallInput: null, toolCallResult: null, response: null } as any, { recursionLimit: 15 });
+      finalState = await app.invoke({ clientId: conversation.clientId || null, route: 'general', nextAction: null, toolCallName: null, toolCallInput: null, toolCallResult: null, response: null } as any, { recursionLimit: 15 });
 
       const agentReply = finalState.response || 'He procesado tu solicitud en el sistema. ¿Te puedo colaborar en algo más?';
       this.updateConversationSummaryAsync(conversation, messages, incomingContent, agentReply).catch(err => {
@@ -989,6 +1085,11 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
       }
       this.logger.error('Error en el motor conversacional LangGraph:', err);
       return { reply: 'Lo siento, en este momento no puedo procesar tu solicitud de forma automática.', route: 'error', isHandedOff: false };
+    } finally {
+      if (turnAccumulator.totalTokens > 0) {
+        const finalAction = finalState?.route ? `subagent_${finalState.route}` : (turnAccumulator.steps[turnAccumulator.steps.length - 1] || 'asistente_virtual');
+        await this.commitTurnConsumption(turnAccumulator, finalAction, baseAuditContext);
+      }
     }
   }
 }

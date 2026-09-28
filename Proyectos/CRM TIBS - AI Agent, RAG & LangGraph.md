@@ -142,3 +142,21 @@ En lugar de depender de prompts estáticos, el agente opera mediante un grafo de
   4. **Flexibilidad en Validación de `productId` (Zod Schema):**
      - En `OpportunityItemSchema`, se flexibilizó la validación de `productId` (`z.string().optional()`) para evitar que si el modelo LLM envía el nombre del producto en lugar de un UUID (ej. `{"productId": "Prolene 6-0"}`), Zod no rechace la ejecución de la herramienta con `Invalid UUID`.
      - En `AiAgentToolsHandlerService`, se incorporó validación segura mediante regex UUID (`isValidUuid`). Si `productId` no es un UUID válido, se toma como texto de búsqueda hacia `findProductsFromSemanticLayer`, resolviendo de forma infalible el producto correcto.
+
+
+### 📊 Desglose de Inferencia Multietapa y Auditoría Semántica de Tokens (`router` vs `subagent`)
+* **Ciclo de Ejecución en 2 Etapas por Mensaje:**
+  Cada mensaje entrante procesado por `AiAgentOrchestratorService.processIncomingMessage` ejecuta dos llamadas HTTP independientes al LLM subyacente (IBM WatsonX, Google Gemini o OpenAI):
+  1. **Etapa 1 — Enrutador (`router`):** Invocación de clasificación rápida donde el modelo analiza la intención del cliente y el catálogo de subagentes activos, devolviendo un JSON con la ruta seleccionada (`comercial`, `seguimiento`, `soporte`, `general`). Consumo típico: ~1,000 - 1,500 tokens.
+  2. **Etapa 2 — Subagente Especializado (`subagent` / `subagent_<route>`):** Invocación profunda con el system prompt del subagente seleccionado, conocimiento RAG, herramientas del CRM (catálogo, disponibilidad, cotizaciones) e historial conversacional. Consumo típico: ~3,000 - 5,000 tokens.
+* **Auditoría Semántica en `transaction_history`:**
+  - Anteriormente, ambas transacciones persistían con el nombre genérico del proveedor (`watsonx_execution`, `gemini_execution`), lo que en la interfaz de usuario se mostraba como dos filas idénticas para una misma interacción.
+  - Se configuró la propagación del paso semántico en `AiAgentOrchestratorService.recordTokenConsumption`: el campo `action_name` guarda de manera diferenciada `'router'`, `'subagent_<route>'`, `'rescue'` o `'conversation_summary'`, permitiendo que el panel de auditoría (`AiConsumptionSection`) muestre badges legibles como *\"Atención Inicial & Enrutamiento\"* y *\"Asesor Comercial / Respuesta del Asistente\"*.
+
+
+### 📦 Consolidación Atómica de Tokens por Mensaje (`TurnTokenAccumulator`)
+* **Problema Previo:** Cada llamada intermedia (Router, Subagente, Rescate) registraba de inmediato una transacción individual en `transaction_history`. Esto saturaba el historial con múltiples registros de segundos de diferencia para un único mensaje del usuario (ej. 1,377 tokens para Router y 4,159 tokens para Subagente).
+* **Solución Implementada:**
+  1. Se introdujo `TurnTokenAccumulator` en `ConsumptionAuditContext` con contadores en memoria (`promptTokens`, `completionTokens`, `totalTokens`, `steps: string[]`, `models: string[]`).
+  2. Al procesar mensajes entrantes (`AiAgentOrchestratorService.processIncomingMessage` y `WebchatService.processQuery`), las llamadas internas al LLM acumulan su consumo en el acumulador en lugar de escribir de inmediato en la base de datos.
+  3. En el bloque `finally` de la interacción, se ejecuta `commitTurnConsumption`, persistiendo **un único registro consolidado en `transaction_history`** con la suma exacta de recursos (`prompt_tokens`, `completion_tokens`, `total_tokens`), etiquetado con la acción del subagente resolutivo (ej. `subagent_comercial`, `subagent_ventas`) y registrando en `metadata.steps` la traza de pasos (`['router', 'subagent']`).

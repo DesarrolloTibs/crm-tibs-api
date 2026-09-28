@@ -1,9 +1,29 @@
-import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
+import { Injectable, HttpException, HttpStatus, OnModuleInit } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { subtractBillingMonths } from '../common/utils/billing-date.util';
 
 export interface CheckSubscriptionResult {
   is_extra: boolean;
+}
+
+export interface TurnTokenAccumulator {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  steps: string[];
+  models: string[];
+}
+
+export interface ConsumptionAuditContext {
+  userId?: string | null;
+  userName?: string | null;
+  clientId?: string | null;
+  clientName?: string | null;
+  conversationId?: string | null;
+  channel?: 'whatsapp' | 'webchat_interno' | 'messenger' | 'instagram' | 'rag' | string | null;
+  modelName?: string | null;
+  metadata?: Record<string, any> | null;
+  turnAccumulator?: TurnTokenAccumulator;
 }
 
 export interface SubscriptionErrorPayload {
@@ -17,8 +37,42 @@ export interface SubscriptionErrorPayload {
 }
 
 @Injectable()
-export class SubscriptionValidatorService {
+export class SubscriptionValidatorService implements OnModuleInit {
   constructor(private readonly dataSource: DataSource) {}
+
+  async onModuleInit() {
+    await this.ensureAuditColumnsExist();
+  }
+
+  /**
+   * Garantiza que todos los esquemas de tenants activos cuenten con las columnas de auditoría en transaction_history
+   */
+  async ensureAuditColumnsExist(): Promise<void> {
+    try {
+      const tenants = await this.dataSource.query(`SELECT schema_name FROM public.tenants WHERE is_active = true`);
+      for (const t of tenants) {
+        const schema = t.schema_name;
+        if (!schema || schema === 'public' || !/^[a-z0-9_]+$/.test(schema)) continue;
+        await this.dataSource.query(`
+          ALTER TABLE "${schema}".transaction_history 
+            ADD COLUMN IF NOT EXISTS user_id uuid NULL,
+            ADD COLUMN IF NOT EXISTS user_name varchar(255) NULL,
+            ADD COLUMN IF NOT EXISTS client_id uuid NULL,
+            ADD COLUMN IF NOT EXISTS client_name varchar(255) NULL,
+            ADD COLUMN IF NOT EXISTS conversation_id uuid NULL,
+            ADD COLUMN IF NOT EXISTS channel varchar(50) NULL,
+            ADD COLUMN IF NOT EXISTS model_name varchar(100) NULL,
+            ADD COLUMN IF NOT EXISTS metadata jsonb NULL;
+
+          CREATE INDEX IF NOT EXISTS "idx_${schema}_th_fecha" ON "${schema}".transaction_history (fecha_procesamiento DESC);
+          CREATE INDEX IF NOT EXISTS "idx_${schema}_th_channel" ON "${schema}".transaction_history (channel);
+          CREATE INDEX IF NOT EXISTS "idx_${schema}_th_extra" ON "${schema}".transaction_history (is_extra);
+        `).catch(() => {});
+      }
+    } catch (err: any) {
+      // Ignorar fallback si la BD está inicializando
+    }
+  }
 
   /**
    * Obtiene la información del plan del tenant desde public.tenants y public.plans
@@ -26,7 +80,7 @@ export class SubscriptionValidatorService {
   async getTenantPlanInfo(tenantIdOrSchema: string) {
     const rows = await this.dataSource.query(
       `SELECT 
-         t.id, t.name, t.schema_name, t.plan_id, t.next_renewal_date, t.is_active, t.allow_extra,
+         t.id, t.name, t.schema_name, t.plan_id, t.next_renewal_date, t.is_active, t.allow_extra, t.logo,
          p.plan_name, p.price, p.tokens_limit, p.billing_period_months, p.blnstatus
        FROM public.tenants t
        LEFT JOIN public.plans p ON t.plan_id = p.plan_id
@@ -44,6 +98,7 @@ export class SubscriptionValidatorService {
       tenant_name: row.name,
       schema_name: row.schema_name,
       plan_id: row.plan_id,
+      logo: row.logo,
       next_renewal_date: row.next_renewal_date ? new Date(row.next_renewal_date) : null,
       is_active: Boolean(row.is_active),
       allow_extra: Boolean(row.allow_extra),
@@ -56,36 +111,52 @@ export class SubscriptionValidatorService {
   }
 
   /**
-   * Obtiene la suma total de tokens consumidos en el período de facturación activo
-   * y los desglosa dinámicamente en consumo base (hasta tokensLimit) y consumo extra.
+   * Obtiene el consumo desglosado en el período de facturación activo respetando la inmutabilidad
+   * de las transacciones:
+   * - baseTotal (is_extra = false): hasta tokensLimit va a tokensUsed, cualquier excedente es cortesía absorbida (tokensCourtesyUsed)
+   * - extraTotal (is_extra = true): consumo extra real facturable (tokensExtraUsed)
+   * De este modo, si se activa allow_extra posteriormente, los tokens de cortesía previa no se le cobran al cliente.
    */
   async getTokensConsumptionInPeriod(
     schemaName: string, 
     periodStart: Date, 
     periodEnd: Date,
     tokensLimit: number
-  ): Promise<{ tokensUsed: number; tokensExtraUsed: number }> {
+  ): Promise<{ tokensUsed: number; tokensExtraUsed: number; tokensCourtesyUsed: number; totalAccumulated: number }> {
     try {
       const result = await this.dataSource.query(
-        `SELECT COALESCE(SUM(total_tokens), 0) AS total 
+        `SELECT 
+           COALESCE(SUM(CASE WHEN is_extra = false THEN total_tokens ELSE 0 END), 0) AS base_total,
+           COALESCE(SUM(CASE WHEN is_extra = true THEN total_tokens ELSE 0 END), 0) AS extra_total,
+           COALESCE(SUM(total_tokens), 0) AS total_accumulated
          FROM "${schemaName}".transaction_history 
          WHERE fecha_procesamiento >= $1 
            AND fecha_procesamiento < $2`,
         [periodStart, periodEnd]
       );
 
-      const totalAccumulated = result[0]?.total ? parseInt(result[0].total, 10) : 0;
+      const baseTotal = result[0]?.base_total ? parseInt(result[0].base_total, 10) : 0;
+      const extraTotal = result[0]?.extra_total ? parseInt(result[0].extra_total, 10) : 0;
+      const totalAccumulated = result[0]?.total_accumulated ? parseInt(result[0].total_accumulated, 10) : (baseTotal + extraTotal);
 
       if (tokensLimit <= 0) {
-        return { tokensUsed: totalAccumulated, tokensExtraUsed: 0 };
+        return { tokensUsed: baseTotal, tokensExtraUsed: extraTotal, tokensCourtesyUsed: 0, totalAccumulated };
       }
 
-      const tokensUsed = Math.min(totalAccumulated, tokensLimit);
-      const tokensExtraUsed = Math.max(0, totalAccumulated - tokensLimit);
+      // Consumo base imputado (hasta el tope contratado)
+      const tokensUsed = Math.min(baseTotal, tokensLimit);
+      // Cortesía absorbida del plan base (desborde técnico previo al encendido de allow_extra)
+      const baseCourtesy = Math.max(0, baseTotal - tokensLimit);
+      // Cortesía absorbida del plan extra si excediera el 100% adicional
+      const extraCourtesy = Math.max(0, extraTotal - tokensLimit);
+      const tokensCourtesyUsed = baseCourtesy + extraCourtesy;
 
-      return { tokensUsed, tokensExtraUsed };
+      // Consumo extra imputado (hasta el 100% adicional)
+      const tokensExtraUsed = Math.min(extraTotal, tokensLimit);
+
+      return { tokensUsed, tokensExtraUsed, tokensCourtesyUsed, totalAccumulated };
     } catch (e) {
-      return { tokensUsed: 0, tokensExtraUsed: 0 };
+      return { tokensUsed: 0, tokensExtraUsed: 0, tokensCourtesyUsed: 0, totalAccumulated: 0 };
     }
   }
 
@@ -154,33 +225,35 @@ export class SubscriptionValidatorService {
     const periodStart = subtractBillingMonths(nextRenewal!, months);
     const periodEnd = nextRenewal!;
 
-    // Sumar consumo actual
-    const tokensUsed = await this.getTokensUsedInPeriod(schemaName, periodStart, periodEnd);
+    // Obtener consumo desglosado en el período respetando la inmutabilidad de cortesías
+    const consumption = await this.getTokensConsumptionInPeriod(schemaName, periodStart, periodEnd, tenantInfo.tokens_limit);
     const tokensLimit = tenantInfo.tokens_limit;
+    const baseUsed = consumption.tokensUsed;
+    const extraUsed = consumption.tokensExtraUsed;
+    const courtesyUsed = consumption.tokensCourtesyUsed;
 
-    // c) Verificar límite de tokens base
-    if (tokensUsed + estimatedTokens <= tokensLimit) {
+    // c) Verificar si cabe en el plan base (solo si no hubo desborde de cortesía y no se satura el plan base)
+    if (courtesyUsed === 0 && (baseUsed + estimatedTokens <= tokensLimit)) {
       return { is_extra: false };
     }
 
     // Excede límite base: verificar si allow_extra == True
     if (tenantInfo.allow_extra) {
       const maxExtraTokens = tokensLimit; // Límite de consumo extra del 100% del plan
-      const totalAllowedTokens = tokensLimit + maxExtraTokens; // Hard Cap: 2x tokens_limit
 
-      if (tokensUsed + estimatedTokens <= totalAllowedTokens) {
+      // La cuota extra solo contabiliza lo que realmente se ha procesado como extra (extraUsed)
+      if (extraUsed + estimatedTokens <= maxExtraTokens) {
         return { is_extra: true };
       }
 
       // Excede el 100% de tokens extra -> Rechazar con HTTP 402 EXTRA_TOKENS_LIMIT_EXCEEDED
-      const tokensExtraUsed = Math.max(0, tokensUsed - tokensLimit);
       throw new HttpException(
         {
           code: 'EXTRA_TOKENS_LIMIT_EXCEEDED',
-          message: `Ha alcanzado el límite máximo de consumo extra permitido (100% adicional del plan: ${maxExtraTokens.toLocaleString()} tokens). Total consumido: ${tokensUsed.toLocaleString()}.`,
-          tokens_used: tokensUsed,
+          message: `Ha alcanzado el límite máximo de consumo extra permitido (100% adicional del plan: ${maxExtraTokens.toLocaleString()} tokens). Extra consumido: ${extraUsed.toLocaleString()}.`,
+          tokens_used: baseUsed,
           tokens_limit: tokensLimit,
-          tokens_extra_used: tokensExtraUsed,
+          tokens_extra_used: extraUsed,
           tokens_extra_limit: maxExtraTokens,
           next_renewal_date: nextRenewal,
         } as SubscriptionErrorPayload,
@@ -192,8 +265,8 @@ export class SubscriptionValidatorService {
     throw new HttpException(
       {
         code: 'TOKENS_LIMIT_EXCEEDED',
-        message: `Ha alcanzado el límite de tokens de su plan (${tokensLimit.toLocaleString()} tokens). Consumidos: ${tokensUsed.toLocaleString()}.`,
-        tokens_used: tokensUsed,
+        message: `Ha alcanzado el límite de tokens de su plan (${tokensLimit.toLocaleString()} tokens). Consumidos: ${baseUsed.toLocaleString()}.`,
+        tokens_used: baseUsed,
         tokens_limit: tokensLimit,
         next_renewal_date: nextRenewal,
       } as SubscriptionErrorPayload,
@@ -210,7 +283,8 @@ export class SubscriptionValidatorService {
     completionTokens: number,
     totalTokens: number,
     isExtra: boolean = false,
-    actionName?: string
+    actionName?: string,
+    auditContext?: ConsumptionAuditContext
   ): Promise<void> {
     let calculatedIsExtra = isExtra;
     if (!calculatedIsExtra) {
@@ -220,8 +294,9 @@ export class SubscriptionValidatorService {
           const months = tenantInfo.billing_period_months || 1;
           const periodStart = subtractBillingMonths(new Date(tenantInfo.next_renewal_date), months);
           
-          const currentTotal = await this.getTokensUsedInPeriod(schemaName, periodStart, tenantInfo.next_renewal_date);
-          if (currentTotal + totalTokens > tenantInfo.tokens_limit) {
+          const consumption = await this.getTokensConsumptionInPeriod(schemaName, periodStart, tenantInfo.next_renewal_date, tenantInfo.tokens_limit);
+          // Si el plan base ya se saturó (baseUsed >= tokensLimit o hubo desborde de cortesía), esta nueva transacción ES EXTRA
+          if (consumption.tokensCourtesyUsed > 0 || consumption.tokensUsed >= tenantInfo.tokens_limit) {
             calculatedIsExtra = true;
           }
         }
@@ -232,9 +307,24 @@ export class SubscriptionValidatorService {
 
     await this.dataSource.query(
       `INSERT INTO "${schemaName}".transaction_history 
-       (prompt_tokens, completion_tokens, total_tokens, fecha_procesamiento, is_extra, action_name) 
-       VALUES ($1, $2, $3, now(), $4, $5)`,
-      [promptTokens, completionTokens, totalTokens, calculatedIsExtra, actionName || null]
+       (prompt_tokens, completion_tokens, total_tokens, fecha_procesamiento, is_extra, action_name,
+        user_id, user_name, client_id, client_name, conversation_id, channel, model_name, metadata) 
+       VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        calculatedIsExtra,
+        actionName || null,
+        auditContext?.userId || null,
+        auditContext?.userName || null,
+        auditContext?.clientId || null,
+        auditContext?.clientName || null,
+        auditContext?.conversationId || null,
+        auditContext?.channel || null,
+        auditContext?.modelName || null,
+        auditContext?.metadata ? JSON.stringify(auditContext.metadata) : null,
+      ]
     );
   }
 }

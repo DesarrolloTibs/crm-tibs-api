@@ -9,6 +9,7 @@ import { WebchatResponseFormatterService } from './services/webchat-response-for
 import { WebchatActionExecutorService } from './services/webchat-action-executor.service';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
+import { ConsumptionAuditContext, TurnTokenAccumulator } from '../subscriptions/subscription-validator.service';
 import {
   ConversationHistoryMessage,
   CubeAnnotation,
@@ -51,6 +52,23 @@ export class WebchatService {
     username: string,
     conversationHistory?: ConversationHistoryMessage[],
   ): Promise<WebchatResponse> {
+    const turnAccumulator: TurnTokenAccumulator = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      steps: [],
+      models: [],
+    };
+
+    const baseAuditContext: ConsumptionAuditContext = {
+      userId,
+      userName: username,
+      channel: 'webchat_interno',
+      turnAccumulator,
+    };
+
+    let classification: any = null;
+
     try {
       const userObj = { id: userId, role: userRole as Role, username } as User;
 
@@ -73,10 +91,13 @@ ${question}
 
 Genera tu respuesta JSON:`;
 
-      const rawRouterResponse = await this.aiAgentService.invokeLanguageModel(fullRouterPrompt, 0.1);
+      const rawRouterResponse = await this.aiAgentService.invokeLanguageModel(fullRouterPrompt, 0.1, {
+        ...baseAuditContext,
+        metadata: { step: 'router' },
+      });
       this.logger.log(`[WebChat - Router Raw] ${rawRouterResponse.substring(0, 250)}`);
 
-      const classification = this.queryPlanner.parseRouterClassification(rawRouterResponse, question);
+      classification = this.queryPlanner.parseRouterClassification(rawRouterResponse, question);
       this.logger.log(`[WebChat - Router Classification] Domain: ${classification.domain} | Intent: ${classification.intent}`);
 
       // 3. Si el Orquestador determina EJECUCIÓN DE ACCIÓN (crear/modificar oportunidad, actividad, ticket)
@@ -116,7 +137,10 @@ ${question}
 
 Genera tu respuesta JSON:`;
 
-      const rawSubAgentResponse = await this.aiAgentService.invokeLanguageModel(fullSubAgentPrompt, 0.2);
+      const rawSubAgentResponse = await this.aiAgentService.invokeLanguageModel(fullSubAgentPrompt, 0.2, {
+        ...baseAuditContext,
+        metadata: { step: 'subagent', domain: classification.domain },
+      });
       this.logger.log(`[WebChat - SubAgent (${classification.domain}) Raw] ${rawSubAgentResponse.substring(0, 300)}`);
 
       // 7. Parsear y estructurar el plan de consulta del sub-agente
@@ -186,6 +210,11 @@ Genera tu respuesta JSON:`;
       }
 
       return { answer: 'Ocurrió un error al procesar tu consulta. Por favor intenta de nuevo.' };
+    } finally {
+      if (turnAccumulator.totalTokens > 0) {
+        const actionLabel = classification?.domain ? `subagent_${classification.domain.toLowerCase()}` : (turnAccumulator.steps[turnAccumulator.steps.length - 1] || 'webchat_interaction');
+        await this.aiAgentService.commitTurnConsumption(turnAccumulator, actionLabel, baseAuditContext);
+      }
     }
   }
 

@@ -30,6 +30,8 @@ Esta tabla relaciona exhaustivamente las rutas HTTP del backend NestJS 11, los c
 | **Users** | `/api/users/:id/profile-image` | POST | `UsersController` | `UsersService.updateProfileImage()`| JWT | `User` (avatar local/Azure) |
 | **Tenants** | `/api/tenants/provision` | POST | `TenantsController` | `TenantsService.provision()` | SuperAdmin | `public.tenants` + DDL |
 | **Tenants** | `/api/tenants/consumption` | GET | `TenantsController` | `TenantsService.getConsumption()` | JWT | Tokens & cuotas |
+| **Tenants** | `/api/tenants/consumption/breakdown` | GET | `TenantsController` | `TenantsService.getConsumptionBreakdown()` | JWT | Desglose analítico de tokens (canal, usuario, cliente, modelo, timeline) |
+| **Tenants** | `/api/tenants/courtesy-overages` | GET | `TenantsController` | `TenantsService.getCourtesyOveragesReport()` | SuperAdmin | Reporte de desborde cortesía absorbido |
 | **Tenants** | `/api/tenants/my-tenant` | GET | `TenantsController` | `TenantsService.getCurrentTenant()` | JWT | `Tenant` |
 | **Tenants** | `/api/tenants` | GET | `TenantsController` | `TenantsService.findAll()` | SuperAdmin | `Tenant` |
 | **Tenants** | `/api/tenants/:id` | GET | `TenantsController` | `TenantsService.findOne()` | SuperAdmin | `Tenant` |

@@ -78,7 +78,7 @@ Cada plan define:
     * Si $\text{consumo} \le 2 \times \text{tokens\_limit}$: Permite la ejecución y registra la transacción con `is_extra = true` en `transaction_history`.
     * Si $\text{consumo} > 2 \times \text{tokens\_limit}$: Bloquea con `HttpException(402, EXTRA_TOKENS_LIMIT_EXCEEDED)`.
   * Si `allow_extra === false`: Se bloquea la ejecución inmediatamente con `HttpException(402, TOKENS_LIMIT_EXCEEDED)`.
-    * **Política de Absorción por Cortesía Técnica:** El desborde producido por la última llamada aprobada se cataloga como cortesía técnica absorbida por el sistema (`tokens_overage_absorbed`). Al cliente se le reporta `tokens_extra_used = 0` para evitar confusiones de facturación no autorizada.
+    * **Política de Absorción por Cortesía Técnica e Inmutabilidad:** El desborde producido por la última llamada aprobada del plan base se cataloga como cortesía técnica absorbida por el sistema (`tokens_overage_absorbed = baseTotal - tokensLimit`). Esta cortesía es **inmutable y permanente**: si el cliente activa el consumo extra (`allow_extra = true`) con posterioridad, la cortesía previa NO se le convierte en consumo extra cobrable; su consumo extra arranca limpiamente en 0 (`tokens_extra_used = extraTotal` contabilizando exclusivamente transacciones con `is_extra = true`).
 * **Supervisión y Auditoría para SuperAdmin:**
   * `GET /api/tenants/courtesy-overages`: Reporte global consolidado de todas las organizaciones con el total de tokens de cortesía absorbidos (`total_tokens_absorbed`) y la lista de tenants en desborde.
   * `GET /api/tenants/:id/consumption`: Detalle atómico del tenant exponiendo `total_tokens_consumed`, `tokens_overage_absorbed` y `has_courtesy_overage`.
@@ -151,3 +151,90 @@ Para prevenir el desbordamiento involuntario de días en JavaScript al calcular 
   * Una suscripción con corte el **29 de Febrero (bisiesto)** con plan anual avanzará al **28 de Febrero** del siguiente año.
   * Fechas de meses con 30 días (ej. 31 de Marzo $\rightarrow$ 30 de Abril) no saltarán al primer día del mes posterior.
   * Preservación exacta de la hora, minutos y segundos del corte original.
+
+
+---
+
+## 6. 📊 Auditoría Detallada de Consumo de Tokens por Petición & Endpoint Analítico
+
+A fin de permitir una observabilidad exhaustiva y auditoría granular sobre el uso de recursos de Inteligencia Artificial por organización, se extendió el esquema de persistencia y el motor de reporteo de consumo.
+
+### 6.1. Extensión del Modelo `transaction_history` por Tenant
+Cada esquema de tenant almacena en `"${schemaName}".transaction_history` metadatos por cada interacción con los LLMs (Gemini, OpenAI, Azure, Watsonx) y operaciones RAG:
+* **`user_id` / `user_name`:** Identificador y nombre del usuario interno en el CRM (ej. interacciones en el Webchat interno).
+* **`client_id` / `client_name`:** Identificador y nombre del cliente o contacto externo (ej. WhatsApp, Messenger, Instagram).
+* **`conversation_id`:** UUID de la conversación asociada a la interacción.
+* **`channel`:** Canal de entrada (`'whatsapp' | 'webchat_interno' | 'messenger' | 'instagram' | 'rag'`).
+* **`model_name`:** Nombre del modelo de IA ejecutado (`gemini-1.5-flash`, `gpt-4o`, `ibm/granite-3-8b-instruct`, etc.).
+* **`metadata`:** Objeto JSONB extensible con detalles de la ejecución (fase agéntica: `router`, `subagent`, `rescue`, `conversation_summary`, `rag_similarity_search`, `rag_pdf_ingest`, etc.).
+
+### 6.2. Auto-Migración en Arranque
+El servicio `SubscriptionValidatorService` implementa `OnModuleInit` ejecutando `ensureAuditColumnsExist()` para aplicar de forma no destructiva e idempotente:
+```sql
+ALTER TABLE "${schema}".transaction_history ADD COLUMN IF NOT EXISTS user_id integer NULL;
+ALTER TABLE "${schema}".transaction_history ADD COLUMN IF NOT EXISTS user_name character varying NULL;
+...
+```
+Asimismo, `TenantProvisionerService` incluye automáticamente estas columnas en el DDL de creación de nuevos esquemas de tenant.
+
+### 6.3. Endpoint de Desglose Analítico (`GET /api/tenants/consumption/breakdown`)
+* **Acceso:** Disponible para administradores del tenant en sesión y SuperAdmin (vía query params opcionales `?schemaName=` o `?tenantId=`).
+* **Alcance Temporal:** Acotado dinámicamente al ciclo de facturación vigente (`[periodStart, periodEnd]`).
+* **Estructura Devuelta:**
+  * **`summary`:** Resumen global de cuota del plan (`tokens_used`, `tokens_extra_used`, `tokens_limit`, `tokens_overage_absorbed`, `has_courtesy_overage`).
+  * **`by_channel`:** Consumo acumulado de tokens de entrada, salida y número de peticiones por canal.
+  * **`top_users`:** Top 10 usuarios internos con mayor consumo (Webchat).
+  * **`top_clients`:** Top 10 clientes con mayor consumo por canales de mensajería externa.
+  * **`by_model`:** Distribución del consumo por modelo LLM.
+  * **`daily_timeline`:** Línea de tiempo diaria con el consumo y volumen de peticiones del período.
+  * **`recent_transactions`:** Historial de las últimas 50 transacciones individuales para auditoría directa.
+
+---
+
+## 7. 📜 Historial de Ciclos de Facturación & Análisis Temporal Multivariante
+
+Para permitir el análisis histórico exhaustivo del consumo de tokens y recursos en períodos pasados, se incorporó la entidad global `TenantBillingCycle` y su integración con los mecanismos de aprovisionamiento, renovación y actualización de planes.
+
+### 7.1. Modelo Global `TenantBillingCycle` (`public.tenant_billing_cycles`)
+Ubicada en el esquema `public`, registra la historia inmutable de cada período de facturación vivido por una organización:
+
+| Columna | Tipo | Descripción |
+| :--- | :--- | :--- |
+| `id` | `SERIAL PRIMARY KEY` | Identificador único del ciclo. |
+| `tenant_id` | `VARCHAR(63)` | Identificador del tenant. |
+| `plan_id` | `INTEGER NULL` | ID del plan asignado en dicho ciclo (`FK public.plans(plan_id)`). |
+| `plan_name` | `VARCHAR(255)` | Snapshot del nombre del plan en vigencia. |
+| `tokens_limit` | `INTEGER` | Límite base contratado de tokens. |
+| `price` | `NUMERIC(10,2)` | Precio pactado para el ciclo. |
+| `billing_period_months` | `INTEGER` | Frecuencia en meses (1, 3, 6, 12). |
+| `start_date` | `TIMESTAMPTZ` | Timestamp exacto de inicio del período. |
+| `end_date` | `TIMESTAMPTZ` | Timestamp exacto de corte o vencimiento programado. |
+| `closed_at` | `TIMESTAMPTZ NULL` | Momento exacto de finalización del ciclo (nulo mientras esté activo). |
+| `status` | `VARCHAR(20)` | Estado del ciclo: `'active'`, `'closed'`, `'superseded'`. |
+| `close_reason` | `VARCHAR(50) NULL` | Razón de cierre: `'renewal_cron'`, `'immediate_reset'`, `'immediate_keep_date'`, `'plan_upgrade'`, `'tenant_deleted'`. |
+| `allow_extra` | `BOOLEAN` | Si el consumo extra estuvo habilitado. |
+| `tokens_used_at_close` | `INTEGER` | Snapshot congelado de tokens base consumidos al cerrar. |
+| `tokens_extra_used_at_close` | `INTEGER` | Snapshot congelado de tokens extra consumidos al cerrar. |
+| `tokens_courtesy_at_close` | `INTEGER` | Snapshot congelado de tokens absorbidos por cortesía técnica al cerrar. |
+
+### 7.2. Interacción con las 3 Variantes de Cambio de Plan
+1. **Inmediato con Reinicio de Fecha (`changeType: 'immediate'`, `immediatePolicy: 'reset_date'`):**
+   * El ciclo activo vigente se congela y se cierra (`status = 'closed'`, `closed_at = NOW()`, `close_reason = 'immediate_reset'`), guardando los tokens consumidos hasta el segundo previo al cambio.
+   * Se crea e inserta inmediatamente un nuevo ciclo con `status = 'active'` desde `NOW()` hasta `NOW() + months` con los límites del nuevo plan.
+2. **Inmediato Conservando Fecha de Corte (`changeType: 'immediate'`, `immediatePolicy: 'keep_current_date'`):**
+   * El ciclo activo vigente **no se cierra**: se actualiza in-place (`plan_id`, `plan_name`, `tokens_limit`, `price`, `close_reason = 'immediate_keep_date'`), expandiendo inmediatamente la cuota de tokens sin alterar `end_date`.
+3. **Programado al Próximo Período (`changeType: 'next_period'`):**
+   * El ciclo activo vigente permanece 100% inalterado.
+   * El nuevo plan se encola en `public.tenant_renewal_queue`. Cuando `SubscriptionRenewalCron` detecta el vencimiento, cierra el ciclo expirado con sus métricas congeladas y crea el nuevo ciclo activo para el plan programado.
+
+### 7.3. Integración en el Cron de Renovaciones (`SubscriptionRenewalCron`)
+Al procesar organizaciones con `next_renewal_date <= NOW()`:
+* Congela el consumo final del ciclo activo y lo marca como `status = 'closed'`, `closed_at = NOW()`, `close_reason = 'renewal_cron'`.
+* Si existe un período en `public.tenant_renewal_queue`, inserta atómicamente el nuevo ciclo de facturación activo en `public.tenant_billing_cycles` con las especificaciones del plan desencolado.
+
+### 7.4. Endpoints y Filtros Multivariantes
+* `GET /api/tenants/billing-cycles`: Retorna la lista de ciclos (activos y pasados) con el cálculo en tiempo real del consumo actual para el ciclo en curso. Acepta query params opcionales `?tenantId=` o `?schemaName=`.
+* `GET /api/tenants/:id/billing-cycles`: Retorna los ciclos del tenant especificado por ID.
+* `GET /api/tenants/consumption/breakdown`: Extendido con soporte de:
+  * `?cycleId=`: Recupera el consumo analítico, resumen del plan y transacciones del ciclo histórico seleccionado.
+  * `?startDate=` & `?endDate=`: Filtra el consumo analítico dentro de cualquier rango de fechas personalizado.

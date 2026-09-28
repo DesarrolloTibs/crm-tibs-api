@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { AiAgentConfig } from '../conversations/entities/ai-agent-config.entity';
 import { TenantContextService } from '../tenancy/tenant-context.service';
-import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
+import { SubscriptionValidatorService, ConsumptionAuditContext } from '../subscriptions/subscription-validator.service';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 
 import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
@@ -319,8 +319,15 @@ export class RagService implements OnModuleInit {
     // Registrar consumo de tokens de embedding para tenants
     if (activeSchema && activeSchema !== 'public') {
       const estimatedTokens = Math.max(1, Math.ceil(fullText.length / 4));
-      this.subscriptionValidator.recordConsumption(activeSchema, estimatedTokens, 0, estimatedTokens, false, 'rag_pdf_ingest')
-        .catch((err: any) => this.logger.warn(`Error registrando consumo RAG PDF: ${err.message}`));
+      this.subscriptionValidator.recordConsumption(
+        activeSchema,
+        estimatedTokens,
+        0,
+        estimatedTokens,
+        false,
+        'rag_pdf_ingest',
+        { channel: 'rag', metadata: { fileName, productKey, chunks: documents.length } },
+      ).catch((err: any) => this.logger.warn(`Error registrando consumo RAG PDF: ${err.message}`));
     }
     
     return documents.length;
@@ -363,8 +370,15 @@ export class RagService implements OnModuleInit {
     // Registrar consumo de tokens del query para tenants
     if (activeSchema && activeSchema !== 'public') {
       const queryTokens = Math.max(1, Math.ceil(query.length / 4));
-      this.subscriptionValidator.recordConsumption(activeSchema, queryTokens, 0, queryTokens, false, 'rag_similarity_search')
-        .catch((err: any) => this.logger.warn(`Error registrando consumo RAG Search: ${err.message}`));
+      this.subscriptionValidator.recordConsumption(
+        activeSchema,
+        queryTokens,
+        0,
+        queryTokens,
+        false,
+        'rag_similarity_search',
+        { channel: 'rag', metadata: { query: query.substring(0, 100), productKey } },
+      ).catch((err: any) => this.logger.warn(`Error registrando consumo RAG Search: ${err.message}`));
     }
 
     return results.map(doc => ({
@@ -471,8 +485,15 @@ export class RagService implements OnModuleInit {
       // Registrar consumo de tokens de embedding para tenants
       if (activeSchema && activeSchema !== 'public') {
         const estimatedTokens = Math.max(1, Math.ceil(contentText.length / 4));
-        this.subscriptionValidator.recordConsumption(activeSchema, estimatedTokens, 0, estimatedTokens, false, 'rag_catalog_sync')
-          .catch((err: any) => this.logger.warn(`Error registrando consumo RAG Catálogo: ${err.message}`));
+        this.subscriptionValidator.recordConsumption(
+          activeSchema,
+          estimatedTokens,
+          0,
+          estimatedTokens,
+          false,
+          'rag_catalog_sync',
+          { channel: 'rag', metadata: { productKey, productName: nombre } },
+        ).catch((err: any) => this.logger.warn(`Error registrando consumo RAG Catálogo: ${err.message}`));
       }
     } catch (error: any) {
       this.logger.error(`Error al indexar producto '${nombre}' en RAG: ${error.message}`);

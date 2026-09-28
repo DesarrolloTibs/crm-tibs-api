@@ -588,6 +588,14 @@ export class TenantProvisionerService {
           fecha_procesamiento timestamptz NOT NULL DEFAULT now(),
           is_extra boolean NOT NULL DEFAULT false,
           action_name varchar(255) NULL,
+          user_id uuid NULL,
+          user_name varchar(255) NULL,
+          client_id uuid NULL,
+          client_name varchar(255) NULL,
+          conversation_id uuid NULL,
+          channel varchar(50) NULL,
+          model_name varchar(100) NULL,
+          metadata jsonb NULL,
           CONSTRAINT pk_transaction_history PRIMARY KEY (id)
         );
 
@@ -776,6 +784,30 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
         [tenantName, schemaName, planId || null, nextRenewalDate]
       );
       const tenantId = tenantInsertRes[0].id;
+
+      // Crear ciclo de facturación inicial activo para el nuevo tenant
+      let planName = 'Plan Pro';
+      let tokensLimit = 300000;
+      let price = 0;
+      if (planId) {
+        const planRes = await queryRunner.query(
+          `SELECT plan_name, tokens_limit, price FROM public.plans WHERE plan_id = $1`,
+          [planId]
+        );
+        if (planRes.length > 0) {
+          planName = planRes[0].plan_name;
+          tokensLimit = parseInt(planRes[0].tokens_limit, 10) || 0;
+          price = parseFloat(planRes[0].price) || 0;
+        }
+      }
+
+      await queryRunner.query(
+        `INSERT INTO public.tenant_billing_cycles (
+          tenant_id, plan_id, plan_name, tokens_limit, price, billing_period_months,
+          start_date, end_date, status, allow_extra, tokens_used_at_close, tokens_extra_used_at_close, tokens_courtesy_at_close
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', false, 0, 0, 0)`,
+        [String(tenantId), planId || null, planName, tokensLimit, price, billingPeriodMonths, now, nextRenewalDate]
+      );
 
       // f) Generar clave temporal y crear usuario Admin del tenant
       const tempPassword = crypto.randomBytes(6).toString('hex'); // 12 chars
