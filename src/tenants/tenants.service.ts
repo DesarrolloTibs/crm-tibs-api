@@ -677,13 +677,77 @@ export class TenantsService implements OnModuleInit {
   }
 
   async findAll() {
-    const tenants = await this.tenantRepository.find({ relations: ['plan'], order: { created_at: 'DESC' } });
-    return tenants.map((t) => {
-      if (t.logo) {
-        t.logo = this.formatLogoUrl(t.logo);
-      }
-      return t;
-    });
+    const rawRows = await this.dataSource.query(`
+      SELECT 
+        t.id,
+        t.name,
+        t.schema_name,
+        t.plan_id,
+        t.next_renewal_date,
+        t.is_active,
+        t.allow_extra,
+        t.logo,
+        t.created_at,
+        COALESCE(q.total_queued_periods, 0)::int AS total_queued_periods,
+        CASE 
+          WHEN COALESCE(q.total_queued_periods, 0) = 0 THEN t.next_renewal_date
+          ELSE (
+            (CASE 
+              WHEN t.next_renewal_date IS NOT NULL AND t.next_renewal_date > NOW() 
+              THEN t.next_renewal_date 
+              ELSE NOW() 
+            END) + (COALESCE(q.total_months, 0) || ' months')::interval
+          )
+        END AS coverage_until,
+        CASE 
+          WHEN p.plan_id IS NOT NULL THEN json_build_object(
+            'plan_id', p.plan_id,
+            'plan_name', p.plan_name,
+            'price', p.price::float,
+            'tokens_limit', p.tokens_limit::bigint,
+            'billing_period_months', p.billing_period_months,
+            'blnstatus', p.blnstatus,
+            'dtmcreated', p.dtmcreated,
+            'dtmlastmodified', p.dtmlastmodified
+          )
+          ELSE NULL
+        END AS plan
+      FROM public.tenants t
+      LEFT JOIN public.plans p ON p.plan_id = t.plan_id
+      LEFT JOIN (
+        SELECT 
+          tenant_id,
+          COUNT(*)::int AS total_queued_periods,
+          SUM(COALESCE(billing_period_months, 1))::int AS total_months
+        FROM public.tenant_renewal_queue
+        GROUP BY tenant_id
+      ) q ON q.tenant_id = t.id::text
+      ORDER BY t.created_at DESC
+    `);
+
+    return rawRows.map((row: any) => ({
+      id: Number(row.id),
+      name: row.name,
+      schema_name: row.schema_name,
+      plan_id: row.plan_id !== null ? Number(row.plan_id) : null,
+      next_renewal_date: row.next_renewal_date ? new Date(row.next_renewal_date).toISOString() : null,
+      is_active: Boolean(row.is_active),
+      allow_extra: Boolean(row.allow_extra),
+      logo: this.formatLogoUrl(row.logo),
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : row.created_at,
+      total_queued_periods: Number(row.total_queued_periods || 0),
+      coverage_until: row.coverage_until ? new Date(row.coverage_until).toISOString() : null,
+      plan: row.plan ? {
+        plan_id: Number(row.plan.plan_id),
+        plan_name: row.plan.plan_name,
+        price: Number(row.plan.price),
+        tokens_limit: Number(row.plan.tokens_limit),
+        billing_period_months: Number(row.plan.billing_period_months),
+        blnstatus: Boolean(row.plan.blnstatus),
+        dtmcreated: row.plan.dtmcreated,
+        dtmlastmodified: row.plan.dtmlastmodified,
+      } : null,
+    }));
   }
 
   async findOne(id: number) {
@@ -693,6 +757,26 @@ export class TenantsService implements OnModuleInit {
     }
     if (tenant.logo) {
       tenant.logo = this.formatLogoUrl(tenant.logo);
+    }
+    const queueMetrics = await this.dataSource.query(
+      `SELECT 
+        COUNT(*)::int AS total_queued_periods,
+        SUM(COALESCE(billing_period_months, 1))::int AS total_months
+       FROM public.tenant_renewal_queue
+       WHERE tenant_id = $1`,
+      [String(tenant.id)],
+    );
+    const periods = Number(queueMetrics[0]?.total_queued_periods || 0);
+    const months = Number(queueMetrics[0]?.total_months || 0);
+    tenant.total_queued_periods = periods;
+    if (periods === 0) {
+      tenant.coverage_until = tenant.next_renewal_date ? new Date(tenant.next_renewal_date).toISOString() : null;
+    } else {
+      const now = new Date();
+      const baseDate = tenant.next_renewal_date && tenant.next_renewal_date > now
+        ? new Date(tenant.next_renewal_date)
+        : new Date(now);
+      tenant.coverage_until = addBillingMonths(baseDate, months).toISOString();
     }
     return tenant;
   }

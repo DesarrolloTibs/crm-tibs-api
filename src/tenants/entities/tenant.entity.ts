@@ -33,4 +33,8 @@ export class Tenant {
 
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   created_at: Date;
+
+  total_queued_periods?: number;
+
+  coverage_until?: string | Date | null;
 }

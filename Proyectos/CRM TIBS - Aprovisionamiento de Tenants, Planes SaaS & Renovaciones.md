@@ -119,6 +119,12 @@ El endpoint `GET /api/tenants/:id/renewal-queue` calcula dinámicamente la secue
   $$\text{Período}_k: [\text{fin}_{k-1}, \text{fin}_{k-1} + \text{months}_k]$$
 * **Metadata Expuesta:** `total_queued_periods`, `total_queued_months`, `coverage_until` e información del plan (`tokens_limit`, `price`).
 
+* **Optimización Anti-N+1 en Listado Global (`GET /api/tenants`):**
+  A fin de evitar el problema clásico N+1 en la vista principal de Gestión de Organizaciones (donde el cliente emitía llamadas individuales a `GET /api/tenants/:id/renewal-queue`), el listado general `GET /api/tenants` integra directamente en una sola consulta SQL analítica:
+  * **`total_queued_periods`:** Conteo consolidado de ciclos encolados en `tenant_renewal_queue`.
+  * **`coverage_until`:** Fecha máxima proyectada de cobertura calculada directamente en PostgreSQL mediante aritmética de intervalos (`(total_months || ' months')::interval`) sobre la fecha base activa (`max(next_renewal_date, NOW())`), o `next_renewal_date` si la cola está vacía.
+  * **`plan`:** Objeto enriquecido del plan activo asociado (`plan_id`, `plan_name`, `price`, `tokens_limit`, `billing_period_months`).
+
 ### 5.2. Encolado Masivo de Períodos
 * `POST /api/tenants/:id/enqueue-renewal` acepta `periodsCount` (de 1 a 60 períodos) para registrar renovaciones prepagadas en bloque.
 * Si se omite `planId` o `months`, se resuelven automáticamente a partir de la configuración del plan o del tenant actual.
