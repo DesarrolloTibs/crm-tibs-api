@@ -421,6 +421,13 @@ export class TenantsService implements OnModuleInit {
         ),
       ]);
 
+      // Los canales de atención solo deben reflejar el consumo facturable (plan base + margen extra), excluyendo cortesías
+      const billableTokens = (summary?.tokens_used || 0) + (summary?.tokens_extra_used || 0);
+      const rawChannelTotal = byChannelRaw.reduce((sum: number, r: any) => sum + Number(r.total_tokens || 0), 0);
+      const channelRatio = (rawChannelTotal > 0 && billableTokens > 0 && rawChannelTotal > billableTokens)
+        ? (billableTokens / rawChannelTotal)
+        : 1;
+
       return {
         schema_name: targetSchema,
         cycle_id: selectedCycle?.id || null,
@@ -443,9 +450,9 @@ export class TenantsService implements OnModuleInit {
         summary,
         by_channel: byChannelRaw.map((r: any) => ({
           channel: r.channel,
-          total_tokens: Number(r.total_tokens),
-          prompt_tokens: Number(r.prompt_tokens),
-          completion_tokens: Number(r.completion_tokens),
+          total_tokens: Math.round(Number(r.total_tokens) * channelRatio),
+          prompt_tokens: Math.round(Number(r.prompt_tokens) * channelRatio),
+          completion_tokens: Math.round(Number(r.completion_tokens) * channelRatio),
           request_count: Number(r.request_count),
         })),
         top_users: topUsersRaw.map((r: any) => ({
