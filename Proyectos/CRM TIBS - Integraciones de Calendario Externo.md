@@ -64,7 +64,7 @@ graph TD
 ## 2. Proveedores Soportados y Métodos de Autenticación
 
 ### 2.1. Google Calendar (`GoogleCalendarService`)
-* **Autenticación:** Flujo estándar OAuth 2.0 con alcances `calendar.events` y `calendar.readonly`.
+* **Autenticación:** Flujo estándar OAuth 2.0 con alcances `openid`, `https://www.googleapis.com/auth/userinfo.email`, `https://www.googleapis.com/auth/userinfo.profile` y `https://www.googleapis.com/auth/calendar.events`.
 * **Tokens:** Almacena `accessToken`, `refreshToken` y `expiresAt` en `user_calendar_integrations`. El servicio renueva automáticamente los tokens expirados utilizando el `refreshToken`.
 * **Webhooks Push:** Registra un canal de observación (`watch`) con Google. Cuando ocurre una modificación en el calendario de Google, Google envía un webhook a `/api/calendar-webhooks/google` con la cabecera `X-Goog-Channel-ID`.
 
