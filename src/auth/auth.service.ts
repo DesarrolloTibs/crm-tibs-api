@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../users/users.service';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
@@ -15,6 +16,7 @@ export class AuthService {
     private jwtService: JwtService,
     private mailService: MailService,
     private dataSource: DataSource,
+    private configService: ConfigService,
   ) {}
 
   async validateUser(email: string, pass: string): Promise<any> {
@@ -92,11 +94,101 @@ export class AuthService {
       sub: user.id, 
       role: user.role,
       tenant: user.tenant || undefined,
+      type: 'access',
     };
-    return {
-      access_token: this.jwtService.sign(payload),
+
+    const refreshPayload = {
+      username: user.username,
+      sub: user.id,
       role: user.role,
+      tenant: user.tenant || undefined,
+      type: 'refresh',
     };
+
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET') || `${this.configService.get<string>('JWT_SECRET')}_refresh`;
+    const refreshExpiresIn = this.configService.get<string>('JWT_REFRESH_EXPIRATION_TIME') || '30d';
+
+    const access_token = this.jwtService.sign(payload);
+    const refresh_token = this.jwtService.sign(refreshPayload, {
+      secret: refreshSecret,
+      expiresIn: refreshExpiresIn as any,
+    });
+
+    return {
+      access_token,
+      refresh_token,
+      role: user.role,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        tenant: user.tenant || 'public',
+      },
+    };
+  }
+
+  async refreshToken(token: string) {
+    if (!token) {
+      throw new UnauthorizedException('El refresh_token es requerido.');
+    }
+
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET') || `${this.configService.get<string>('JWT_SECRET')}_refresh`;
+
+    let decoded: any;
+    try {
+      decoded = this.jwtService.verify(token, { secret: refreshSecret });
+    } catch (err: any) {
+      this.logger.warn(`Fallo al verificar refresh token: ${err.message}`);
+      throw new UnauthorizedException('Token de actualización inválido o expirado.');
+    }
+
+    if (decoded.type !== 'refresh') {
+      throw new UnauthorizedException('Tipo de token no válido para actualización.');
+    }
+
+    const userId = decoded.sub;
+    const tenant = decoded.tenant || 'public';
+    let userRecord: any = null;
+
+    if (decoded.role === 'superadmin' || tenant === 'public') {
+      const rows = await this.dataSource.query(
+        `SELECT id, username, email, role, "isActive" FROM public.users WHERE id = $1`,
+        [userId],
+      ).catch(() => []);
+      if (rows && rows.length > 0) {
+        userRecord = rows[0];
+        userRecord.tenant = 'public';
+      }
+    } else {
+      const tenantCheck = await this.dataSource.query(
+        `SELECT is_active FROM public.tenants WHERE schema_name = $1`,
+        [tenant],
+      ).catch(() => []);
+
+      if (!tenantCheck || tenantCheck.length === 0 || !tenantCheck[0].is_active) {
+        throw new UnauthorizedException('La organización asociada al token se encuentra inactiva.');
+      }
+
+      const rows = await this.dataSource.query(
+        `SELECT id, username, email, role, "isActive" FROM "${tenant}".users WHERE id = $1`,
+        [userId],
+      ).catch(() => []);
+      if (rows && rows.length > 0) {
+        userRecord = rows[0];
+        userRecord.tenant = tenant;
+      }
+    }
+
+    if (!userRecord) {
+      throw new UnauthorizedException('El usuario asociado al token ya no existe.');
+    }
+
+    if (userRecord.isActive === false) {
+      throw new UnauthorizedException('La cuenta de usuario se encuentra inactiva.');
+    }
+
+    return this.login(userRecord);
   }
 
 

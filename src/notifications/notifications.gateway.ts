@@ -10,6 +10,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
+import * as jwt from 'jsonwebtoken';
 import { Notification } from './entities/notification.entity';
 
 @WebSocketGateway({
@@ -30,12 +31,31 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection,
   }
 
   handleConnection(client: Socket) {
-    const userId = client.handshake.query.userId as string;
+    let userId = client.handshake.query.userId as string;
+    const token =
+      (client.handshake.auth?.token as string) ||
+      (client.handshake.headers?.authorization?.startsWith('Bearer ')
+        ? client.handshake.headers.authorization.substring(7)
+        : undefined);
+
+    if (token) {
+      try {
+        const secret = process.env.JWT_SECRET;
+        if (!secret) {
+          throw new Error('JWT_SECRET no está configurado en las variables de entorno');
+        }
+        const decoded: any = jwt.verify(token, secret);
+        userId = decoded.sub || decoded.userId || userId;
+      } catch (err: any) {
+        this.logger.warn(`Client ${client.id} conectado con token JWT no válido: ${err.message}`);
+      }
+    }
+
     if (userId) {
       client.join(`user_${userId}`);
       this.logger.log(`Client ${client.id} connected and joined room user_${userId}`);
     } else {
-      this.logger.log(`Client ${client.id} connected without userId query param`);
+      this.logger.log(`Client ${client.id} connected without authenticated user`);
     }
   }
 

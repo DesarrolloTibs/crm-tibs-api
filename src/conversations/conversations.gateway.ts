@@ -7,6 +7,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
+import * as jwt from 'jsonwebtoken';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Message } from './entities/message.entity';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
@@ -29,7 +30,26 @@ export class ConversationsGateway implements OnGatewayInit, OnGatewayConnection,
   }
 
   handleConnection(client: Socket) {
-    this.logger.log(`Client connected to Conversations WebSocket: ${client.id}`);
+    const token =
+      (client.handshake.auth?.token as string) ||
+      (client.handshake.headers?.authorization?.startsWith('Bearer ')
+        ? client.handshake.headers.authorization.substring(7)
+        : undefined);
+
+    let info = '';
+    if (token) {
+      try {
+        const secret = process.env.JWT_SECRET;
+        if (!secret) {
+          throw new Error('JWT_SECRET no está configurado en las variables de entorno');
+        }
+        const decoded: any = jwt.verify(token, secret);
+        info = ` (user: ${decoded.username || decoded.sub}, role: ${decoded.role})`;
+      } catch (err: any) {
+        this.logger.warn(`Client ${client.id} WS handshake con token JWT inválido: ${err.message}`);
+      }
+    }
+    this.logger.log(`Client connected to Conversations WebSocket: ${client.id}${info}`);
   }
 
   handleDisconnect(client: Socket) {

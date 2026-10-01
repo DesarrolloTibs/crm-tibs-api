@@ -9,19 +9,20 @@ tags:
   - passport
   - security
   - throttler
-date: 2026-09-08
+  - pwa
+date: 2026-10-01
 status: produccion
 ---
 
 # 🔐 Autenticación, JWT & Seguridad en CRM TIBS API
 
 ## 1. Visión General del Flujo de Autenticación
-El sistema implementa un esquema de autenticación basado en **Bearer Tokens JWT** sin estado, soportado por **Passport.js** y decoradores nativos de NestJS. El ciclo de vida de una solicitud autenticada involucra la validación de credenciales, emisión de token, extracción del contexto de inquilino y control de acceso basado en roles.
+El sistema implementa un esquema de autenticación robusto basado en **Tokens Duales JWT (Access Token + Refresh Token)** sin estado, soportado por **Passport.js**, interceptores HTTP y decoradores de NestJS. Diseñado específicamente para clientes Web y aplicaciones progresivas (**PWA**), permite renovación silenciosa (*silent refresh*), tolerancia ante suspensión de pestañas y sincronización en tiempo real.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Cliente as Cliente (Web SPA)
+    actor Cliente as Cliente (Web / PWA)
     participant AuthCtrl as AuthController
     participant LocalGuard as LocalAuthGuard / LocalStrategy
     participant AuthSvc as AuthService
@@ -29,21 +30,23 @@ sequenceDiagram
     participant JwtSvc as JwtService
     participant TenantMW as TenantMiddleware
 
-    Cliente->>AuthCtrl: POST /api/auth/login { username, password }
+    Cliente->>AuthCtrl: POST /api/auth/login { email, password }
     AuthCtrl->>LocalGuard: Intercepta y valida credenciales
-    LocalGuard->>AuthSvc: validateUser(username, password)
-    AuthSvc->>UserRepo: Busca usuario por username/email
-    AuthSvc->>AuthSvc: bcrypt.compare(password, user.password)
+    LocalGuard->>AuthSvc: validateUser(email, password)
+    AuthSvc->>UserRepo: Busca usuario en public o schemas activos
+    AuthSvc->>AuthSvc: bcrypt.compare(pass, user.password)
     AuthSvc-->>LocalGuard: Retorna usuario autenticado
     LocalGuard-->>AuthCtrl: Adjunta user a req.user
     AuthCtrl->>AuthSvc: login(user)
-    AuthSvc->>JwtSvc: signAsync({ sub, username, role, tenant })
-    JwtSvc-->>Cliente: { access_token, user }
+    AuthSvc->>JwtSvc: Genera access_token + refresh_token
+    JwtSvc-->>Cliente: { access_token, refresh_token, role, user }
 
-    Note over Cliente, TenantMW: Peticiones subsecuentes
-    Cliente->>TenantMW: GET /api/opportunities [Header Authorization: Bearer token]
-    TenantMW->>TenantMW: jwt.verify(token, JWT_SECRET)
-    TenantMW->>TenantMW: Resuelve tenant y configura AsyncLocalStorage
+    Note over Cliente, TenantMW: Renovación de sesión (PWA / Web)
+    Cliente->>AuthCtrl: POST /api/auth/refresh { refresh_token }
+    AuthCtrl->>AuthSvc: refreshToken(refresh_token)
+    AuthSvc->>AuthSvc: jwt.verify(refresh_token, JWT_REFRESH_SECRET)
+    AuthSvc->>UserRepo: Valida usuario y estado activo
+    AuthSvc-->>Cliente: { access_token, refresh_token, role, user }
 ```
 
 ---
@@ -56,31 +59,29 @@ sequenceDiagram
 * Compara el hash de la contraseña utilizando `bcrypt.compare()`.
 * Rechaza el acceso con `UnauthorizedException` si el usuario no existe, las credenciales son incorrectas o la cuenta está desactivada (`isActive = false`).
 
-### 2.2. Emisión y Payload del Token JWT
-Al autenticarse con éxito, `AuthService.login()` genera un token firmado con el secreto configurado en `JWT_SECRET`:
-```typescript
-const payload = {
-  sub: user.id,
-  username: user.username,
-  role: user.role,
-  tenant: user.tenant_schema || 'public',
-};
-return {
-  access_token: await this.jwtService.signAsync(payload),
-  user: {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    role: user.role,
-    tenant: payload.tenant,
-  },
-};
-```
+### 2.2. Emisión Dual de Tokens (Access Token + Refresh Token)
+Al autenticarse con éxito en `AuthService.login()`, el sistema genera dos tokens criptográficos:
+1. **Access Token:**
+   * Payload: `{ sub: user.id, username: user.username, role: user.role, tenant: user.tenant, type: 'access' }`.
+   * TTL: Configurado vía `JWT_EXPIRATION_TIME` (por defecto `7d` o `15m` para alta seguridad).
+   * Secreto: `JWT_SECRET`.
+2. **Refresh Token:**
+   * Payload: `{ sub: user.id, username: user.username, role: user.role, tenant: user.tenant, type: 'refresh' }`.
+   * TTL: Configurado vía `JWT_REFRESH_EXPIRATION_TIME` (por defecto `30d`).
+   * Secreto: `JWT_REFRESH_SECRET` (o derivado seguro `${JWT_SECRET}_refresh`).
 
-### 2.3. JwtStrategy (`src/auth/jwt.strategy.ts`)
+### 2.3. Endpoint de Renovación (`POST /api/auth/refresh`)
+* Controlador: `AuthController.refresh(@Body() dto: RefreshTokenDto)`.
+* Servicio: `AuthService.refreshToken(token)`.
+* Valida la firma del token con `JWT_REFRESH_SECRET`, verifica que `type === 'refresh'`, confirma en base de datos que la cuenta de usuario continúe activa (`isActive: true`) y que el tenant de pertenencia esté activo, emitiendo un nuevo par de tokens rotados (*token rotation*).
+
+### 2.4. JwtStrategy (`src/auth/jwt.strategy.ts`)
 * Configurada para extraer el token desde el encabezado estándar: `ExtractJwt.fromAuthHeaderAsBearerToken()`.
 * Valida la firma del token y que no haya expirado (`ignoreExpiration: false`).
-* Inyecta el usuario decodificado en `req.user` para su posterior consumo en controladores mediante el decorador `@GetUser()`.
+* Inyecta el usuario decodificado en `req.user` con `{ id, userId, username, role, tenant }`.
+
+### 2.5. Autenticación en WebSockets (Gateways Socket.IO)
+Los gateways en tiempo real (`NotificationsGateway`, `ConversationsGateway`) aceptan y validan el token JWT tanto en el objeto de autenticación `client.handshake.auth.token` como en `client.handshake.headers.authorization`, asegurando la procedencia legítima de las conexiones antes de unirlas a salas privadas de usuario.
 
 ---
 
@@ -99,19 +100,18 @@ return {
 ---
 
 ## 4. Estrategia de Rate Limiting (`@nestjs/throttler`)
-Para mitigar ataques de denegación de servicio (DoS) y fuerza bruta en credenciales, la aplicación implementa tres niveles de protección estratificada en `app.module.ts`:
+Para mitigar ataques de denegación de servicio (DoS) y fuerza bruta en credenciales, la aplicación implementa niveles de protección estratificada:
 
 | Nombre del Throttler | TTL (Tiempo de Ventana) | Límite de Peticiones | Ámbito de Aplicación |
 | :--- | :---: | :---: | :--- |
 | **`default`** | 60 segundos | 5,000 req | Endpoints generales autenticados de negocio. |
-| **`auth`** | 60 segundos | 1,000 req (estricto) | Endpoints sensibles de autenticación (`/api/auth/*`). |
+| **`auth`** | 60 segundos | 10 req | Endpoints sensibles de autenticación (`/api/auth/login`, `/forgot-password`). |
+| **`auth.refresh`** | 60 segundos | 30 req | Endpoint de renovación de sesión (`/api/auth/refresh`). |
 | **`webhook`** | 60 segundos | 1,000 req | Webhooks entrantes de IA y webchat. |
-
-* Las rutas de alto tráfico o endpoints internos exentos utilizan el decorador `@SkipThrottle()`.
 
 ---
 
-## 5. Medidas Adicionales de Seguridad
-* **Helmet:** Inyección automática de cabeceras de protección (`X-DNS-Prefetch-Control`, `X-Frame-Options`, `X-Download-Options`, `X-Content-Type-Options`). La directiva `contentSecurityPolicy` se desactiva selectivamente para permitir la interfaz visual de Swagger UI.
-* **CORS:** Política de orígenes cruzados restringida mediante la variable `ALLOWED_ORIGINS` con soporte explícito de credenciales (`credentials: true`).
-* **Protección de Producción:** Si el entorno está configurado como `NODE_ENV=production`, la aplicación bloquea el arranque fatalmente si `DB_SYNCHRONIZE` está en `true` para evitar alteraciones accidentales del esquema en caliente.
+## 5. Medidas Adicionales de Seguridad y Compatibilidad PWA
+* **Manejo Centralizado de Excepciones:** `GlobalExceptionFilter` intercepta `TokenExpiredError` y `JsonWebTokenError` retornando `401 Unauthorized` estandarizado.
+* **Multi-tenancy Blindado:** `TenantMiddleware` valida y aísla esquemas PostgreSQL mediante `TenantContextService` (`AsyncLocalStorage`) y arroja `403 Forbidden` si la organización está inactiva.
+* **Helmet & CORS:** Protección contra clickjacking, MIME sniffing y CORS configurado con `credentials: true`.
