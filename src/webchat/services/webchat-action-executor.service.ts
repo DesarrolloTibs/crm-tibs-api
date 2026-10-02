@@ -808,47 +808,56 @@ export class WebchatActionExecutorService {
     let rawClientHint = (params.cliente || params.client || params.contacto || params.contact || '').toString().trim();
     let rawCompanyHint = (params.empresa || params.company || params.cuenta || params.account || '').toString().trim();
 
-    // Si no vinieron explícitos en params, buscar si en el texto de la actividad se indicó ej. "para el cliente X", "con X", "de X"
-    if (!rawClientHint && !rawCompanyHint && activityText) {
-      const matchFor = activityText.match(/(?:para\s+el\s+cliente|para\s+la\s+cuenta|para\s+la\s+empresa|para|con)\s+["']?([^"',]+?)["']?(?:\s+y\s+de\s+tipo|\s+y\s+tipo|\s+mañana|\s+hoy|\s+el\s+|$)/i);
-      if (matchFor && matchFor[1]) {
-        const candidate = matchFor[1].trim();
+    // Si no vinieron explícitos en params, extraer con regex de activityText
+    if (!rawCompanyHint && activityText) {
+      const matchEmp = activityText.match(/(?:de\s+la\s+empresa|de\s+la\s+cuenta|empresa|cuenta)\s+["']?([^"',]+?)["']?(?:\s+y\s+de\s+tipo|\s+y\s+tipo|\s+mañana|\s+hoy|\s+el\s+|\s+con\s+|\s+para\s+|$)/i);
+      if (matchEmp && matchEmp[1]) {
+        rawCompanyHint = matchEmp[1].trim();
+      }
+    }
+
+    if (!rawClientHint && activityText) {
+      const matchClient = activityText.match(/(?:para\s+el\s+cliente|para\s+la\s+cuenta|con\s+el\s+cliente|con|para)\s+["']?([A-ZÁÉÍÓÚa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚa-záéíóúñ]+)?)["']?(?:\s+de\s+la\s+empresa|\s+de\s+|\s+y\s+de\s+tipo|\s+y\s+tipo|\s+mañana|\s+hoy|\s+el\s+|$)/i);
+      if (matchClient && matchClient[1]) {
+        const candidate = matchClient[1].trim();
         if (candidate.length > 2 && !['seguimiento', 'reunion', 'llamada', 'visita', 'correo', 'demostracion'].includes(candidate.toLowerCase())) {
           rawClientHint = candidate;
         }
       }
     }
 
-    // A. Resolución de Cliente
+    // A. Resolución explícita de Empresa primero (si el usuario especificó una empresa, esta toma prioridad)
+    if (params.companyId && this.isValidUuid(params.companyId)) {
+      companyId = params.companyId;
+      companyEntity = await this.companyRepo.findOne({ where: { id: companyId } });
+    } else if (rawCompanyHint) {
+      companyEntity = await this.resolveCompany(rawCompanyHint);
+      if (companyEntity) {
+        companyId = companyEntity.id;
+      }
+    }
+
+    // B. Resolución de Cliente
     if (params.clientId && this.isValidUuid(params.clientId)) {
       clientId = params.clientId;
       clientEntity = await this.clientRepo.findOne({ where: { id: clientId } });
-      if (clientEntity?.companyId) companyId = clientEntity.companyId;
+      if (!companyId && clientEntity?.companyId) {
+        companyId = clientEntity.companyId;
+      }
     } else if (rawClientHint) {
       clientEntity = await this.resolveClient(rawClientHint);
       if (clientEntity) {
         clientId = clientEntity.id;
-        if (clientEntity.companyId) companyId = clientEntity.companyId;
-      } else {
-        // Fallback: Si el usuario dijo "cliente X" pero X es una Empresa registrada (ej. "cliente universidad metropolitana")
-        companyEntity = await this.resolveCompany(rawClientHint);
-        if (companyEntity) companyId = companyEntity.id;
-      }
-    }
-
-    // B. Resolución de Empresa
-    if (!companyId && params.companyId && this.isValidUuid(params.companyId)) {
-      companyId = params.companyId;
-      companyEntity = await this.companyRepo.findOne({ where: { id: companyId } });
-    } else if (!companyId && rawCompanyHint) {
-      companyEntity = await this.resolveCompany(rawCompanyHint);
-      if (companyEntity) {
-        companyId = companyEntity.id;
-      } else if (!clientEntity) {
-        clientEntity = await this.resolveClient(rawCompanyHint);
-        if (clientEntity) {
-          clientId = clientEntity.id;
-          if (clientEntity.companyId) companyId = clientEntity.companyId;
+        // Solo adoptar la empresa del contacto si el usuario NO especificó una empresa distinta
+        if (!companyId && clientEntity.companyId) {
+          companyId = clientEntity.companyId;
+        }
+      } else if (!companyId) {
+        // Fallback: Si el usuario dijo "cliente X" pero X es en realidad una Empresa registrada (ej. "cliente universidad metropolitana")
+        const fallbackComp = await this.resolveCompany(rawClientHint);
+        if (fallbackComp) {
+          companyEntity = fallbackComp;
+          companyId = fallbackComp.id;
         }
       }
     }
@@ -924,11 +933,19 @@ export class WebchatActionExecutorService {
     // 7. Recordatorio opcional
     let reminder: any = undefined;
     if (params.recordatorio || params.reminderTitle) {
-      const offsetMs = 60 * 60 * 1000;
-      const remDate = new Date(proposedDate!.getTime() - offsetMs).toISOString();
+      let remDate: string;
+      const remStr = String(params.recordatorio || '').toLowerCase();
+      if (remStr.includes('misma hora') || remStr.includes('al momento') || remStr.includes('a la misma')) {
+        remDate = proposedDate!.toISOString();
+      } else if (params.reminderDate) {
+        remDate = this.parseNaturalDate(params.reminderDate).toISOString();
+      } else {
+        const offsetMs = (params.reminderMinutesBefore ? Number(params.reminderMinutesBefore) : 60) * 60 * 1000;
+        remDate = new Date(proposedDate!.getTime() - offsetMs).toISOString();
+      }
       reminder = {
         title: params.reminderTitle || `Recordatorio: ${activityText}`,
-        date: params.reminderDate || remDate,
+        date: remDate,
       };
     }
 
@@ -944,17 +961,23 @@ export class WebchatActionExecutorService {
       reminder,
     } as any, { id: targetUserId } as User);
 
-    const typeName = createdActivity.typeActivity?.strname || resolvedType!.name || 'Actividad';
-    const dateFormatted = new Date(createdActivity.date).toLocaleString('es-MX', {
-      timeZone: this.getTimezone(),
-      dateStyle: 'full',
-      timeStyle: 'short',
-    });
+    const typeName = createdActivity?.typeActivity?.strname || resolvedType?.name || 'Actividad';
+    const dateFormatted = createdActivity?.date
+      ? new Date(createdActivity.date).toLocaleString('es-MX', {
+          timeZone: this.getTimezone(),
+          dateStyle: 'full',
+          timeStyle: 'short',
+        })
+      : proposedDate!.toLocaleString('es-MX', {
+          timeZone: this.getTimezone(),
+          dateStyle: 'full',
+          timeStyle: 'short',
+        });
 
-    if (!clientEntity && createdActivity.client) {
+    if (!clientEntity && createdActivity?.client) {
       clientEntity = createdActivity.client;
     }
-    if (!companyEntity && createdActivity.company) {
+    if (!companyEntity && createdActivity?.company) {
       companyEntity = createdActivity.company;
     }
     if (!companyEntity && clientEntity?.companyId) {
@@ -963,12 +986,23 @@ export class WebchatActionExecutorService {
 
     const contactOrAccount = clientEntity
       ? `${clientEntity.nombre} ${clientEntity.apellido || ''}`.trim() + (companyEntity ? ` (${companyEntity.nombre})` : '')
-      : (companyEntity ? companyEntity.nombre : null);
+      : (companyEntity
+          ? `${rawClientHint ? `${rawClientHint} ` : ''}(${companyEntity.nombre})`
+          : (rawClientHint || null));
 
     const extraInfo = contactOrAccount ? `\n- Cliente / Cuenta: ${contactOrAccount}` : '';
+    let reminderInfo = '';
+    if (reminder) {
+      const remDateFormatted = new Date(reminder.date).toLocaleString('es-MX', {
+        timeZone: this.getTimezone(),
+        timeStyle: 'short',
+        dateStyle: 'short',
+      });
+      reminderInfo = `\n- Recordatorio: Activado (${remDateFormatted})`;
+    }
 
     return {
-      answer: `Actividad Programada Exitosamente\n\n- Tipo: ${typeName}\n- Detalle: ${createdActivity.activity}\n- Fecha y Hora: ${dateFormatted}\n- Asignada a: ${targetUserName}${extraInfo}`,
+      answer: `Actividad Programada Exitosamente\n\n- Tipo: ${typeName}\n- Detalle: ${createdActivity.activity}\n- Fecha y Hora: ${dateFormatted}\n- Asignada a: ${targetUserName}${extraInfo}${reminderInfo}`,
       data: [{
         'ID': createdActivity.id,
         'Tipo': typeName,
@@ -1162,6 +1196,25 @@ export class WebchatActionExecutorService {
       if (foundCompany) updateDto.companyId = foundCompany.id;
     }
 
+    // E. Actualización o Reprogramación de Recordatorio
+    if (params.recordatorio || params.reminderTitle) {
+      const targetBaseDate = updateDto.date ? new Date(updateDto.date) : new Date(activity.date);
+      let remDate: string;
+      const remStr = String(params.recordatorio || '').toLowerCase();
+      if (remStr.includes('misma hora') || remStr.includes('al momento') || remStr.includes('a la misma')) {
+        remDate = targetBaseDate.toISOString();
+      } else if (params.reminderDate) {
+        remDate = this.parseNaturalDate(params.reminderDate).toISOString();
+      } else {
+        const offsetMs = (params.reminderMinutesBefore ? Number(params.reminderMinutesBefore) : 60) * 60 * 1000;
+        remDate = new Date(targetBaseDate.getTime() - offsetMs).toISOString();
+      }
+      updateDto.reminder = {
+        title: params.reminderTitle || `Recordatorio: ${updateDto.activity || activity.activity}`,
+        date: remDate,
+      };
+    }
+
     const updated = await this.activitiesService.update(activity.id, updateDto, { id: user.id } as User);
     const dateFormatted = new Date(updated.date).toLocaleString('es-MX', {
       timeZone: this.getTimezone(),
@@ -1169,8 +1222,19 @@ export class WebchatActionExecutorService {
       timeStyle: 'short',
     });
 
+    let reminderInfo = '';
+    const remObj = (updated as any).reminder || updateDto.reminder;
+    if (remObj?.date) {
+      const remDateFormatted = new Date(remObj.date).toLocaleString('es-MX', {
+        timeZone: this.getTimezone(),
+        timeStyle: 'short',
+        dateStyle: 'short',
+      });
+      reminderInfo = `\n- Recordatorio: Activado (${remDateFormatted})`;
+    }
+
     return {
-      answer: `Actividad Modificada con Éxito\n\n- Detalle: ${updated.activity}\n- Fecha y Hora: ${dateFormatted}`,
+      answer: `Actividad Modificada con Éxito\n\n- Detalle: ${updated.activity}\n- Fecha y Hora: ${dateFormatted}${reminderInfo}`,
       data: [{
         'ID': updated.id,
         'Detalle': updated.activity,
@@ -1480,16 +1544,27 @@ export class WebchatActionExecutorService {
     });
     if (direct) return direct;
 
-    // 2. Si son múltiples palabras (ej. "Juan Pérez"), buscar en nombre y apellido
+    // 2. Si son múltiples palabras (ej. "Guillermo Requema"), buscar nombre y apellido conjuntamente
     const words = clean.split(/\s+/).filter(w => w.length > 1);
     if (words.length > 1) {
+      const firstName = words[0];
+      const rest = words.slice(1).join(' ');
       const match = await this.clientRepo.findOne({
         where: [
-          { nombre: ILike(`%${words[0]}%`), apellido: ILike(`%${words[1]}%`) },
-          { nombre: ILike(`%${words[0]}%`) },
+          { nombre: ILike(`%${firstName}%`), apellido: ILike(`%${rest}%`) },
+          { nombre: ILike(`%${rest}%`), apellido: ILike(`%${firstName}%`) },
         ],
       });
       if (match) return match;
+    } else if (words.length === 1) {
+      // Si el usuario proporcionó una única palabra (ej. "Guillermo"), buscar por nombre o apellido
+      const matchSingle = await this.clientRepo.findOne({
+        where: [
+          { nombre: ILike(`%${words[0]}%`) },
+          { apellido: ILike(`%${words[0]}%`) },
+        ],
+      });
+      if (matchSingle) return matchSingle;
     }
     return null;
   }
@@ -1581,54 +1656,104 @@ export class WebchatActionExecutorService {
       return dateInput;
     }
     const str = String(dateInput).trim();
-    const parsedDirect = new Date(str);
-    if (!isNaN(parsedDirect.getTime()) && str.includes('T')) {
-      return parsedDirect;
-    }
 
-    const tz = this.getTimezone();
-    const now = new Date();
-    const nowInTz = new Date(now.toLocaleString('en-US', { timeZone: tz }));
-
-    const lower = str.toLowerCase();
-    const targetDate = new Date(nowInTz);
-
-    if (lower.includes('mañana') || lower.includes('manana')) {
-      targetDate.setDate(targetDate.getDate() + 1);
-    } else if (lower.includes('pasado mañana') || lower.includes('pasado manana')) {
-      targetDate.setDate(targetDate.getDate() + 2);
-    } else {
-      const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado'];
-      for (let d = 0; d < dias.length; d++) {
-        const diaName = dias[d];
-        if (lower.includes(diaName)) {
-          const currentDay = targetDate.getDay();
-          const targetDay = d > 6 ? (d === 8 ? 6 : 3) : (d === 4 ? 3 : d);
-          let diff = targetDay - currentDay;
-          if (diff <= 0) diff += 7;
-          targetDate.setDate(targetDate.getDate() + diff);
-          break;
-        }
+    // Si ya es un ISO string absoluto con Z o timezone explícito (+/-HH:MM)
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(str)) {
+      const parsedUtc = new Date(str);
+      if (!isNaN(parsedUtc.getTime())) {
+        return parsedUtc;
       }
     }
 
-    // Extraer hora (ej. "a las 3", "de las 3", "las 15:00", "4pm", "11:30 am", "3")
-    const timeMatch = lower.match(/(?:a\s+las\s+|de\s+las\s+|las\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-    if (timeMatch) {
-      let hour = parseInt(timeMatch[1], 10);
-      const minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
-      const meridiem = timeMatch[3]?.toLowerCase();
+    const lower = str.toLowerCase();
+    const tz = this.getTimezone();
 
-      if (meridiem === 'pm' && hour < 12) hour += 12;
-      if (meridiem === 'am' && hour === 12) hour = 0;
-      if (!meridiem && hour < 8) hour += 12; // Asumir horario laboral de tarde si dice ej. "a las 3" -> 15:00
+    // Obtener componentes actuales en la zona horaria del CRM
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(now);
+    const nowMap: Record<string, number> = {};
+    for (const p of parts) nowMap[p.type] = parseInt(p.value, 10);
 
-      targetDate.setHours(hour, minutes, 0, 0);
+    let targetYear = nowMap.year;
+    let targetMonth = nowMap.month - 1; // 0-indexed
+    let targetDay = nowMap.day;
+    let targetHour = 10;
+    let targetMinute = 0;
+
+    // 1. Si viene en formato ISO (ej. 2026-10-03T10:00:00 o 2026-10-03 10:00)
+    const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{2}))?/);
+    if (isoMatch) {
+      targetYear = parseInt(isoMatch[1], 10);
+      targetMonth = parseInt(isoMatch[2], 10) - 1;
+      targetDay = parseInt(isoMatch[3], 10);
+      if (isoMatch[4]) targetHour = parseInt(isoMatch[4], 10);
+      if (isoMatch[5]) targetMinute = parseInt(isoMatch[5], 10);
     } else {
-      targetDate.setHours(10, 0, 0, 0); // Default 10:00 AM
+      // 2. Días relativos
+      if (lower.includes('mañana') || lower.includes('manana')) {
+        const d = new Date(Date.UTC(targetYear, targetMonth, targetDay + 1));
+        targetYear = d.getUTCFullYear();
+        targetMonth = d.getUTCMonth();
+        targetDay = d.getUTCDate();
+      } else if (lower.includes('pasado mañana') || lower.includes('pasado manana')) {
+        const d = new Date(Date.UTC(targetYear, targetMonth, targetDay + 2));
+        targetYear = d.getUTCFullYear();
+        targetMonth = d.getUTCMonth();
+        targetDay = d.getUTCDate();
+      } else {
+        const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado'];
+        for (let d = 0; d < dias.length; d++) {
+          const diaName = dias[d];
+          if (lower.includes(diaName)) {
+            const currentDayOfWeek = new Date(Date.UTC(targetYear, targetMonth, targetDay)).getUTCDay();
+            const targetDayOfWeek = d > 6 ? (d === 8 ? 6 : 3) : (d === 4 ? 3 : d);
+            let diff = targetDayOfWeek - currentDayOfWeek;
+            if (diff <= 0) diff += 7;
+            const targetD = new Date(Date.UTC(targetYear, targetMonth, targetDay + diff));
+            targetYear = targetD.getUTCFullYear();
+            targetMonth = targetD.getUTCMonth();
+            targetDay = targetD.getUTCDate();
+            break;
+          }
+        }
+      }
+
+      // Extraer hora (ej. "a las 10", "10am", "4pm", "15:00", "11:30 am")
+      const timeMatch = lower.match(/(?:a\s+las\s+|de\s+las\s+|las\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+      if (timeMatch) {
+        let hour = parseInt(timeMatch[1], 10);
+        const minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+        const meridiem = timeMatch[3]?.toLowerCase();
+
+        if (meridiem === 'pm' && hour < 12) hour += 12;
+        if (meridiem === 'am' && hour === 12) hour = 0;
+        if (!meridiem && hour < 8) hour += 12;
+
+        targetHour = hour;
+        targetMinute = minutes;
+      }
     }
 
-    return targetDate;
+    // Convertir exactamente a UTC para la zona horaria configurada
+    const tempUtc = new Date(Date.UTC(targetYear, targetMonth, targetDay, targetHour, targetMinute, 0));
+    const tempParts = formatter.formatToParts(tempUtc);
+    const pMap: Record<string, number> = {};
+    for (const p of tempParts) pMap[p.type] = parseInt(p.value, 10);
+    const tzHour = pMap.hour === 24 ? 0 : pMap.hour;
+    const localMinutes = pMap.day * 24 * 60 + tzHour * 60 + pMap.minute;
+    const targetMinutes = targetDay * 24 * 60 + targetHour * 60 + targetMinute;
+    const diffMinutes = targetMinutes - localMinutes;
+    return new Date(tempUtc.getTime() + diffMinutes * 60 * 1000);
   }
 
   parseNumeric(value: any): number {

@@ -365,12 +365,57 @@ export class AiAgentOrchestratorService {
   }
 
   private async callWatsonx(model: string, apiKey: string, projectId: string, region: string, prompt: string, temperature: number, maxNewTokens = 2048, auditContext?: ConsumptionAuditContext): Promise<string> {
-    const iamToken = await this.getWatsonxIamToken(apiKey);
+    let iamToken = await this.getWatsonxIamToken(apiKey);
     const rawRegion = region || 'us-south';
     const baseUrl = rawRegion.startsWith('http') ? rawRegion.replace(/\/$/, '') : `https://${rawRegion}.ml.cloud.ibm.com`;
     const numericTemp = typeof temperature === 'number' ? temperature : parseFloat(String(temperature || 0.7));
     const numericMaxTokens = Number(maxNewTokens) || 2048;
     const effectiveTemp = Math.max(numericTemp, 0.1);
+
+    // 1. Intentar primero con el endpoint oficial de Chat (/ml/v1/text/chat) recomendado por IBM
+    try {
+      const chatPayload = {
+        model_id: model,
+        project_id: projectId,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: numericMaxTokens,
+        temperature: effectiveTemp,
+      };
+
+      let chatResp = await fetch(`${baseUrl}/ml/v1/text/chat?version=2023-05-29`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${iamToken}` },
+        body: JSON.stringify(chatPayload),
+      });
+
+      if (chatResp.status === 401) {
+        this.watsonxIamToken = null;
+        this.watsonxTokenExpiry = 0;
+        iamToken = await this.getWatsonxIamToken(apiKey);
+        chatResp = await fetch(`${baseUrl}/ml/v1/text/chat?version=2023-05-29`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${iamToken}` },
+          body: JSON.stringify(chatPayload),
+        });
+      }
+
+      if (chatResp.ok) {
+        const chatData: any = await chatResp.json();
+        const rawText = chatData.choices?.[0]?.message?.content || '';
+        const inputTokens = chatData.usage?.prompt_tokens || 0;
+        const outputTokens = chatData.usage?.completion_tokens || 0;
+        const totalTokens = chatData.usage?.total_tokens || (inputTokens + outputTokens);
+        this.logger.log(`[Token Usage] WatsonX (Chat) - Entrada: ${inputTokens}, Salida: ${outputTokens}, Total: ${totalTokens}`);
+        await this.recordTokenConsumption(inputTokens, outputTokens, totalTokens, 'watsonx_execution', { ...auditContext, modelName: model });
+        if (rawText.trim()) {
+          return rawText.trim();
+        }
+      }
+    } catch (chatErr: any) {
+      this.logger.warn(`[WatsonX Chat] No se pudo generar con endpoint chat, recurriendo a text/generation: ${chatErr.message}`);
+    }
+
+    // 2. Fallback a text/generation formateando headers para instruct models (Llama 3/4, Granite, Mistral)
     const parameters: Record<string, any> = {
       max_new_tokens: numericMaxTokens,
       min_new_tokens: 2,
@@ -381,7 +426,7 @@ export class AiAgentOrchestratorService {
     const modelLower = model.toLowerCase();
     if (modelLower.includes('mistral') && !prompt.includes('[INST]')) {
       formattedInput = `<s>[INST] ${prompt} [/INST]`;
-    } else if ((modelLower.includes('llama-3') || modelLower.includes('llama3')) && !prompt.includes('<|start_header_id|>')) {
+    } else if ((modelLower.includes('llama') || modelLower.includes('llama-3') || modelLower.includes('llama-4')) && !prompt.includes('<|start_header_id|>')) {
       formattedInput = `<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nResponde en formato JSON estructurado.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n${prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n`;
     } else if (modelLower.includes('granite-3') && !prompt.includes('<|start_of_role|>')) {
       formattedInput = `<|start_of_role|>system<|end_of_role|>\nResponde únicamente con un objeto JSON válido.<|start_of_role|>user<|end_of_role|>\n${prompt}<|start_of_role|>assistant<|end_of_role|>\n`;

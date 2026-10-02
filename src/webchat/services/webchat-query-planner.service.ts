@@ -144,8 +144,35 @@ export class WebchatQueryPlannerService {
     if (actionType === 'createOpportunity' || actionType === 'modifyOpportunity') {
       params.nombreProyecto = q.replace(/^(crea|crear|genera|registra|modifica|actualiza)\s+(una\s+)?(oportunidad|cotizacion|cotización|proyecto)?\s*(para|de)?/i, '').trim();
     } else if (actionType === 'createActivity' || actionType === 'modifyActivity') {
-      params.activity = q;
-      params.date = 'mañana a las 10am';
+      params.activity = q.replace(/^(crea|crear|agenda|agendar|programa|programar|registra|registrar)\s+(una\s+)?/i, '').trim() || q;
+
+      // Extraer empresa si se especifica "de la empresa X" o "empresa X"
+      const empMatch = q.match(/(?:de\s+la\s+empresa|empresa|cuenta)\s+["']?([^"',]+?)["']?(?:\s+mañana|\s+hoy|\s+el\s+|\s+con\s+|\s+para\s+|$)/i);
+      if (empMatch && empMatch[1]) {
+        params.empresa = empMatch[1].trim();
+      }
+
+      // Extraer cliente/contacto si se especifica "con X" o "para el cliente X"
+      const clientMatch = q.match(/(?:con\s+el\s+cliente|para\s+el\s+cliente|con|para)\s+["']?([A-ZÁÉÍÓÚa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚa-záéíóúñ]+)?)["']?(?:\s+de\s+la\s+empresa|\s+de\s+|\s+mañana|\s+hoy|\s+el\s+|$)/i);
+      if (clientMatch && clientMatch[1]) {
+        const cand = clientMatch[1].trim();
+        if (!['seguimiento', 'reunion', 'llamada', 'visita', 'correo'].includes(cand.toLowerCase())) {
+          params.cliente = cand;
+        }
+      }
+
+      // Extraer fecha si está presente en el texto
+      const dateMatch = q.match(/(?:para\s+el\s+|el\s+|para\s+)?(hoy|mañana|manana|pasado\s+mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}\s+de\s+[a-z]+|\d{4}-\d{2}-\d{2})(?:\s+(?:a\s+las\s+|las\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i);
+      if (dateMatch && dateMatch[0]) {
+        params.date = dateMatch[0].trim();
+      } else {
+        params.date = 'mañana a las 10am';
+      }
+
+      // Extraer recordatorio si se solicita
+      if (/recordatorio|recordar|alarma/i.test(q)) {
+        params.recordatorio = /misma\s+hora|al\s+momento/i.test(q) ? 'misma hora' : true;
+      }
     } else if (actionType === 'createTicket') {
       params.title = q.replace(/^(crea|crear|levanta|levantar|abre|abrir|reporta)\s+(un\s+)?(ticket|incidencia|reporte)?\s*(por|de)?/i, '').trim() || q;
     }

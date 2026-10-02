@@ -33,6 +33,7 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 2. Si es "CONVERSATIONAL", usa intent/domain "CONVERSATIONAL" y "responseTemplate".
 3. Si es "ACTION_EXECUTION", usa intent/domain "ACTION_EXECUTION" y genera "actionPlan":
    { "action": "createOpportunity" | "modifyOpportunity" | "createActivity" | "modifyActivity" | "createTicket", "parameters": { ... } }
+   * En "createActivity": extrae "activity" (detalle), "date" (fecha/hora original), "cliente" (contacto), "empresa" (empresa) y "recordatorio" ("misma hora" / true).
 4. Si piden ver gráfica/dashboard, incluye "dashboardRedirect": { "tab": "commercial" | "support", "executiveId": "${userId}" }.
 
 [FORMATO JSON]
@@ -50,13 +51,12 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 - "Hola" → {"thought": "Saludo.", "intent": "CONVERSATIONAL", "domain": "CONVERSATIONAL", "responseTemplate": "¡Hola! Soy tu asistente del CRM. ¿En qué te ayudo?"}
 - "crea oportunidad Bimbo 50000 MXN desarrollo" → {"thought": "Crear opp.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createOpportunity", "parameters": {"nombreProyecto": "Bimbo", "monto": 50000, "moneda": "MXN", "lineaNegocio": "Desarrollo"}}}
 - "a oportunidad prueba agrega 5000 licenciamiento" → {"thought": "Modificar opp.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "prueba", "montoLicenciamiento": 5000}}}
-- "agenda reunión mañana 4pm con Carlos" → {"thought": "Crear act.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Reunión con Carlos", "date": "mañana a las 4pm", "cliente": "Carlos"}}}
+- "agenda llamada con Guillermo de Farmacias Benavides mañana a las 10am con recordatorio a la misma hora" → {"thought": "Crear llamada.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamada con Guillermo", "date": "mañana a las 10am", "cliente": "Guillermo", "empresa": "Farmacias Benavides", "recordatorio": "misma hora"}}}
 - "agenda llamada el viernes 10am con Carlos correo carlos@empresa.com" → {"thought": "Crear act con correo.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamada con Carlos", "date": "el viernes a las 10am", "cliente": "Carlos", "correo": "carlos@empresa.com"}}}
 - "cambia actividad de las 3 a consulta" → {"thought": "Modificar act.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetDate": "las 3", "newActivity": "consulta"}}}
 - "reprograma reunión de las 3 para mañana 5pm" → {"thought": "Reprogramar act.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetDate": "las 3", "newDate": "mañana a las 5pm"}}}
 - "levanta ticket por caída de servidor" → {"thought": "Crear ticket.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createTicket", "parameters": {"title": "Caída de servidor", "priority": 3}}}
 - "cuanto he vendido este mes" → {"thought": "Ventas.", "intent": "ANALYTICAL", "domain": "OPORTUNIDADES", "actionPlan": null}`;
-
   }
 
   /**
