@@ -31,12 +31,13 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection,
   }
 
   handleConnection(client: Socket) {
-    let userId = client.handshake.query.userId as string;
     const token =
       (client.handshake.auth?.token as string) ||
       (client.handshake.headers?.authorization?.startsWith('Bearer ')
         ? client.handshake.headers.authorization.substring(7)
         : undefined);
+
+    let authenticatedUserId: string | null = null;
 
     if (token) {
       try {
@@ -45,17 +46,18 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection,
           throw new Error('JWT_SECRET no está configurado en las variables de entorno');
         }
         const decoded: any = jwt.verify(token, secret);
-        userId = decoded.sub || decoded.userId || userId;
+        authenticatedUserId = decoded.sub || decoded.userId || null;
       } catch (err: any) {
-        this.logger.warn(`Client ${client.id} conectado con token JWT no válido: ${err.message}`);
+        this.logger.warn(`Client ${client.id} WS handshake con token JWT no válido: ${err.message}`);
       }
     }
 
-    if (userId) {
-      client.join(`user_${userId}`);
-      this.logger.log(`Client ${client.id} connected and joined room user_${userId}`);
+    if (authenticatedUserId) {
+      (client as any).userId = authenticatedUserId;
+      client.join(`user_${authenticatedUserId}`);
+      this.logger.log(`Client ${client.id} connected and joined room user_${authenticatedUserId}`);
     } else {
-      this.logger.log(`Client ${client.id} connected without authenticated user`);
+      this.logger.warn(`Client ${client.id} conectado sin autenticación JWT válida`);
     }
   }
 
@@ -65,10 +67,13 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection,
 
   @SubscribeMessage('register')
   handleRegister(@MessageBody() data: { userId: string }, @ConnectedSocket() client: Socket) {
-    if (data && data.userId) {
-      client.join(`user_${data.userId}`);
-      this.logger.log(`Client ${client.id} explicitly registered for user_${data.userId}`);
-      return { status: 'ok', room: `user_${data.userId}` };
+    const authenticatedUserId = (client as any).userId;
+    // Si el socket ya fue autenticado por JWT, respeta la identidad verificada
+    const targetUserId = authenticatedUserId || data?.userId;
+    if (targetUserId) {
+      client.join(`user_${targetUserId}`);
+      this.logger.log(`Client ${client.id} explicitly registered for user_${targetUserId}`);
+      return { status: 'ok', room: `user_${targetUserId}` };
     }
   }
 
