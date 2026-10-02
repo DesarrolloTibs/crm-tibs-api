@@ -55,6 +55,7 @@ graph TD
 ### 2.2. Gateway de Notificaciones (`src/notifications/notifications.gateway.ts`)
 * **Namespace:** `/notifications`
 * **Propósito:** Envío instantáneo de alertas de sistema, recordatorios próximos a vencer, asignación de nuevas oportunidades o menciones internas entre colaboradores.
+* **Seguridad & Autenticación:** Valida el Bearer JWT en el handshake (`client.handshake.auth.token`). La unión a la sala privada `user_${userId}` requiere verificación exitosa de firma contra `JWT_SECRET`, previniendo suscripciones no autorizadas a notificaciones de terceros.
 
 ### 2.3. Gateway de Actividades (`src/activities/activities.gateway.ts`)
 * **Namespace:** `/activities`

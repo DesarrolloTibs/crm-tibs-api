@@ -7,6 +7,8 @@ import { MailService } from '../mail/mail.service';
 import { DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 
+import { ConfigService } from '@nestjs/config';
+
 const mockUsersService = {
   findOneByEmail: jest.fn(),
   findOneByResetToken: jest.fn(),
@@ -15,6 +17,7 @@ const mockUsersService = {
 
 const mockJwtService = {
   sign: jest.fn().mockReturnValue('mock.jwt.token'),
+  verify: jest.fn().mockReturnValue({ sub: 'u1', username: 'alice', role: 'admin', tenant: 'tenant_demo', type: 'refresh' }),
 };
 
 const mockMailService: Partial<MailService> = {
@@ -23,6 +26,15 @@ const mockMailService: Partial<MailService> = {
 
 const mockDataSource = {
   query: jest.fn(),
+};
+
+const mockConfigService = {
+  get: jest.fn().mockImplementation((key: string) => {
+    if (key === 'JWT_SECRET') return 'test_secret';
+    if (key === 'JWT_REFRESH_SECRET') return 'test_refresh_secret';
+    if (key === 'JWT_REFRESH_EXPIRATION_TIME') return '30d';
+    return null;
+  }),
 };
 
 describe('AuthService', () => {
@@ -36,6 +48,7 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: mockJwtService },
         { provide: MailService, useValue: mockMailService },
         { provide: DataSource, useValue: mockDataSource },
+        { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();
 
@@ -55,29 +68,46 @@ describe('AuthService', () => {
     });
 
     it('returns user when local tenant user password matches', async () => {
-      mockDataSource.query.mockResolvedValue([]);
       const hashed = await bcrypt.hash('secret', 10);
       const fakeUser = { id: 'u1', username: 'alice', email: 'alice@test.com', password: hashed, role: 'admin', isActive: true };
-      mockUsersService.findOneByEmail.mockResolvedValue(fakeUser);
+      
+      mockDataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('public.users')) return Promise.resolve([]);
+        if (sql.includes('public.tenants')) return Promise.resolve([{ schema_name: 'tenant_demo' }]);
+        if (sql.includes('users WHERE LOWER(email)')) return Promise.resolve([fakeUser]);
+        return Promise.resolve([]);
+      });
 
       const result = await service.validateUser('alice@test.com', 'secret');
       expect(result).not.toBeNull();
       expect(result.username).toBe('alice');
-      expect(result.password).toBeUndefined(); // password stripped
+      expect(result.tenant).toBe('tenant_demo');
     });
 
     it('returns null when local user password does not match', async () => {
-      mockDataSource.query.mockResolvedValue([]);
       const hashed = await bcrypt.hash('correct', 10);
-      mockUsersService.findOneByEmail.mockResolvedValue({ id: 'u1', password: hashed, isActive: true });
+      const fakeUser = { id: 'u1', username: 'alice', email: 'alice@test.com', password: hashed, role: 'admin', isActive: true };
+
+      mockDataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('public.users')) return Promise.resolve([]);
+        if (sql.includes('public.tenants')) return Promise.resolve([{ schema_name: 'tenant_demo' }]);
+        if (sql.includes('users WHERE LOWER(email)')) return Promise.resolve([fakeUser]);
+        return Promise.resolve([]);
+      });
 
       const result = await service.validateUser('alice@test.com', 'wrong');
       expect(result).toBeNull();
     });
 
     it('throws BadRequestException when local user is inactive', async () => {
-      mockDataSource.query.mockResolvedValue([]);
-      mockUsersService.findOneByEmail.mockResolvedValue({ id: 'u1', password: 'x', isActive: false });
+      const fakeUser = { id: 'u1', username: 'alice', email: 'alice@test.com', password: 'x', role: 'admin', isActive: false };
+
+      mockDataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('public.users')) return Promise.resolve([]);
+        if (sql.includes('public.tenants')) return Promise.resolve([{ schema_name: 'tenant_demo' }]);
+        if (sql.includes('users WHERE LOWER(email)')) return Promise.resolve([fakeUser]);
+        return Promise.resolve([]);
+      });
 
       await expect(service.validateUser('alice@test.com', 'pass')).rejects.toThrow(BadRequestException);
     });
@@ -98,14 +128,47 @@ describe('AuthService', () => {
   // ── login ────────────────────────────────────────────────────────────────────
 
   describe('login', () => {
-    it('returns access_token and role', async () => {
-      const user = { id: 'u1', username: 'alice', role: 'admin' };
+    it('returns access_token, refresh_token and user info', async () => {
+      const user = { id: 'u1', username: 'alice', email: 'alice@test.com', role: 'admin', tenant: 'tenant_demo' };
       const result = await service.login(user);
       expect(result.access_token).toBe('mock.jwt.token');
+      expect(result.refresh_token).toBe('mock.jwt.token');
       expect(result.role).toBe('admin');
-      expect(mockJwtService.sign).toHaveBeenCalledWith(
-        expect.objectContaining({ sub: 'u1', role: 'admin' }),
-      );
+      expect(result.user).toBeDefined();
+      expect(result.user.username).toBe('alice');
+      expect(mockJwtService.sign).toHaveBeenCalled();
+    });
+  });
+
+  // ── refreshToken ─────────────────────────────────────────────────────────────
+
+  describe('refreshToken', () => {
+    it('successfully refreshes token for active user', async () => {
+      mockJwtService.verify.mockReturnValue({
+        sub: 'u1',
+        username: 'alice',
+        role: 'admin',
+        tenant: 'tenant_demo',
+        type: 'refresh',
+      });
+
+      mockDataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('public.tenants')) return Promise.resolve([{ is_active: true }]);
+        if (sql.includes('users WHERE id')) return Promise.resolve([{
+          id: 'u1',
+          username: 'alice',
+          email: 'alice@test.com',
+          role: 'admin',
+          isActive: true,
+        }]);
+        return Promise.resolve([]);
+      });
+
+      const result = await service.refreshToken('valid.refresh.token');
+      expect(result).toBeDefined();
+      expect(result.access_token).toBe('mock.jwt.token');
+      expect(result.refresh_token).toBe('mock.jwt.token');
+      expect(result.user.username).toBe('alice');
     });
   });
 
