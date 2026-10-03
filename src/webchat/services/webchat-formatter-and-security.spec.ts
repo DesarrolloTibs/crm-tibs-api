@@ -132,6 +132,31 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(result).toMatch(/El total consolidado de ventas ganadas es \$500,000(\.00)? MXN\./);
     });
 
+    it('should interpolate empty braces {} and generic aliases with measure value', () => {
+      const data = [{ 'Actividades.count': '3' }];
+
+      // Caso exacto reportado por el usuario con {} vacíos
+      const templateEmptyBraces = "El usuario 'admin' tuvo {} actividades el mes pasado.";
+      const resEmpty = formatterService.simpleFormat(data, templateEmptyBraces);
+      expect(resEmpty).toBe("El usuario 'admin' tuvo 3 actividades el mes pasado.");
+
+      // Alias {total}
+      const templateTotal = 'Se encontraron {total} actividades registradas.';
+      const resTotal = formatterService.simpleFormat(data, templateTotal);
+      expect(resTotal).toBe('Se encontraron 3 actividades registradas.');
+
+      // Alias {count}
+      const templateCount = 'Total: {count} actividades.';
+      const resCount = formatterService.simpleFormat(data, templateCount);
+      expect(resCount).toBe('Total: 3 actividades.');
+
+      // Posicionales múltiples
+      const multiData = [{ 'Usuarios.username': 'admin', 'Actividades.count': '3' }];
+      const templateMulti = 'El usuario {} tuvo {} actividades el mes pasado.';
+      const resMulti = formatterService.simpleFormat(multiData, templateMulti);
+      expect(resMulti).toBe('El usuario admin tuvo 3 actividades el mes pasado.');
+    });
+
     it('should format multiple rows with respective currencies (USD vs MXN)', () => {
       const data = [
         {
@@ -630,10 +655,15 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       const haceDosDias = cubeExecutor.resolveDateRange('hace dos días');
       expect(Array.isArray(haceDosDias)).toBe(true);
       expect(haceDosDias![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(haceDosDias![0]).toBe(haceDosDias![1]); // Single day
 
       const haceTresSemanas = cubeExecutor.resolveDateRange('hace tres semanas');
       expect(Array.isArray(haceTresSemanas)).toBe(true);
       expect(haceTresSemanas![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(haceTresSemanas![1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      // Debe ser un rango de lunes a domingo (diferencia de 6 días)
+      const diffDaysWeeks = (new Date(haceTresSemanas![1]).getTime() - new Date(haceTresSemanas![0]).getTime()) / (1000 * 60 * 60 * 24);
+      expect(Math.round(diffDaysWeeks)).toBe(6);
 
       const dentroDeDosDias = cubeExecutor.resolveDateRange('dentro de dos días');
       expect(Array.isArray(dentroDeDosDias)).toBe(true);
@@ -655,7 +685,7 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(juevesSemanaPasada![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
 
-    it('should resolve days from N weeks ago (el lunes de hace 2 semanas, el miércoles de hace dos semanas)', () => {
+    it('should resolve days from N weeks ago (el lunes de hace 2 semanas, el miércoles de hace dos semanas, el viernes de la semana antepasada)', () => {
       const lunes2Semanas = cubeExecutor.resolveDateRange('el lunes de hace 2 semanas');
       expect(Array.isArray(lunes2Semanas)).toBe(true);
       expect(lunes2Semanas![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -665,24 +695,49 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(Array.isArray(miercolesDosSemanas)).toBe(true);
       expect(miercolesDosSemanas![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
+      const viernesSemanaAntepasada = cubeExecutor.resolveDateRange('el viernes de la semana antepasada');
+      expect(Array.isArray(viernesSemanaAntepasada)).toBe(true);
+      expect(viernesSemanaAntepasada![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(viernesSemanaAntepasada![0]).toBe(viernesSemanaAntepasada![1]);
+
       const semanaHace2Semanas = cubeExecutor.resolveDateRange('la semana de hace 2 semanas');
       expect(Array.isArray(semanaHace2Semanas)).toBe(true);
       expect(semanaHace2Semanas![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(semanaHace2Semanas![1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      const hace2Semanas = cubeExecutor.resolveDateRange('hace 2 semanas');
+      expect(Array.isArray(hace2Semanas)).toBe(true);
+      expect(hace2Semanas).toEqual(semanaHace2Semanas);
+
+      const semanaAntepasada = cubeExecutor.resolveDateRange('la semana antepasada');
+      expect(Array.isArray(semanaAntepasada)).toBe(true);
+      expect(semanaAntepasada).toEqual(semanaHace2Semanas);
     });
 
-    it('should resolve past months and years (hace 2 meses, el mes de hace 2 meses, hace un año)', () => {
+    it('should resolve past months and years (hace 2 meses, el mes de hace 2 meses, el mes antepasado, hace un año)', () => {
       const hace2Meses = cubeExecutor.resolveDateRange('hace 2 meses');
       expect(Array.isArray(hace2Meses)).toBe(true);
-      expect(hace2Meses![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(hace2Meses![0]).toMatch(/^\d{4}-\d{2}-01$/);
+      expect(hace2Meses![1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
       const mesHace2Meses = cubeExecutor.resolveDateRange('el mes de hace 2 meses');
       expect(Array.isArray(mesHace2Meses)).toBe(true);
       expect(mesHace2Meses![0]).toMatch(/^\d{4}-\d{2}-01$/);
+      expect(hace2Meses).toEqual(mesHace2Meses);
+
+      const mesAntepasado = cubeExecutor.resolveDateRange('el mes antepasado');
+      expect(Array.isArray(mesAntepasado)).toBe(true);
+      expect(mesAntepasado).toEqual(mesHace2Meses);
 
       const haceUnAno = cubeExecutor.resolveDateRange('hace un año');
       expect(Array.isArray(haceUnAno)).toBe(true);
-      expect(haceUnAno![0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(haceUnAno![0]).toMatch(/^\d{4}-01-01$/);
+      expect(haceUnAno![1]).toMatch(/^\d{4}-12-31$/);
+
+      const anoAntepasado = cubeExecutor.resolveDateRange('el año antepasado');
+      expect(Array.isArray(anoAntepasado)).toBe(true);
+      expect(anoAntepasado![0]).toMatch(/^\d{4}-01-01$/);
+      expect(anoAntepasado![1]).toMatch(/^\d{4}-12-31$/);
     });
   });
 

@@ -387,13 +387,13 @@ export class WebchatCubeExecutorService {
     }
 
     // 3. Días de la semana específicos:
-    // 3.1 "el [día] de hace N semanas" (ej: "el lunes de hace 2 semanas", "el miércoles de hace dos semanas", "el viernes de hace 3 semanas")
+    // 3.1 "el [día] de hace N semanas" (ej: "el lunes de hace 2 semanas", "el miércoles de hace dos semanas", "el viernes de hace 3 semanas") o "el [día] de la semana antepasada"
     const dayNWeeksAgoMatch = normalized.match(
-      /^(?:el\s+)?(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(?:de\s+)?hace\s+([a-záéíóú0-9]+)\s+semanas?$/i
+      /^(?:el\s+)?(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+(?:de\s+)?(?:hace\s+([a-záéíóú0-9]+)\s+semanas?|(?:de\s+)?la\s+semana\s+antepasada)$/i
     );
     if (dayNWeeksAgoMatch) {
       const targetDay = this.parseDayOfWeek(dayNWeeksAgoMatch[1]);
-      const n = this.parseNumberOrWord(dayNWeeksAgoMatch[2]);
+      const n = dayNWeeksAgoMatch[2] ? this.parseNumberOrWord(dayNWeeksAgoMatch[2]) : 2;
       if (targetDay !== null && n !== null) {
         const daysSinceMonday = (dayOfWeek + 6) % 7;
         const thisMonday = this.addDays(dateStr, -daysSinceMonday);
@@ -479,7 +479,21 @@ export class WebchatCubeExecutorService {
       }
     }
 
-    // 6. Semanas dinámicas en el pasado:
+    // 6. Semanas dinámicas en el pasado y futuro:
+    // 6.0 "la semana antepasada", "semana antepasada", "the week before last"
+    if (
+      normalized === 'la semana antepasada' ||
+      normalized === 'semana antepasada' ||
+      normalized === 'the week before last' ||
+      normalized === 'week before last'
+    ) {
+      const daysSinceMonday = (dayOfWeek + 6) % 7;
+      const thisMonday = this.addDays(dateStr, -daysSinceMonday);
+      const targetMonday = this.addDays(thisMonday, -14);
+      const targetSunday = this.addDays(targetMonday, 6);
+      return [targetMonday, targetSunday];
+    }
+
     // 6.1 "la semana de hace N semanas" (lunes a domingo de hace N semanas)
     const weekOfNWeeksAgoMatch = normalized.match(/^(?:la\s+)?semana\s+(?:de\s+)?hace\s+([a-záéíóú0-9]+)\s+semanas?$/i);
     if (weekOfNWeeksAgoMatch) {
@@ -493,18 +507,50 @@ export class WebchatCubeExecutorService {
       }
     }
 
-    // 6.2 "hace N semanas" (ej: "hace 2 semanas", "hace dos semanas", "hace una semana")
+    // 6.2 "hace N semanas" (ej: "hace 2 semanas", "hace dos semanas", "hace una semana") -> Rango semana lunes a domingo
     const nWeeksAgoMatch = normalized.match(/^(?:hace|-)\s*([a-záéíóú0-9]+)\s*semanas?(?:\s*ago)?$/i) ||
                            normalized.match(/^([a-záéíóú0-9]+)\s*weeks?\s*ago$/i);
     if (nWeeksAgoMatch) {
       const n = this.parseNumberOrWord(nWeeksAgoMatch[1]);
       if (n !== null) {
-        const targetDate = this.addDays(dateStr, -(n * 7));
-        return [targetDate, targetDate];
+        const daysSinceMonday = (dayOfWeek + 6) % 7;
+        const thisMonday = this.addDays(dateStr, -daysSinceMonday);
+        const targetMonday = this.addDays(thisMonday, -(n * 7));
+        const targetSunday = this.addDays(targetMonday, 6);
+        return [targetMonday, targetSunday];
       }
     }
 
-    // 7. Meses dinámicos en el pasado:
+    // 6.3 Semanas dinámicas en el futuro: "en N semanas", "dentro de N semanas", "in N weeks"
+    const inNWeeksMatch = normalized.match(/^(?:dentro\s+de|en|\+)\s*([a-záéíóú0-9]+)\s*semanas?$/i) ||
+                          normalized.match(/^in\s+([a-záéíóú0-9]+)\s*weeks?$/i);
+    if (inNWeeksMatch) {
+      const n = this.parseNumberOrWord(inNWeeksMatch[1]);
+      if (n !== null) {
+        const daysSinceMonday = (dayOfWeek + 6) % 7;
+        const thisMonday = this.addDays(dateStr, -daysSinceMonday);
+        const targetMonday = this.addDays(thisMonday, n * 7);
+        const targetSunday = this.addDays(targetMonday, 6);
+        return [targetMonday, targetSunday];
+      }
+    }
+
+    // 7. Meses dinámicos en el pasado y futuro:
+    // 7.0 "el mes antepasado", "mes antepasado", "the month before last"
+    if (
+      normalized === 'el mes antepasado' ||
+      normalized === 'mes antepasado' ||
+      normalized === 'the month before last' ||
+      normalized === 'month before last'
+    ) {
+      const targetDate = this.addMonths(dateStr, -2);
+      const [y, m] = targetDate.split('-').map(Number);
+      const monthStart = `${y}-${pad(m)}-01`;
+      const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      const monthEnd = `${y}-${pad(m)}-${pad(lastDay)}`;
+      return [monthStart, monthEnd];
+    }
+
     // 7.1 "el mes de hace N meses" (mes calendario completo)
     const monthOfNMonthsAgoMatch = normalized.match(/^(?:el\s+)?mes\s+(?:de\s+)?hace\s+([a-záéíóú0-9]+)\s+mes(?:es)?$/i);
     if (monthOfNMonthsAgoMatch) {
@@ -519,25 +565,69 @@ export class WebchatCubeExecutorService {
       }
     }
 
-    // 7.2 "hace N meses" (ej: "hace un mes", "hace dos meses", "hace 3 meses")
+    // 7.2 "hace N meses" (ej: "hace un mes", "hace dos meses", "hace 3 meses") -> Mes calendario completo
     const nMonthsAgoMatch = normalized.match(/^(?:hace|-)\s*([a-záéíóú0-9]+)\s*mes(?:es)?(?:\s*ago)?$/i) ||
                             normalized.match(/^([a-záéíóú0-9]+)\s*months?\s*ago$/i);
     if (nMonthsAgoMatch) {
       const n = this.parseNumberOrWord(nMonthsAgoMatch[1]);
       if (n !== null) {
         const targetDate = this.addMonths(dateStr, -n);
-        return [targetDate, targetDate];
+        const [y, m] = targetDate.split('-').map(Number);
+        const monthStart = `${y}-${pad(m)}-01`;
+        const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const monthEnd = `${y}-${pad(m)}-${pad(lastDay)}`;
+        return [monthStart, monthEnd];
       }
     }
 
-    // 8. Años dinámicos en el pasado: "hace N años" (ej: "hace un año", "hace 2 años", "hace dos años")
+    // 7.3 Meses dinámicos en el futuro: "en N meses", "dentro de N meses", "in N months"
+    const inNMonthsMatch = normalized.match(/^(?:dentro\s+de|en|\+)\s*([a-záéíóú0-9]+)\s*mes(?:es)?$/i) ||
+                           normalized.match(/^in\s+([a-záéíóú0-9]+)\s*months?$/i);
+    if (inNMonthsMatch) {
+      const n = this.parseNumberOrWord(inNMonthsMatch[1]);
+      if (n !== null) {
+        const targetDate = this.addMonths(dateStr, n);
+        const [y, m] = targetDate.split('-').map(Number);
+        const monthStart = `${y}-${pad(m)}-01`;
+        const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const monthEnd = `${y}-${pad(m)}-${pad(lastDay)}`;
+        return [monthStart, monthEnd];
+      }
+    }
+
+    // 8. Años dinámicos en el pasado y futuro:
+    // 8.0 "el año antepasado", "año antepasado", "the year before last"
+    if (
+      normalized === 'el año antepasado' ||
+      normalized === 'el ano antepasado' ||
+      normalized === 'año antepasado' ||
+      normalized === 'ano antepasado' ||
+      normalized === 'the year before last' ||
+      normalized === 'year before last'
+    ) {
+      const targetYear = year - 2;
+      return [`${targetYear}-01-01`, `${targetYear}-12-31`];
+    }
+
+    // 8.1 "hace N años" (ej: "hace un año", "hace 2 años", "hace dos años") -> Año calendario completo
     const nYearsAgoMatch = normalized.match(/^(?:hace|-)\s*([a-záéíóú0-9]+)\s*a[ñn]os?(?:\s*ago)?$/i) ||
                            normalized.match(/^([a-záéíóú0-9]+)\s*years?\s*ago$/i);
     if (nYearsAgoMatch) {
       const n = this.parseNumberOrWord(nYearsAgoMatch[1]);
       if (n !== null) {
-        const targetDate = this.addYears(dateStr, -n);
-        return [targetDate, targetDate];
+        const targetYear = year - n;
+        return [`${targetYear}-01-01`, `${targetYear}-12-31`];
+      }
+    }
+
+    // 8.2 Años dinámicos en el futuro: "en N años", "dentro de N años", "in N years"
+    const inNYearsMatch = normalized.match(/^(?:dentro\s+de|en|\+)\s*([a-záéíóú0-9]+)\s*a[ñn]os?$/i) ||
+                          normalized.match(/^in\s+([a-záéíóú0-9]+)\s*years?$/i);
+    if (inNYearsMatch) {
+      const n = this.parseNumberOrWord(inNYearsMatch[1]);
+      if (n !== null) {
+        const targetYear = year + n;
+        return [`${targetYear}-01-01`, `${targetYear}-12-31`];
       }
     }
 

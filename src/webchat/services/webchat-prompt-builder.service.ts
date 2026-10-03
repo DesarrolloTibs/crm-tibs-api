@@ -33,7 +33,8 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 2. Si es "CONVERSATIONAL", usa intent/domain "CONVERSATIONAL" y "responseTemplate".
 3. Si es "ACTION_EXECUTION", usa intent/domain "ACTION_EXECUTION" y genera "actionPlan":
    { "action": "createOpportunity" | "modifyOpportunity" | "createActivity" | "modifyActivity" | "createTicket", "parameters": { ... } }
-   * En "createActivity": extrae "activity" (detalle), "date" (fecha/hora original), "cliente" (contacto), "empresa" (empresa) y "recordatorio" ("misma hora" / true).
+   * En "createActivity": extrae "activity" (detalle), "tipoActividad" (ej. "Demostración", "Reunión", "Llamada"), "date" (fecha/hora), "cliente", "empresa" y "recordatorio" (hora ej. "1 pm", "2 horas antes", "misma hora" o true).
+   * En "modifyOpportunity": extrae "nombreProyecto" (u "oportunidad"), "etapa" (si solicitan mover o cambiar etapa, ej. "Calificado", "Propuesta", "Negociación", "Cierre Exitoso", "Ganada"), "cliente", "montoLicenciamiento", "montoServicios", "nuevoNombre".
 4. Si piden ver gráfica/dashboard, incluye "dashboardRedirect": { "tab": "commercial" | "support", "executiveId": "${userId}" }.
 
 [FORMATO JSON]
@@ -48,15 +49,15 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 }
 
 [EJEMPLOS]
-- "Hola" → {"thought": "Saludo.", "intent": "CONVERSATIONAL", "domain": "CONVERSATIONAL", "responseTemplate": "¡Hola! Soy tu asistente del CRM. ¿En qué te ayudo?"}
-- "crea oportunidad Bimbo 50000 MXN desarrollo" → {"thought": "Crear opp.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createOpportunity", "parameters": {"nombreProyecto": "Bimbo", "monto": 50000, "moneda": "MXN", "lineaNegocio": "Desarrollo"}}}
-- "a oportunidad prueba agrega 5000 licenciamiento" → {"thought": "Modificar opp.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "prueba", "montoLicenciamiento": 5000}}}
-- "agenda llamada con Guillermo de Farmacias Benavides mañana a las 10am con recordatorio a la misma hora" → {"thought": "Crear llamada.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamada con Guillermo", "date": "mañana a las 10am", "cliente": "Guillermo", "empresa": "Farmacias Benavides", "recordatorio": "misma hora"}}}
-- "agenda llamada el viernes 10am con Carlos correo carlos@empresa.com" → {"thought": "Crear act con correo.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamada con Carlos", "date": "el viernes a las 10am", "cliente": "Carlos", "correo": "carlos@empresa.com"}}}
-- "cambia actividad de las 3 a consulta" → {"thought": "Modificar act.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetDate": "las 3", "newActivity": "consulta"}}}
-- "reprograma reunión de las 3 para mañana 5pm" → {"thought": "Reprogramar act.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetDate": "las 3", "newDate": "mañana a las 5pm"}}}
-- "levanta ticket por caída de servidor" → {"thought": "Crear ticket.", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createTicket", "parameters": {"title": "Caída de servidor", "priority": 3}}}
-- "cuanto he vendido este mes" → {"thought": "Ventas.", "intent": "ANALYTICAL", "domain": "OPORTUNIDADES", "actionPlan": null}`;
+- "Hola" → {"thought": "Saludo", "intent": "CONVERSATIONAL", "domain": "CONVERSATIONAL", "responseTemplate": "¡Hola! Soy tu asistente del CRM. ¿En qué te ayudo?"}
+- "crea oportunidad Bimbo 50000 MXN desarrollo" → {"thought": "Crear opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createOpportunity", "parameters": {"nombreProyecto": "Bimbo", "monto": 50000, "moneda": "MXN", "lineaNegocio": "Desarrollo"}}}
+- "a oportunidad prueba agrega 5000 licenciamiento" → {"thought": "Modificar opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "prueba", "montoLicenciamiento": 5000}}}
+- "cotizacion red magic de pedro perez muevela a calificado" → {"thought": "Mover opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "Cotización Red Magic", "cliente": "Pedro Pérez", "etapa": "Calificado"}}}
+- "muevela a calificado" → {"thought": "Mover opp previa", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"etapa": "Calificado"}}}
+- "crea demostracion con Andrea de Constructora Pacifico pasado mañana a las 3 pm con recordatorio a la 1 pm" → {"thought": "Crear demo", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Demostración con Andrea", "tipoActividad": "Demostración", "date": "pasado mañana a las 3 pm", "cliente": "Andrea", "empresa": "Constructora Pacifico", "recordatorio": "1 pm"}}}
+- "reprograma reunión de las 3 para mañana 5pm" → {"thought": "Modificar act", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetDate": "las 3", "newDate": "mañana a las 5pm"}}}
+- "levanta ticket por caída de servidor" → {"thought": "Crear ticket", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createTicket", "parameters": {"title": "Caída de servidor", "priority": 3}}}
+- "cuanto he vendido este mes" → {"thought": "Ventas", "intent": "ANALYTICAL", "domain": "OPORTUNIDADES", "actionPlan": null}`;
   }
 
   /**
@@ -395,7 +396,10 @@ ${this.buildResponseJsonSchema()}
   {"thought": "El usuario consulta en primera persona sus actividades asignadas para esta semana. Se filtra por su userId y timeDimension.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Actividades.userId", "operator": "equals", "values": ["${userId}"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "This week"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Tus actividades programadas para esta semana:"}
 
 - "última actividad de Juan" / "actividad más reciente de Carlos" →
-  {"thought": "El usuario consulta la actividad más reciente registrada. Se ordena por fecha desc con limit 1.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}], "order": {"Actividades.fecha": "desc"}, "limit": 1}, "responseTemplate": "La última actividad registrada de Juan es:"}`;
+  {"thought": "El usuario consulta la actividad más reciente registrada. Se ordena por fecha desc con limit 1.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}], "order": {"Actividades.fecha": "desc"}, "limit": 1}, "responseTemplate": "La última actividad registrada de Juan es:"}
+
+- "cuantas actividades tuvo admin el mes pasado" / "total de actividades de Carlos" →
+  {"thought": "El usuario consulta el conteo de actividades de un asesor en un periodo.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"measures": ["Actividades.count"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["admin"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "Last month"}]}, "responseTemplate": "El usuario 'admin' tuvo {Actividades.count} actividades el mes pasado."}`;
 
       case 'GASTOS':
         return `${baseHeader}
@@ -809,12 +813,15 @@ Para consultas con rangos de tiempo (ej: "este año", "este mes", "esta semana",
   * Para dentro de N días: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "dentro de N días" }]
   * Para esta semana: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "This week" }]
   * Para la semana pasada: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Last week" }]
+  * Para hace N semanas o semana antepasada: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "hace 2 semanas" }]
   * Para la próxima semana: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Next week" }]
   * Para este mes: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "This month" }]
   * Para el mes pasado: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Last month" }]
+  * Para hace N meses o mes antepasado: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "hace 2 meses" }]
   * Para el próximo mes: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Next month" }]
   * Para este año: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "This year" }]
   * Para el año pasado: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "Last year" }]
+  * Para hace N años: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "hace 2 años" }]
   * Para los últimos N días: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": "last 30 days" }]
   * Para fechas exactas o intervalos específicos: timeDimensions: [{ "dimension": "Entidad.campoFecha", "dateRange": ["YYYY-MM-DD", "YYYY-MM-DD"] }]`;
   }
@@ -847,7 +854,7 @@ Genera ÚNICAMENTE un objeto JSON estrictamente válido con la siguiente estruct
       "Entidad.medida": "desc"
     }
   },
-  "responseTemplate": "Texto para formatear la respuesta al usuario con los resultados."
+  "responseTemplate": "Texto para formatear la respuesta al usuario con los resultados (ej: 'El usuario tuvo {Actividades.count} actividades el mes pasado.' o 'Tienes {Oportunidades.count} oportunidades:'). Usa siempre el nombre de la columna entre llaves, no uses llaves vacías {}."
 }`;
   }
 }

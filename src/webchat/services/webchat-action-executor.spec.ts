@@ -23,6 +23,7 @@ describe('WebchatActionExecutorService', () => {
   let mockActivityRepo: any;
   let mockTicketRepo: any;
   let mockProductRepo: any;
+  let mockStageRepo: any;
 
   const adminUser: User = {
     id: '11111111-1111-1111-1111-111111111111',
@@ -101,6 +102,7 @@ describe('WebchatActionExecutorService', () => {
     mockTypeActivityRepo = {
       findOne: jest.fn().mockImplementation((args: any) => {
         const str = args?.where?.strname?._value;
+        if (str && str.includes('Demostraci')) return Promise.resolve({ id: 4, strname: 'Demostración' });
         if (str && str.includes('Llamada')) return Promise.resolve({ id: 2, strname: 'Llamada' });
         if (str && str.includes('Visita')) return Promise.resolve({ id: 3, strname: 'Visita' });
         return Promise.resolve({ id: 1, strname: 'Reunión' });
@@ -109,6 +111,7 @@ describe('WebchatActionExecutorService', () => {
         { id: 1, strname: 'Reunión' },
         { id: 2, strname: 'Llamada' },
         { id: 3, strname: 'Visita' },
+        { id: 4, strname: 'Demostración' },
       ]),
     };
 
@@ -165,6 +168,33 @@ describe('WebchatActionExecutorService', () => {
       find: jest.fn().mockResolvedValue([]),
     };
 
+    mockStageRepo = {
+      findOne: jest.fn().mockImplementation((args: any) => {
+        if (args?.where?.id === 'stage-calificado-uuid') {
+          return Promise.resolve({ id: 'stage-calificado-uuid', strname: 'Calificado', pipeline_id: 'pipe-1' });
+        }
+        return Promise.resolve(null);
+      }),
+      find: jest.fn().mockResolvedValue([
+        { id: 'stage-prospecto-uuid', strname: 'Prospecto', pipeline_id: 'pipe-1', display_order: 1, blninitial: true, stage_type: 0 },
+        { id: 'stage-calificado-uuid', strname: 'Calificado', pipeline_id: 'pipe-1', display_order: 2, blninitial: false, stage_type: 0 },
+        { id: 'stage-ganada-uuid', strname: 'Cierre Exitoso', pipeline_id: 'pipe-1', display_order: 3, blninitial: false, stage_type: 1 },
+      ]),
+      createQueryBuilder: jest.fn().mockImplementation(() => {
+        const qb: any = {
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          orderBy: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([
+            { id: 'stage-prospecto-uuid', strname: 'Prospecto', pipeline_id: 'pipe-1', display_order: 1, blninitial: true, stage_type: 0 },
+            { id: 'stage-calificado-uuid', strname: 'Calificado', pipeline_id: 'pipe-1', display_order: 2, blninitial: false, stage_type: 0 },
+            { id: 'stage-ganada-uuid', strname: 'Cierre Exitoso', pipeline_id: 'pipe-1', display_order: 3, blninitial: false, stage_type: 1 },
+          ]),
+        };
+        return qb;
+      }),
+    };
+
     service = new WebchatActionExecutorService(
       mockOpportunitiesService,
       mockActivitiesService,
@@ -183,6 +213,7 @@ describe('WebchatActionExecutorService', () => {
       mockActivityRepo,
       mockTicketRepo,
       mockProductRepo,
+      mockStageRepo,
     );
   });
 
@@ -504,6 +535,106 @@ describe('WebchatActionExecutorService', () => {
       );
       expect(response.answer).toContain('Oportunidad Modificada Exitosamente');
     });
+
+    it('Permite mover una oportunidad de etapa exitosamente (ej. a Calificado)', async () => {
+      const oppPruebaId = '55555555-5555-5555-5555-555555555555';
+      const mockOpp = {
+        id: oppPruebaId,
+        nombre_proyecto: 'Cotización Red Magic',
+        pipeline_id: 'pipe-1',
+        stage_id: 'stage-prospecto-uuid',
+        stage: { id: 'stage-prospecto-uuid', strname: 'Prospecto' },
+        monto_total: 300,
+        monto_licenciamiento: 0,
+        monto_servicios: 0,
+        moneda: 'MXN',
+        ejecutivo_id: adminUser.id,
+      };
+
+      mockOpportunityRepo.createQueryBuilder.mockImplementation(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(mockOpp),
+      }));
+
+      mockOpportunitiesService.update.mockResolvedValue({
+        ...mockOpp,
+        stage_id: 'stage-calificado-uuid',
+        stage: { id: 'stage-calificado-uuid', strname: 'Calificado' },
+      });
+
+      const response = await service.handleModifyOpportunity(
+        {
+          nombreProyecto: 'Cotización Red Magic',
+          etapa: 'Calificado',
+        },
+        adminUser,
+      );
+
+      expect(mockOpportunitiesService.update).toHaveBeenCalledWith(
+        oppPruebaId,
+        expect.objectContaining({
+          stage_id: 'stage-calificado-uuid',
+        }),
+        expect.any(Object),
+      );
+      expect(response.answer).toContain('Oportunidad Modificada Exitosamente');
+      expect(response.answer).toContain('Prospecto ➔ Calificado');
+    });
+
+    it('Fusiona contexto en conversación multi-turno para mover etapa (ej. "muevela a calificado")', async () => {
+      const oppPruebaId = '55555555-5555-5555-5555-555555555555';
+      const mockOpp = {
+        id: oppPruebaId,
+        nombre_proyecto: 'Cotización Red Magic',
+        pipeline_id: 'pipe-1',
+        stage_id: 'stage-prospecto-uuid',
+        stage: { id: 'stage-prospecto-uuid', strname: 'Prospecto' },
+        monto_total: 300,
+        ejecutivo_id: adminUser.id,
+      };
+
+      mockOpportunityRepo.createQueryBuilder.mockImplementation(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(mockOpp),
+      }));
+
+      mockOpportunitiesService.update.mockResolvedValue({
+        ...mockOpp,
+        stage_id: 'stage-calificado-uuid',
+        stage: { id: 'stage-calificado-uuid', strname: 'Calificado' },
+      });
+
+      const history: any[] = [
+        { role: 'user', content: 'Cotización Red Magic' },
+        { role: 'assistant', content: '1. Cotización Red Magic (Pedro Pérez) - $300.00 MXN [Prospecto]' },
+        { role: 'user', content: 'muevela a calificado' },
+      ];
+
+      const response = await service.executeAction(
+        {
+          action: 'modifyOpportunity',
+          parameters: {},
+        },
+        adminUser,
+        'muevela a calificado',
+        history,
+      );
+
+      expect(mockOpportunitiesService.update).toHaveBeenCalledWith(
+        oppPruebaId,
+        expect.objectContaining({
+          stage_id: 'stage-calificado-uuid',
+        }),
+        expect.any(Object),
+      );
+      expect(response.answer).toContain('Prospecto ➔ Calificado');
+    });
   });
 
   describe('3. Creación de Actividades y checkAvailability', () => {
@@ -753,6 +884,86 @@ describe('WebchatActionExecutorService', () => {
       );
       expect(mockActivitiesService.create).toHaveBeenCalled();
       expect(response.answer).toContain('Actividad Programada Exitosamente');
+    });
+
+    it('Programa actividad para "pasado mañana a las 3 pm" con recordatorio a la 1 pm y soporta typo "reordatorio"', async () => {
+      mockActivitiesService.findByUserAndDate.mockResolvedValue([]);
+      mockActivitiesService.create.mockImplementation((dto: any, user: any) => {
+        return Promise.resolve({
+          id: 'act-pasado-manana',
+          activity: dto.activity,
+          date: dto.date,
+          typeActivityId: dto.typeActivityId,
+          typeActivity: { strname: 'Demostración' },
+          client: { id: 'client-123', nombre: 'Andrea', apellido: 'Ramírez', correo: 'andrea@pacific.com' },
+          company: { id: 'comp-123', nombre: 'Constructora Pacífico' },
+        });
+      });
+
+      const response = await service.executeAction(
+        {
+          action: 'createActivity',
+          parameters: {
+            activity: 'Demostración con Andrea Ramírez',
+            date: 'pasado mañana a las 3 pm',
+            recordatorio: '1 pm',
+            cliente: 'Andrea Ramírez',
+            empresa: 'Constructora Pacífico',
+          },
+        },
+        adminUser,
+        'crea una demostracion con andrea ramirez de constructora pacifico para pasado mañana a las 3 pm con reordatorio a la 1 pm',
+      );
+
+      expect(mockActivitiesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activity: 'Demostración con Andrea Ramírez',
+          typeActivityId: 4, // Demostración
+          reminder: expect.objectContaining({
+            date: expect.any(String),
+          }),
+        }),
+        expect.any(Object),
+      );
+
+      const createdDto = mockActivitiesService.create.mock.calls[0][0];
+      const activityDate = new Date(createdDto.date);
+      const reminderDate = new Date(createdDto.reminder.date);
+
+      const tz = service.getTimezone();
+      const actTimeStr = activityDate.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      expect(actTimeStr).toBe('15:00');
+
+      const remTimeStr = reminderDate.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      expect(remTimeStr).toBe('13:00');
+
+      const nowParts = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(new Date());
+      const nowMap: any = {};
+      for (const p of nowParts) nowMap[p.type] = parseInt(p.value, 10);
+      const expectedDay = new Date(Date.UTC(nowMap.year, nowMap.month - 1, nowMap.day + 2)).getUTCDate();
+
+      const actDay = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: tz, day: 'numeric' }).format(activityDate), 10);
+      expect(actDay).toBe(expectedDay);
+
+      expect(response.answer).toContain('Actividad Programada Exitosamente');
+      expect(response.answer).toContain('Demostración');
+    });
+
+    it('parseNaturalDate aísla correctamente la hora sin confundirse con el día del mes o textos de recordatorio', () => {
+      const d1 = service.parseNaturalDate('pasado mañana a las 3 pm');
+      const tz = service.getTimezone();
+      const time1 = d1.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      expect(time1).toBe('15:00');
+
+      const d2 = service.parseNaturalDate('4 de octubre a las 3 pm');
+      const time2 = d2.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      expect(time2).toBe('15:00');
+      const day2 = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: tz, day: 'numeric' }).format(d2), 10);
+      expect(day2).toBe(4);
+
+      const d3 = service.parseNaturalDate('pasado mañana a las 3 pm con reordatorio a la 1 pm');
+      const time3 = d3.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      expect(time3).toBe('15:00');
     });
   });
 

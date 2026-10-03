@@ -17,6 +17,7 @@ import { TypeActivity } from '../../activities/entities/type-activity.entity';
 import { Client } from '../../clients/entities/client.entity';
 import { Company } from '../../companies/entities/company.entity';
 import { Opportunity, Currency } from '../../opportunities/entities/opportunity.entity';
+import { Stage } from '../../stages/entities/stage.entity';
 import { Activity } from '../../activities/entities/activity.entity';
 import { Ticket } from '../../tickets/entities/ticket.entity';
 import { Product } from '../../products/entities/product.entity';
@@ -55,6 +56,8 @@ export class WebchatActionExecutorService {
     private readonly ticketRepo: Repository<Ticket>,
     @InjectRepository(Product)
     private readonly productRepo: Repository<Product>,
+    @InjectRepository(Stage)
+    private readonly stageRepo: Repository<Stage>,
   ) {}
 
   /**
@@ -62,6 +65,36 @@ export class WebchatActionExecutorService {
    */
   getTimezone(): string {
     return process.env.NOTIFICATION_TIMEZONE || 'America/Mexico_City';
+  }
+
+  /**
+   * Construye un objeto Date en UTC correspondiente a una fecha y hora local exacta
+   * en la zona horaria de la empresa (por defecto America/Mexico_City).
+   * Resistente a desfases por límites de mes y cambios de horario.
+   */
+  buildDateInTz(year: number, month1Indexed: number, day: number, hour: number, minute: number): Date {
+    const tz = this.getTimezone();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const dateStr = `${year}-${pad(month1Indexed)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00`;
+    const utcGuess = new Date(`${dateStr}Z`);
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(utcGuess);
+    const map: Record<string, string> = {};
+    for (const p of parts) map[p.type] = p.value;
+    const tzHour = map.hour === '24' ? 0 : parseInt(map.hour, 10);
+    const tzDateStr = `${map.year}-${map.month}-${map.day}T${pad(tzHour)}:${map.minute}:00Z`;
+    const tzEquivalentUtc = new Date(tzDateStr);
+    const offsetMs = utcGuess.getTime() - tzEquivalentUtc.getTime();
+    return new Date(utcGuess.getTime() + offsetMs);
   }
 
   /**
@@ -89,7 +122,7 @@ export class WebchatActionExecutorService {
       case 'modifyOpportunity':
         return this.handleModifyOpportunity(params, user);
       case 'createActivity':
-        return this.handleCreateActivity(params, user);
+        return this.handleCreateActivity(params, user, originalQuestion);
       case 'modifyActivity':
         return this.handleModifyActivity(params, user);
       case 'createTicket':
@@ -120,7 +153,7 @@ export class WebchatActionExecutorService {
       if (action === 'createActivity') {
         // 1. Extraer fecha/hora si no está presente
         if (!merged.date && !merged.fecha && !merged.hora && !merged.proposedDate) {
-          const dateMatch = msg.match(/(?:para\s+el\s+|el\s+|para\s+)?(hoy|mañana|manana|pasado\s+mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}\s+de\s+[a-z]+|\d{4}-\d{2}-\d{2})(?:\s+(?:a\s+las\s+|las\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i);
+          const dateMatch = msg.match(/(?:para\s+el\s+|el\s+|para\s+)?(pasado\s+mañana|pasado\s+manana|pasadomañana|pasadomanana|hoy|mañana|manana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}\s+de\s+[a-z]+|\d{4}-\d{2}-\d{2})(?:\s+(?:a\s+las\s+|las\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i);
           if (dateMatch && dateMatch[0]) {
             merged.date = dateMatch[0].trim();
           }
@@ -174,6 +207,68 @@ export class WebchatActionExecutorService {
           if (empMatch && empMatch[1]) {
             merged.empresa = empMatch[1].trim();
           }
+        }
+      } else if (action === 'modifyOpportunity') {
+        // 1. Extraer nombre/proyecto si falta
+        if (!merged.nombreProyecto && !merged.nombre_proyecto && !merged.oportunidad && !merged.opportunity && !merged.proyecto && !merged.id) {
+          const oppMatch = msg.match(/(?:oportunidad|cotizaci[oó]n|proyecto)\s+["']?([^"',]+?)["']?(?:\s+de\s+|\s+a\s+|\s+mueve|\s+cambia|$)/i);
+          if (oppMatch && oppMatch[1]) {
+            const cand = oppMatch[1].trim();
+            if (cand.length > 2 && !['prueba', 'nueva', 'esta'].includes(cand.toLowerCase())) {
+              merged.nombreProyecto = cand;
+            }
+          }
+          if (!merged.nombreProyecto) {
+            const quoteMatch = msg.match(/["']([^"']{3,})["']/);
+            if (quoteMatch && quoteMatch[1]) {
+              merged.nombreProyecto = quoteMatch[1].trim();
+            }
+          }
+        }
+
+        // 2. Extraer etapa destino si falta
+        if (!merged.etapa && !merged.stage && !merged.nuevaEtapa && !merged.targetStage) {
+          const stageMatch = msg.match(/(?:muevela\s+a|mueve\s+a|mover\s+a|pasar\s+a|pasa\s+a|pasala\s+a|cambia\s+a|cambiar\s+a|a\s+la\s+etapa|etapa)\s+["']?([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+?)["']?(?:$|\.|\,)/i);
+          if (stageMatch && stageMatch[1]) {
+            const cand = stageMatch[1].trim();
+            if (cand.length >= 3 && !['la', 'una', 'otra'].includes(cand.toLowerCase())) {
+              merged.etapa = cand;
+            }
+          }
+        }
+
+        // 3. Extraer cliente/empresa si falta
+        if (!merged.cliente && !merged.empresa && !merged.cuenta) {
+          const clientMatch = msg.match(/(?:de\s+el\s+cliente|del\s+cliente|de\s+la\s+empresa|para\s+el\s+cliente|de)\s+["']?([^"',]+?)["']?(?:\s+muevela|\s+mueve|\s+cambia|$)/i);
+          if (clientMatch && clientMatch[1]) {
+            const cand = clientMatch[1].trim();
+            if (cand.length > 2 && !['seguimiento', 'reunion', 'llamada', 'visita'].includes(cand.toLowerCase())) {
+              merged.cliente = cand;
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Si es modifyOpportunity y aún no tiene nombre de oportunidad, buscar en respuestas previas del asistente
+    if (action === 'modifyOpportunity' && !merged.nombreProyecto && !merged.nombre_proyecto && !merged.oportunidad && !merged.opportunity && !merged.proyecto && !merged.id) {
+      const assistantMessages = conversationHistory
+        .filter(m => m.role === 'assistant')
+        .map(m => m.content)
+        .reverse();
+
+      for (const aMsg of assistantMessages) {
+        // Buscar listado de oportunidades: "1. Cotización Red Magic (Pedro Pérez) - $300.00 MXN [Prospecto]"
+        const listMatch = aMsg.match(/1\.\s+([^\(\[\n—]+?)(?:\s+\(|\s+—|\s+\[|\n|$)/);
+        if (listMatch && listMatch[1]) {
+          merged.nombreProyecto = listMatch[1].trim();
+          break;
+        }
+        // Buscar respuesta de modificación/creación previa: "- Proyecto: Cotización Red Magic"
+        const projMatch = aMsg.match(/-\s+Proyecto:\s+([^\n]+)/i);
+        if (projMatch && projMatch[1]) {
+          merged.nombreProyecto = projMatch[1].trim();
+          break;
         }
       }
     }
@@ -498,7 +593,7 @@ export class WebchatActionExecutorService {
       if (companyHint || clientHint) {
         const hint = companyHint || clientHint;
         qb.andWhere(
-          '(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint)',
+          '(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint OR CONCAT(cliente.nombre, \' \', COALESCE(cliente.apellido, \'\')) ILIKE :hint)',
           { hint: `%${hint}%` }
         );
       }
@@ -520,6 +615,53 @@ export class WebchatActionExecutorService {
         }
         opp = await qbFallback.orderBy('opp.createdAt', 'DESC').getOne();
       }
+
+      // Si aún no encontró, buscar ignorando espacios intermedios (ej. "redmagic" -> "Red Magic")
+      if (!opp) {
+        const compactSearch = searchTitle.replace(/\s+/g, '').toLowerCase();
+        if (compactSearch.length >= 3) {
+          const qbCompact = this.opportunityRepo.createQueryBuilder('opp')
+            .leftJoinAndSelect('opp.stage', 'stage')
+            .leftJoinAndSelect('opp.cliente', 'cliente')
+            .leftJoinAndSelect('opp.company', 'company')
+            .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
+            .where('opp.archived = :archived', { archived: false })
+            .andWhere("REPLACE(LOWER(opp.nombre_proyecto), ' ', '') ILIKE :compact", { compact: `%${compactSearch}%` });
+
+          if (isExec) {
+            qbCompact.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
+          }
+          opp = await qbCompact.orderBy('opp.createdAt', 'DESC').getOne();
+        }
+      }
+
+      // Si aún no encontró, buscar por palabras clave significativas (ej. "Magic", "Red")
+      if (!opp) {
+        const stopWords = new Set(['la', 'el', 'los', 'las', 'de', 'del', 'para', 'en', 'con', 'oportunidad', 'cotizacion', 'cotización', 'proyecto']);
+        const tokens: string[] = searchTitle.split(/\s+/).map((t: string) => t.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]/g, '').trim()).filter((t: string) => t.length >= 3 && !stopWords.has(t.toLowerCase()));
+        if (tokens.length > 0) {
+          const qbTokens = this.opportunityRepo.createQueryBuilder('opp')
+            .leftJoinAndSelect('opp.stage', 'stage')
+            .leftJoinAndSelect('opp.cliente', 'cliente')
+            .leftJoinAndSelect('opp.company', 'company')
+            .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
+            .where('opp.archived = :archived', { archived: false });
+
+          if (isExec) {
+            qbTokens.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
+          }
+          const conditions = tokens.map((_: string, i: number) => `opp.nombre_proyecto ILIKE :tok${i}`).join(' OR ');
+          const paramsObj: Record<string, string> = {};
+          tokens.forEach((tok: string, i: number) => { paramsObj[`tok${i}`] = `%${tok}%`; });
+          qbTokens.andWhere(`(${conditions})`, paramsObj);
+
+          if (companyHint || clientHint) {
+            const hint = companyHint || clientHint;
+            qbTokens.andWhere('(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint OR CONCAT(cliente.nombre, \' \', COALESCE(cliente.apellido, \'\')) ILIKE :hint)', { hint: `%${hint}%` });
+          }
+          opp = await qbTokens.orderBy('opp.createdAt', 'DESC').getOne();
+        }
+      }
     }
 
     // Si aún no encuentra y se especificó empresa/cliente, buscar la más reciente para esa cuenta
@@ -530,7 +672,7 @@ export class WebchatActionExecutorService {
         .leftJoinAndSelect('opp.cliente', 'cliente')
         .leftJoinAndSelect('opp.company', 'company')
         .where('opp.archived = :archived', { archived: false })
-        .andWhere('(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint)', { hint: `%${hint}%` });
+        .andWhere('(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint OR CONCAT(cliente.nombre, \' \', COALESCE(cliente.apellido, \'\')) ILIKE :hint)', { hint: `%${hint}%` });
 
       if (isExec) {
         qbAccount.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
@@ -681,17 +823,62 @@ export class WebchatActionExecutorService {
       }
     }
 
+    // H. Cambio de Etapa / Fase (Pipeline)
+    const stageHint =
+      params.etapa ||
+      params.stage ||
+      params.nuevaEtapa ||
+      params.nuevoStage ||
+      params.targetStage ||
+      params.etapaId ||
+      params.stageId ||
+      params.nombreEtapa ||
+      params.fase ||
+      params.estado;
+
+    if (stageHint) {
+      const resolvedStage = await this.resolveStage(String(stageHint), opp.pipeline_id);
+      if (resolvedStage) {
+        updateData.stage_id = resolvedStage.id;
+      } else {
+        const activeStages = await this.stageRepo.find({
+          where: { pipeline_id: opp.pipeline_id, blnstatus: true },
+          order: { display_order: 'ASC' },
+        });
+        const optionsStr = activeStages.length > 0
+          ? activeStages.map(s => `  - ${s.strname}`).join('\n')
+          : '  - No hay etapas configuradas';
+        return {
+          answer: `No encontré la etapa "${stageHint}" en el pipeline de la oportunidad "${opp.nombre_proyecto}". Las etapas disponibles son:\n\n${optionsStr}`,
+        };
+      }
+    }
+
+    // Si no se especificó ningún campo a modificar
+    if (Object.keys(updateData).length === 0) {
+      return {
+        answer: `No se identificó ningún cambio para la oportunidad "${opp.nombre_proyecto}". Puedes indicarme, por ejemplo: cambiar el monto, el nombre o moverla de etapa (ej. "mueve a Calificado").`,
+      };
+    }
+
     const updatedOpp = await this.opportunitiesService.update(opp.id, updateData, { id: user.id } as User);
     const montoDisplay = new Intl.NumberFormat('es-MX', { style: 'currency', currency: updatedOpp.moneda || 'MXN' }).format(updatedOpp.monto_total || 0);
     const montoLicDisplay = updatedOpp.monto_licenciamiento ? `\n- Monto ${customLabels.licenciamiento}: ` + new Intl.NumberFormat('es-MX', { style: 'currency', currency: updatedOpp.moneda || 'MXN' }).format(updatedOpp.monto_licenciamiento) : '';
     const montoServDisplay = updatedOpp.monto_servicios ? `\n- Monto ${customLabels.tipoEntrega}: ` + new Intl.NumberFormat('es-MX', { style: 'currency', currency: updatedOpp.moneda || 'MXN' }).format(updatedOpp.monto_servicios) : '';
 
+    const prevStageName = opp.stage?.strname || 'Sin etapa';
+    const isStageChanged = updateData.stage_id && updateData.stage_id !== opp.stage_id;
+    const stageDisplay = isStageChanged
+      ? `${prevStageName} ➔ ${updatedOpp.stage?.strname || 'Nueva Etapa'}`
+      : (updatedOpp.stage?.strname || 'Activa');
+
     return {
-      answer: `Oportunidad Modificada Exitosamente\n\n- Proyecto: ${updatedOpp.nombre_proyecto}\n- Monto Total: ${montoDisplay}${montoLicDisplay}${montoServDisplay}\n- Etapa: ${updatedOpp.stage?.strname || 'Activa'}`,
+      answer: `Oportunidad Modificada Exitosamente\n\n- Proyecto: ${updatedOpp.nombre_proyecto}\n- Monto Total: ${montoDisplay}${montoLicDisplay}${montoServDisplay}\n- Etapa: ${stageDisplay}`,
       data: [{
         'ID': updatedOpp.id,
         'Proyecto': updatedOpp.nombre_proyecto,
         'Monto': montoDisplay,
+        'Etapa': updatedOpp.stage?.strname || 'Activa',
         [customLabels.licenciamiento]: updatedOpp.monto_licenciamiento ? new Intl.NumberFormat('es-MX', { style: 'currency', currency: updatedOpp.moneda || 'MXN' }).format(updatedOpp.monto_licenciamiento) : '$0.00',
         [customLabels.tipoEntrega]: updatedOpp.monto_servicios ? new Intl.NumberFormat('es-MX', { style: 'currency', currency: updatedOpp.moneda || 'MXN' }).format(updatedOpp.monto_servicios) : '$0.00',
       }],
@@ -708,7 +895,7 @@ export class WebchatActionExecutorService {
    * Crea una actividad validando campos requeridos, checkAvailability de agenda y RBAC.
    * Si falta la fecha, el detalle o el tipo de actividad, solicita los datos al usuario.
    */
-  async handleCreateActivity(params: any, user: User): Promise<WebchatResponse> {
+  async handleCreateActivity(params: any, user: User, originalQuestion?: string): Promise<WebchatResponse> {
     const isExec = this.isExecutive(user.role);
     const missingFields: string[] = [];
 
@@ -932,17 +1119,72 @@ export class WebchatActionExecutorService {
 
     // 7. Recordatorio opcional
     let reminder: any = undefined;
-    if (params.recordatorio || params.reminderTitle) {
+    const rawReminder = params.recordatorio ?? params.reminder ?? params.reminderTime ?? params.reminderDate;
+    const combinedReminderStr = [String(rawReminder || ''), activityText, originalQuestion || ''].join(' ');
+    const reminderMention = rawReminder !== undefined || /(?:recordatorio|reordatorio|recordar|alarma)/i.test(combinedReminderStr);
+
+    if (reminderMention || params.reminderTitle) {
       let remDate: string;
-      const remStr = String(params.recordatorio || '').toLowerCase();
-      if (remStr.includes('misma hora') || remStr.includes('al momento') || remStr.includes('a la misma')) {
+      const remLower = combinedReminderStr.toLowerCase();
+
+      // Caso A: Misma hora / Al momento
+      if (remLower.includes('misma hora') || remLower.includes('al momento') || remLower.includes('a la misma')) {
         remDate = proposedDate!.toISOString();
-      } else if (params.reminderDate) {
+      }
+      // Caso B: Fecha completa explícita en reminderDate
+      else if (params.reminderDate && !isNaN(new Date(params.reminderDate).getTime())) {
         remDate = this.parseNaturalDate(params.reminderDate).toISOString();
-      } else {
+      }
+      // Caso C: Minutos / Horas antes (ej. "2 horas antes", "30 minutos antes", "1 hora antes")
+      else if (/(?:(\d+)\s*(?:horas?|hrs?|h)\s+antes|(\d+)\s*(?:minutos?|mins?|m)\s+antes)/i.test(combinedReminderStr)) {
+        const hMatch = combinedReminderStr.match(/(\d+)\s*(?:horas?|hrs?|h)\s+antes/i);
+        const mMatch = combinedReminderStr.match(/(\d+)\s*(?:minutos?|mins?|m)\s+antes/i);
+        const hours = hMatch ? parseInt(hMatch[1], 10) : 0;
+        const minutes = mMatch ? parseInt(mMatch[1], 10) : 0;
+        const totalOffsetMs = (hours * 60 + minutes) * 60 * 1000;
+        remDate = new Date(proposedDate!.getTime() - totalOffsetMs).toISOString();
+      }
+      // Caso D: Hora específica indicada para el recordatorio (ej. "con recordatorio a la 1 pm", "a las 13:00", o rawReminder = "1 pm")
+      else if (
+        /(?:recordatorio|reordatorio|recordar|alarma)\s+(?:a\s+las?|para\s+las?|a\s+la|para\s+la)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.test(combinedReminderStr) ||
+        (typeof rawReminder === 'string' && /^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*$/i.test(rawReminder))
+      ) {
+        const timeMatch = combinedReminderStr.match(/(?:recordatorio|reordatorio|recordar|alarma)\s+(?:a\s+las?|para\s+las?|a\s+la|para\s+la)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i) ||
+                          String(rawReminder).match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+
+        if (timeMatch) {
+          let remHour = parseInt(timeMatch[1], 10);
+          const remMinutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+          const meridiem = timeMatch[3]?.toLowerCase();
+
+          if (meridiem === 'pm' && remHour < 12) remHour += 12;
+          if (meridiem === 'am' && remHour === 12) remHour = 0;
+          if (!meridiem && remHour < 8) remHour += 12;
+
+          const tz = this.getTimezone();
+          const pParts = new Intl.DateTimeFormat('en-US', {
+            timeZone: tz,
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+            hour12: false,
+          }).formatToParts(proposedDate!);
+          const pMap: Record<string, number> = {};
+          for (const p of pParts) pMap[p.type] = parseInt(p.value, 10);
+
+          const finalRemDate = this.buildDateInTz(pMap.year, pMap.month, pMap.day, remHour, remMinutes);
+          remDate = finalRemDate.toISOString();
+        } else {
+          const offsetMs = (params.reminderMinutesBefore ? Number(params.reminderMinutesBefore) : 60) * 60 * 1000;
+          remDate = new Date(proposedDate!.getTime() - offsetMs).toISOString();
+        }
+      }
+      // Caso E: Default con reminderMinutesBefore o 60 minutos antes
+      else {
         const offsetMs = (params.reminderMinutesBefore ? Number(params.reminderMinutesBefore) : 60) * 60 * 1000;
         remDate = new Date(proposedDate!.getTime() - offsetMs).toISOString();
       }
+
       reminder = {
         title: params.reminderTitle || `Recordatorio: ${activityText}`,
         date: remDate,
@@ -1482,6 +1724,55 @@ export class WebchatActionExecutorService {
     return resolved ? resolved.id : '';
   }
 
+  async resolveStage(hint?: string, pipelineId?: string): Promise<Stage | null> {
+    if (!hint) return null;
+    const clean = hint.replace(/^["']|["']$/g, '').trim();
+    if (!clean) return null;
+
+    if (this.isValidUuid(clean)) {
+      return this.stageRepo.findOne({ where: { id: clean, blnstatus: true } });
+    }
+
+    const qb = this.stageRepo.createQueryBuilder('stage')
+      .where('stage.blnstatus = :status', { status: true });
+
+    if (pipelineId) {
+      qb.andWhere('stage.pipeline_id = :pipelineId', { pipelineId });
+    }
+
+    const stages = await qb.orderBy('stage.display_order', 'ASC').getMany();
+    if (stages.length === 0) return null;
+
+    const normClean = this.normalizeString(clean);
+
+    // 1. Coincidencia exacta o normalizada
+    let matched = stages.find(s => this.normalizeString(s.strname) === normClean);
+    if (matched) return matched;
+
+    // 2. Coincidencia parcial
+    matched = stages.find(s => {
+      const normS = this.normalizeString(s.strname);
+      return normS.includes(normClean) || normClean.includes(normS);
+    });
+    if (matched) return matched;
+
+    // 3. Mapeo semántico común en CRM
+    if (normClean.includes('ganad') || normClean.includes('exitos') || normClean.includes('cerrad')) {
+      matched = stages.find(s => s.stage_type === 1);
+      if (matched) return matched;
+    }
+    if (normClean.includes('perdid') || normClean.includes('cancelad')) {
+      matched = stages.find(s => s.stage_type === 2);
+      if (matched) return matched;
+    }
+    if (normClean.includes('prospect') || normClean.includes('inici') || normClean.includes('nuev')) {
+      matched = stages.find(s => s.blninitial) || stages.find(s => s.stage_type === 0);
+      if (matched) return matched;
+    }
+
+    return null;
+  }
+
   async resolveTypeActivity(hint?: string | number, fallbackText?: string): Promise<{ id: number; name: string } | null> {
     const allActive = await this.typeActivityRepo.find({ where: { blnstatus: true } });
     if (allActive.length === 0) return null;
@@ -1700,36 +1991,62 @@ export class WebchatActionExecutorService {
       if (isoMatch[5]) targetMinute = parseInt(isoMatch[5], 10);
     } else {
       // 2. Días relativos
-      if (lower.includes('mañana') || lower.includes('manana')) {
-        const d = new Date(Date.UTC(targetYear, targetMonth, targetDay + 1));
-        targetYear = d.getUTCFullYear();
-        targetMonth = d.getUTCMonth();
-        targetDay = d.getUTCDate();
-      } else if (lower.includes('pasado mañana') || lower.includes('pasado manana')) {
+      if (
+        lower.includes('pasado mañana') ||
+        lower.includes('pasado manana') ||
+        lower.includes('pasadomañana') ||
+        lower.includes('pasadomanana') ||
+        lower.includes('day after tomorrow')
+      ) {
         const d = new Date(Date.UTC(targetYear, targetMonth, targetDay + 2));
         targetYear = d.getUTCFullYear();
         targetMonth = d.getUTCMonth();
         targetDay = d.getUTCDate();
+      } else if (lower.includes('mañana') || lower.includes('manana') || lower.includes('tomorrow')) {
+        const d = new Date(Date.UTC(targetYear, targetMonth, targetDay + 1));
+        targetYear = d.getUTCFullYear();
+        targetMonth = d.getUTCMonth();
+        targetDay = d.getUTCDate();
+      } else if (lower.includes('hoy') || lower.includes('today')) {
+        // hoy mantiene targetDay
       } else {
-        const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado'];
-        for (let d = 0; d < dias.length; d++) {
-          const diaName = dias[d];
-          if (lower.includes(diaName)) {
-            const currentDayOfWeek = new Date(Date.UTC(targetYear, targetMonth, targetDay)).getUTCDay();
-            const targetDayOfWeek = d > 6 ? (d === 8 ? 6 : 3) : (d === 4 ? 3 : d);
-            let diff = targetDayOfWeek - currentDayOfWeek;
-            if (diff <= 0) diff += 7;
-            const targetD = new Date(Date.UTC(targetYear, targetMonth, targetDay + diff));
-            targetYear = targetD.getUTCFullYear();
-            targetMonth = targetD.getUTCMonth();
-            targetDay = targetD.getUTCDate();
-            break;
+        // Día exacto con nombre de mes: ej. "15 de octubre", "4 de noviembre"
+        const monthNames: Record<string, number> = {
+          enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+          julio: 6, agosto: 7, septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+        };
+        const textDateMatch = lower.match(/(\d{1,2})\s+de\s+([a-záéíóú]+)(?:\s+(?:de\s+)?(\d{4}))?/i);
+        if (textDateMatch && monthNames[textDateMatch[2].toLowerCase()] !== undefined) {
+          targetDay = parseInt(textDateMatch[1], 10);
+          targetMonth = monthNames[textDateMatch[2].toLowerCase()];
+          if (textDateMatch[3]) targetYear = parseInt(textDateMatch[3], 10);
+        } else {
+          const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado'];
+          for (let d = 0; d < dias.length; d++) {
+            const diaName = dias[d];
+            if (lower.includes(diaName)) {
+              const currentDayOfWeek = new Date(Date.UTC(targetYear, targetMonth, targetDay)).getUTCDay();
+              const targetDayOfWeek = d > 6 ? (d === 8 ? 6 : 3) : (d === 4 ? 3 : d);
+              let diff = targetDayOfWeek - currentDayOfWeek;
+              if (diff <= 0) diff += 7;
+              const targetD = new Date(Date.UTC(targetYear, targetMonth, targetDay + diff));
+              targetYear = targetD.getUTCFullYear();
+              targetMonth = targetD.getUTCMonth();
+              targetDay = targetD.getUTCDate();
+              break;
+            }
           }
         }
       }
 
-      // Extraer hora (ej. "a las 10", "10am", "4pm", "15:00", "11:30 am")
-      const timeMatch = lower.match(/(?:a\s+las\s+|de\s+las\s+|las\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+      // Evitar que el día del mes (ej. "4 de octubre") sea capturado erróneamente como la hora
+      const stringWithoutDate = lower.replace(/\b\d{1,2}\s+de\s+[a-záéíóú]+(?:\s+(?:de\s+)?\d{4})?/i, '');
+      // Si el texto incluye recordatorio en la misma cadena, aislar el texto previo para no confundir la hora de la actividad
+      const stringForTime = stringWithoutDate.split(/(?:con\s+)?(?:recordatorio|reordatorio|alarma|recordar)/i)[0];
+
+      // Extraer hora (ej. "a las 3 pm", "a la 1 pm", "10am", "4pm", "15:00", "11:30 am")
+      const timeMatch = stringForTime.match(/(?:a\s+las?\s+|de\s+las?\s+|las?\s+|para\s+las?\s+|a\s+la\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i)
+        || stringForTime.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
       if (timeMatch) {
         let hour = parseInt(timeMatch[1], 10);
         const minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
@@ -1744,16 +2061,7 @@ export class WebchatActionExecutorService {
       }
     }
 
-    // Convertir exactamente a UTC para la zona horaria configurada
-    const tempUtc = new Date(Date.UTC(targetYear, targetMonth, targetDay, targetHour, targetMinute, 0));
-    const tempParts = formatter.formatToParts(tempUtc);
-    const pMap: Record<string, number> = {};
-    for (const p of tempParts) pMap[p.type] = parseInt(p.value, 10);
-    const tzHour = pMap.hour === 24 ? 0 : pMap.hour;
-    const localMinutes = pMap.day * 24 * 60 + tzHour * 60 + pMap.minute;
-    const targetMinutes = targetDay * 24 * 60 + targetHour * 60 + targetMinute;
-    const diffMinutes = targetMinutes - localMinutes;
-    return new Date(tempUtc.getTime() + diffMinutes * 60 * 1000);
+    return this.buildDateInTz(targetYear, targetMonth + 1, targetDay, targetHour, targetMinute);
   }
 
   parseNumeric(value: any): number {

@@ -89,7 +89,7 @@ export class WebchatQueryPlannerService {
     const q = (question || '').toLowerCase().trim();
 
     // Verbos de acción imperativos
-    const actionRegex = /^(crea|crear|genera|generar|registra|registrar|agenda|agendar|programa|programar|modifica|modificar|actualiza|actualizar|cambia|cambiar|levanta|levantar|abre|abrir|pon|poner|asigna|asignar)\b/i;
+    const actionRegex = /^(crea|crear|genera|generar|registra|registrar|agenda|agendar|programa|programar|modifica|modificar|actualiza|actualizar|cambia|cambiar|levanta|levantar|abre|abrir|pon|poner|asigna|asignar|mueve|muevela|mover|pasa|pasala|pasar|traslada|trasladar)\b/i;
     if (actionRegex.test(q)) {
       return 'ACTION_EXECUTION';
     }
@@ -120,7 +120,7 @@ export class WebchatQueryPlannerService {
    */
   inferActionTypeFromQuestion(question: string): 'createOpportunity' | 'modifyOpportunity' | 'createActivity' | 'modifyActivity' | 'createTicket' | null {
     const q = (question || '').toLowerCase();
-    const isModify = q.includes('modifica') || q.includes('actualiza') || q.includes('cambia') || q.includes('reprograma') || q.includes('mueve');
+    const isModify = q.includes('modifica') || q.includes('actualiza') || q.includes('cambia') || q.includes('reprograma') || q.includes('mueve') || q.includes('pasa') || q.includes('traslada');
 
     if (q.includes('actividad') || q.includes('reunion') || q.includes('reunión') || q.includes('llamada') || q.includes('cita') || q.includes('agenda') || q.includes('programa')) {
       return isModify ? 'modifyActivity' : 'createActivity';
@@ -131,7 +131,7 @@ export class WebchatQueryPlannerService {
     if (q.includes('oportunidad') || q.includes('cotizacion') || q.includes('cotización') || q.includes('proyecto') || q.includes('venta') || q.includes('monto')) {
       return isModify ? 'modifyOpportunity' : 'createOpportunity';
     }
-    return 'createOpportunity';
+    return isModify ? 'modifyOpportunity' : 'createOpportunity';
   }
 
   /**
@@ -142,7 +142,11 @@ export class WebchatQueryPlannerService {
     const params: Record<string, any> = {};
 
     if (actionType === 'createOpportunity' || actionType === 'modifyOpportunity') {
-      params.nombreProyecto = q.replace(/^(crea|crear|genera|registra|modifica|actualiza)\s+(una\s+)?(oportunidad|cotizacion|cotización|proyecto)?\s*(para|de)?/i, '').trim();
+      const stageMatch = q.match(/(?:muevela\s+a|mueve\s+a|mover\s+a|pasar\s+a|pasa\s+a|pasala\s+a|cambia\s+a|cambiar\s+a|etapa)\s+["']?([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+?)["']?(?:$|\.|\,)/i);
+      if (stageMatch && stageMatch[1]) {
+        params.etapa = stageMatch[1].trim();
+      }
+      params.nombreProyecto = q.replace(/^(crea|crear|genera|registra|modifica|actualiza|mueve|muevela|pasa|pasala)\s+(una\s+)?(oportunidad|cotizacion|cotización|proyecto)?\s*(para|de)?/i, '').trim();
     } else if (actionType === 'createActivity' || actionType === 'modifyActivity') {
       params.activity = q.replace(/^(crea|crear|agenda|agendar|programa|programar|registra|registrar)\s+(una\s+)?/i, '').trim() || q;
 
@@ -161,17 +165,26 @@ export class WebchatQueryPlannerService {
         }
       }
 
-      // Extraer fecha si está presente en el texto
-      const dateMatch = q.match(/(?:para\s+el\s+|el\s+|para\s+)?(hoy|mañana|manana|pasado\s+mañana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}\s+de\s+[a-z]+|\d{4}-\d{2}-\d{2})(?:\s+(?:a\s+las\s+|las\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i);
+      // Extraer tipo de actividad si se especifica en la orden (ej. "demostración", "reunión", "llamada", "visita")
+      const typeMatch = q.match(/\b(reuni[oó]n|llamada|visita|demostraci[oó]n|demo|correo)\b/i);
+      if (typeMatch && typeMatch[1]) {
+        params.tipoActividad = typeMatch[1].trim();
+      }
+
+      // Extraer fecha si está presente en el texto (priorizando pasado mañana sobre mañana)
+      const dateMatch = q.match(/(?:para\s+el\s+|el\s+|para\s+)?(pasado\s+mañana|pasado\s+manana|pasadomañana|pasadomanana|hoy|mañana|manana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}\s+de\s+[a-z]+|\d{4}-\d{2}-\d{2})(?:\s+(?:a\s+las?\s+|las?\s+|a\s+la\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i);
       if (dateMatch && dateMatch[0]) {
         params.date = dateMatch[0].trim();
       } else {
         params.date = 'mañana a las 10am';
       }
 
-      // Extraer recordatorio si se solicita
-      if (/recordatorio|recordar|alarma/i.test(q)) {
-        params.recordatorio = /misma\s+hora|al\s+momento/i.test(q) ? 'misma hora' : true;
+      // Extraer recordatorio si se solicita (incluyendo typo común reordatorio y hora específica o relativa)
+      const reminderMatch = q.match(/(?:recordatorio|reordatorio|recordar|alarma)\s+(?:a\s+las?|para\s+las?|a\s+la|para\s+la)?\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|misma\s+hora|al\s+momento|\d+\s*(?:horas?|hrs?|minutos?|mins?)\s+antes)?/i);
+      if (reminderMatch) {
+        params.recordatorio = reminderMatch[1] ? reminderMatch[1].trim() : true;
+      } else if (/(?:recordatorio|reordatorio|recordar|alarma)/i.test(q)) {
+        params.recordatorio = true;
       }
     } else if (actionType === 'createTicket') {
       params.title = q.replace(/^(crea|crear|levanta|levantar|abre|abrir|reporta)\s+(un\s+)?(ticket|incidencia|reporte)?\s*(por|de)?/i, '').trim() || q;

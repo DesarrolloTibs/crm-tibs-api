@@ -87,6 +87,9 @@ El módulo de webchat permite a los clientes de CRM TIBS integrar un widget de c
 El Webchat Interno asiste a ejecutivos y administradores para consultar métricas y ejecutar acciones operativas en lenguaje natural:
 * **Flujos Multi-Turno:** Si una solicitud carece de parámetros indispensables (fecha, detalle, tipo de actividad o correo de contacto), el motor detiene la ejecución y solicita los datos pendientes conservando el contexto en turnos sucesivos.
 * **Validación Obligatoria de Correo en Contactos:** Al programar actividades (`createActivity`) vinculadas a un contacto (`clientId`, `contacto` o `contactIds`), el sistema valida obligatoriamente que dicho contacto tenga un correo electrónico registrado en el CRM. Si carece de correo, el asistente solicita explícitamente el correo antes de agendar. Cuando el usuario proporciona el correo (en el mismo mensaje o en turnos sucesivos), el sistema actualiza y persiste el correo en el registro del contacto (`Client`) y completa la creación de la actividad automáticamente.
+* **Modificación de Oportunidades y Cambio de Etapa (`modifyOpportunity`):** Permite actualizar montos, productos, catálogos, y mover oportunidades entre etapas del pipeline (`stage_id`) en lenguaje natural (ej. *"muevela a calificado"*, *"cambia a propuesta"*, *"pasa a negociación"*). Resuelve dinámicamente la etapa contra el catálogo real `tblstagescatalog` del pipeline mediante `resolveStage`, aplicando coincidencias semánticas e insensibles a mayúsculas/acentos, emitiendo la actualización en vivo por WebSocket (`PipelinesGateway`) y registrando la transición en `opportunity_trackings`.
+* **Búsqueda Flexible y Resiliente de Oportunidades:** Búsqueda difusa y compacta que tolera diferencias de espacios (ej. *"redmagic"* coincide con *"Cotización Red Magic"*), palabras clave y búsqueda compuesta por nombre y apellido de clientes (`CONCAT(cliente.nombre, ' ', COALESCE(cliente.apellido, '')) ILIKE :hint`).
+* **Fusión de Contexto Multi-Turno (`mergeHistoryContext`):** Si el usuario busca o consulta una oportunidad en un turno (ej. *"Cotización Red Magic"*) y en el turno siguiente simplemente ordena *"muevela a calificado"*, el sistema recupera la oportunidad de los mensajes previos (del usuario o de la respuesta del asistente) e inyecta la etapa de destino automáticamente.
 
 ## 5. Canales Externos (WhatsApp Cloud API, Meta, Instagram & Messenger)
 
@@ -147,4 +150,31 @@ Para eliminar la necesidad de configuración manual de credenciales (App ID, Pag
     5. Ejecuta la persistencia dentro de `TenantContextService.run({ tenantSchema }, ...)` para registrar o actualizar los registros en `channel_configs` (canal `facebook` y canal `instagram`).
     6. Responde con `renderPopupResponse`: emite `window.opener.postMessage({ type: 'META_OAUTH_SUCCESS' })` y cierra la ventana emergente automáticamente.
 
+### 5.7. Capa Semántica: Resolución de Rangos Temporales e Intervalos Dinámicos (`WebchatCubeExecutorService`)
+Para garantizar que las consultas analíticas en lenguaje natural sobre intervalos temporales pasados o futuros no colapsen en un solo día:
+* **Semanas Dinámicas (`hace N semanas`, `semana antepasada`, `en N semanas`):**
+  * Se calcula el rango completo de lunes a domingo `[targetMonday, targetSunday]` en lugar de evaluar una fecha puntual `-(N * 7)`.
+  * Sintoniza términos coloquiales como `"la semana antepasada"`, `"semana antepasada"` (equivalente a $N = 2$) y días relativos de semanas pasadas (`"el viernes de la semana antepasada"`).
+* **Meses y Años Dinámicos (`hace N meses`, `mes antepasado`, `hace N años`):**
+  * `hace N meses` y `el mes antepasado`: Generan el intervalo completo del mes calendario desde el primer día (`YYYY-MM-01`) hasta el último día del mes (`YYYY-MM-lastDay`).
+  * `hace N años` y `el año antepasado`: Generan el intervalo anual completo (`YYYY-01-01` a `YYYY-12-31`).
+* **Sincronización con el Router LLM (`WebchatPromptBuilderService`):**
+  * La instrucción crítica de fechas especifica el uso de `This week`, `Last week`, `hace 2 semanas`, `hace 2 meses` y `hace 2 años`, asegurando que el ejecutor reciba expresiones que Cube.dev resuelva con exactitud para la zona horaria del tenant (`America/Mexico_City`).
 
+### 5.8. Interpolación Robusta de Plantillas de Respuesta (`WebchatResponseFormatterService`)
+* **Soporte de Placeholders Vacíos y Posicionales:**
+  * Detecta y sustituye llaves vacías `{}` generadas por modelos LLM (estilo Python format) con el valor de la medida principal (`Actividades.count`, etc.) o secuencialmente según la lista de columnas.
+  * Soporta índices posicionales (`{0}`, `{1}`) y alias semánticos comunes (`{total}`, `{count}`, `{cantidad}`, `{resultado}`, `{valor}`, `{monto}`).
+  * Limpia cualquier llave residual no resuelta (`/\{[a-zA-Z0-9_.]*\}/g`) para evitar que se muestren corchetes `{}` en la interfaz de usuario.
+
+### 5.9. Ejecución de Acciones: Agendamiento de Actividades, Días Relativos y Recordatorios (`WebchatActionExecutorService`)
+* **Resolución Temporal Inmune a Substring Matches (`parseNaturalDate`):**
+  * `pasado mañana` se evalúa estrictamente antes que `mañana` para evitar que la coincidencia por subcadena colapse una cita a +1 día en vez de +2 días.
+  * Aislamiento de horas frente a días de mes (`4 de octubre a las 3 pm` no confunde el día `4` con la hora).
+  * Aislamiento de textos de recordatorio (`a las 3 pm con recordatorio a la 1 pm` preserva `3 pm` para la actividad y `1 pm` para el recordatorio).
+  * Función `buildDateInTz(year, month, day, hour, minute)` inmune a desfases en límites de mes y cambios de horario en `America/Mexico_City`.
+* **Recordatorios Personalizados y Tolerancia a Errores Tipográficos:**
+  * Soporta horas específicas (`"con recordatorio a la 1 pm"`, `"a las 13:00"`), diferencias relativas (`"2 horas antes"`), `"misma hora"` y errores tipográficos comunes (`"reordatorio"`).
+  * Asigna la fecha del recordatorio calculada en el mismo día de la actividad en la zona horaria del CRM.
+* **Resolución Dinámica de Tipos de Actividad (`resolveTypeActivity`):**
+  * Detecta el tipo tanto desde parámetros explícitos como desde el texto descriptivo de la acción (`Demostración`, `Reunión`, `Llamada`, `Visita`), validando contra el catálogo activo en el esquema del tenant (`tbltypeactivities`).

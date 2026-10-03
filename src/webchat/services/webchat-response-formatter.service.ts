@@ -688,6 +688,9 @@ export class WebchatResponseFormatterService {
     const rowCurrency = row['Oportunidades.moneda'] || row['moneda'] || 'MXN';
     let formatted = template;
 
+    const valuesList: string[] = [];
+    const measureValuesList: string[] = [];
+
     for (const [key, val] of Object.entries(row)) {
       const isCurrency = this.isCurrencyField(key, annotation);
       const fieldCurrency = key.toLowerCase().includes('mxn') ? 'MXN' : rowCurrency;
@@ -718,6 +721,19 @@ export class WebchatResponseFormatterService {
         }
       }
 
+      valuesList.push(displayVal);
+      const keyLower = key.toLowerCase();
+      if (
+        keyLower.includes('count') ||
+        keyLower.includes('sum') ||
+        keyLower.includes('total') ||
+        keyLower.includes('conteo') ||
+        isCurrency ||
+        !isNaN(Number(val))
+      ) {
+        measureValuesList.push(displayVal);
+      }
+
       const placeholder = `{${key}}`;
       formatted = formatted.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), displayVal);
 
@@ -726,8 +742,39 @@ export class WebchatResponseFormatterService {
       formatted = formatted.replace(new RegExp(cleanPlaceholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), displayVal);
     }
 
-    // Limpiar placeholders residuales para no mostrarlos al usuario
-    formatted = formatted.replace(/\{[a-zA-Z0-9_.]+\}/g, '').replace(/\s{2,}/g, ' ').trim();
+    // 1. Soporte para placeholders posicionales indexados {0}, {1}, etc.
+    for (let i = 0; i < valuesList.length; i++) {
+      formatted = formatted.replace(new RegExp(`\\{${i}\\}`, 'g'), valuesList[i]);
+    }
+
+    // 2. Soporte para placeholders genéricos frecuentes como {total}, {count}, {cantidad}, {resultado}, {valor}, {monto}, {numero}, {conteo}
+    const genericPlaceholders = ['total', 'count', 'cantidad', 'resultado', 'valor', 'monto', 'numero', 'conteo'];
+    const primaryMeasureVal = measureValuesList.length > 0 ? measureValuesList[0] : (valuesList.length > 0 ? valuesList[0] : '');
+    if (primaryMeasureVal) {
+      for (const gp of genericPlaceholders) {
+        formatted = formatted.replace(new RegExp(`\\{${gp}\\}`, 'gi'), primaryMeasureVal);
+      }
+    }
+
+    // 3. Soporte para placeholders vacíos estilo format: {}
+    const emptyBracesMatches = formatted.match(/\{\}/g);
+    if (emptyBracesMatches && emptyBracesMatches.length > 0) {
+      if (emptyBracesMatches.length === 1 && measureValuesList.length > 0) {
+        formatted = formatted.replace('{}', measureValuesList[0]);
+      } else {
+        const candidates = valuesList.length >= emptyBracesMatches.length ? valuesList : (measureValuesList.length > 0 ? measureValuesList : valuesList);
+        let candIdx = 0;
+        formatted = formatted.replace(/\{\}/g, () => {
+          if (candIdx < candidates.length) {
+            return candidates[candIdx++];
+          }
+          return primaryMeasureVal || '';
+        });
+      }
+    }
+
+    // 4. Limpiar placeholders residuales para no mostrarlos al usuario (incluye {} o {desconocido})
+    formatted = formatted.replace(/\{[a-zA-Z0-9_.]*\}/g, '').replace(/\s{2,}/g, ' ').trim();
     formatted = formatted
       .replace(/\b(MXN|USD)\s+\1\b/gi, '$1')
       .replace(/\b(MXN|USD)\s+(pesos|dólares|dolares)\b/gi, '$1')
