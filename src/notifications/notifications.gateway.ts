@@ -35,29 +35,38 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection,
       (client.handshake.auth?.token as string) ||
       (client.handshake.headers?.authorization?.startsWith('Bearer ')
         ? client.handshake.headers.authorization.substring(7)
-        : undefined);
+        : undefined) ||
+      (client.handshake.query?.token as string);
 
-    let authenticatedUserId: string | null = null;
-
-    if (token) {
-      try {
-        const secret = process.env.JWT_SECRET;
-        if (!secret) {
-          throw new Error('JWT_SECRET no está configurado en las variables de entorno');
-        }
-        const decoded: any = jwt.verify(token, secret);
-        authenticatedUserId = decoded.sub || decoded.userId || null;
-      } catch (err: any) {
-        this.logger.warn(`Client ${client.id} WS handshake con token JWT no válido: ${err.message}`);
-      }
+    if (!token) {
+      this.logger.warn(`Client ${client.id} rechazado en Notifications WS: Token JWT ausente`);
+      client.disconnect(true);
+      return;
     }
 
-    if (authenticatedUserId) {
-      (client as any).userId = authenticatedUserId;
-      client.join(`user_${authenticatedUserId}`);
-      this.logger.log(`Client ${client.id} connected and joined room user_${authenticatedUserId}`);
-    } else {
-      this.logger.warn(`Client ${client.id} conectado sin autenticación JWT válida`);
+    try {
+      const secret = process.env.JWT_SECRET;
+      if (!secret) throw new Error('JWT_SECRET no configurado');
+
+      const decoded: any = jwt.verify(token, secret);
+      const tenantSchema = decoded.tenantSchema || decoded.tenant || 'public';
+      const userId = decoded.sub || decoded.userId || decoded.id;
+
+      if (!userId) {
+        throw new Error('ID de usuario no presente en payload JWT');
+      }
+
+      (client as any).tenantSchema = tenantSchema;
+      (client as any).userId = userId;
+
+      client.join(`tenant:${tenantSchema}`);
+      client.join(`user_${userId}`);
+      client.join(`user:${userId}`);
+
+      this.logger.log(`Client ${client.id} conectado a Notifications WS (tenant: ${tenantSchema}, user: ${userId})`);
+    } catch (err: any) {
+      this.logger.warn(`Client ${client.id} rechazado en Notifications WS: JWT inválido (${err.message})`);
+      client.disconnect(true);
     }
   }
 
@@ -68,18 +77,18 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection,
   @SubscribeMessage('register')
   handleRegister(@MessageBody() data: { userId: string }, @ConnectedSocket() client: Socket) {
     const authenticatedUserId = (client as any).userId;
-    // Si el socket ya fue autenticado por JWT, respeta la identidad verificada
     const targetUserId = authenticatedUserId || data?.userId;
     if (targetUserId) {
       client.join(`user_${targetUserId}`);
-      this.logger.log(`Client ${client.id} explicitly registered for user_${targetUserId}`);
+      client.join(`user:${targetUserId}`);
+      this.logger.log(`Client ${client.id} registered for user_${targetUserId}`);
       return { status: 'ok', room: `user_${targetUserId}` };
     }
   }
 
   emitNotificationToUser(userId: string, notification: Notification) {
     if (this.server) {
-      this.server.to(`user_${userId}`).emit('notification_received', notification);
+      this.server.to(`user_${userId}`).to(`user:${userId}`).emit('notification_received', notification);
       this.logger.log(`Emitted notification_received to user_${userId}`);
     }
   }

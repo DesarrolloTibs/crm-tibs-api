@@ -7,6 +7,8 @@ import {
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
+import * as jwt from 'jsonwebtoken';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @WebSocketGateway({
   namespace: 'activities',
@@ -26,45 +28,105 @@ export class ActivitiesGateway implements OnGatewayInit, OnGatewayConnection, On
   }
 
   handleConnection(client: Socket) {
-    this.logger.debug(`Client connected to Activities WebSocket: ${client.id}`);
+    const token =
+      (client.handshake.auth?.token as string) ||
+      (client.handshake.headers?.authorization?.startsWith('Bearer ')
+        ? client.handshake.headers.authorization.substring(7)
+        : undefined) ||
+      (client.handshake.query?.token as string);
+
+    if (!token) {
+      this.logger.warn(`Client ${client.id} rechazado en Activities WS: Token JWT ausente`);
+      client.disconnect(true);
+      return;
+    }
+
+    try {
+      const secret = process.env.JWT_SECRET;
+      if (!secret) throw new Error('JWT_SECRET no configurado');
+
+      const decoded: any = jwt.verify(token, secret);
+      const tenantSchema = decoded.tenantSchema || decoded.tenant || 'public';
+      const userId = decoded.sub || decoded.userId || decoded.id;
+
+      (client as any).tenantSchema = tenantSchema;
+      (client as any).userId = userId;
+
+      client.join(`tenant:${tenantSchema}`);
+      if (userId) client.join(`user:${userId}`);
+
+      this.logger.log(`Client ${client.id} conectado a Activities WS (tenant: ${tenantSchema}, user: ${userId})`);
+    } catch (err: any) {
+      this.logger.warn(`Client ${client.id} rechazado en Activities WS: JWT inválido (${err.message})`);
+      client.disconnect(true);
+    }
   }
 
   handleDisconnect(client: Socket) {
     this.logger.debug(`Client disconnected from Activities WebSocket: ${client.id}`);
   }
 
-  emitActivityCreated(activity: any) {
-    if (this.server) {
+  private getTargetRoom(tenantSchema?: string): string | null {
+    const target = tenantSchema || TenantContextService.getTenantSchema();
+    return target ? `tenant:${target}` : null;
+  }
+
+  emitActivityCreated(activity: any, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    if (room) {
+      this.server.to(room).emit('activityCreated', activity);
+    } else {
       this.server.emit('activityCreated', activity);
     }
   }
 
-  emitActivityUpdated(activity: any) {
-    if (this.server) {
+  emitActivityUpdated(activity: any, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    if (room) {
+      this.server.to(room).emit('activityUpdated', activity);
+    } else {
       this.server.emit('activityUpdated', activity);
     }
   }
 
-  emitActivityDeleted(activityId: string) {
-    if (this.server) {
+  emitActivityDeleted(activityId: string, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    if (room) {
+      this.server.to(room).emit('activityDeleted', activityId);
+    } else {
       this.server.emit('activityDeleted', activityId);
     }
   }
 
-  emitActivityTypeCreated(type: any) {
-    if (this.server) {
+  emitActivityTypeCreated(type: any, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    if (room) {
+      this.server.to(room).emit('activityTypeCreated', type);
+    } else {
       this.server.emit('activityTypeCreated', type);
     }
   }
 
-  emitActivityTypeUpdated(type: any) {
-    if (this.server) {
+  emitActivityTypeUpdated(type: any, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    if (room) {
+      this.server.to(room).emit('activityTypeUpdated', type);
+    } else {
       this.server.emit('activityTypeUpdated', type);
     }
   }
 
-  emitActivityTypeDeleted(typeId: number) {
-    if (this.server) {
+  emitActivityTypeDeleted(typeId: number, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    if (room) {
+      this.server.to(room).emit('activityTypeDeleted', typeId);
+    } else {
       this.server.emit('activityTypeDeleted', typeId);
     }
   }

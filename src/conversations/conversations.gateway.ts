@@ -11,6 +11,7 @@ import * as jwt from 'jsonwebtoken';
 import { OnEvent } from '@nestjs/event-emitter';
 import { Message } from './entities/message.entity';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @WebSocketGateway({
   namespace: 'conversations',
@@ -34,67 +35,105 @@ export class ConversationsGateway implements OnGatewayInit, OnGatewayConnection,
       (client.handshake.auth?.token as string) ||
       (client.handshake.headers?.authorization?.startsWith('Bearer ')
         ? client.handshake.headers.authorization.substring(7)
-        : undefined);
+        : undefined) ||
+      (client.handshake.query?.token as string);
 
-    let info = '';
-    if (token) {
-      try {
-        const secret = process.env.JWT_SECRET;
-        if (!secret) {
-          throw new Error('JWT_SECRET no está configurado en las variables de entorno');
-        }
-        const decoded: any = jwt.verify(token, secret);
-        info = ` (user: ${decoded.username || decoded.sub}, role: ${decoded.role})`;
-      } catch (err: any) {
-        this.logger.warn(`Client ${client.id} WS handshake con token JWT inválido: ${err.message}`);
-      }
+    if (!token) {
+      this.logger.warn(`Client ${client.id} rechazado en Conversations WS: Token JWT ausente`);
+      client.disconnect(true);
+      return;
     }
-    this.logger.log(`Client connected to Conversations WebSocket: ${client.id}${info}`);
+
+    try {
+      const secret = process.env.JWT_SECRET;
+      if (!secret) throw new Error('JWT_SECRET no está configurado en las variables de entorno');
+
+      const decoded: any = jwt.verify(token, secret);
+      const tenantSchema = decoded.tenantSchema || decoded.tenant || 'public';
+      const userId = decoded.sub || decoded.userId || decoded.id;
+
+      (client as any).tenantSchema = tenantSchema;
+      (client as any).userId = userId;
+
+      client.join(`tenant:${tenantSchema}`);
+      if (userId) client.join(`user:${userId}`);
+
+      this.logger.log(`Client ${client.id} conectado a Conversations WS (tenant: ${tenantSchema}, user: ${userId})`);
+    } catch (err: any) {
+      this.logger.warn(`Client ${client.id} rechazado en Conversations WS: JWT inválido (${err.message})`);
+      client.disconnect(true);
+    }
   }
 
   handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected from Conversations WebSocket: ${client.id}`);
   }
 
-  emitMessage(message: Message) {
-    if (this.server) {
+  private getTargetRoom(tenantSchema?: string): string | null {
+    const target = tenantSchema || TenantContextService.getTenantSchema();
+    return target ? `tenant:${target}` : null;
+  }
+
+  emitMessage(message: Message, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    if (room) {
+      this.server.to(room).emit('message_received', message);
+    } else {
       this.server.emit('message_received', message);
-      this.logger.log(`Emitted message_received for conversation ${message.conversationId}`);
     }
+    this.logger.log(`Emitted message_received for conversation ${message.conversationId}`);
   }
 
-  emitBotStatusChanged(conversationId: string, botActive: boolean) {
-    if (this.server) {
-      this.server.emit('bot_status_changed', { conversationId, botActive });
-      this.logger.log(`Emitted bot_status_changed for conversation ${conversationId}`);
+  emitBotStatusChanged(conversationId: string, botActive: boolean, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    const payload = { conversationId, botActive };
+    if (room) {
+      this.server.to(room).emit('bot_status_changed', payload);
+    } else {
+      this.server.emit('bot_status_changed', payload);
     }
+    this.logger.log(`Emitted bot_status_changed for conversation ${conversationId}`);
   }
 
-  emitConversationAssigned(conversationId: string, assignedUserId: string | null) {
-    if (this.server) {
-      this.server.emit('conversation_assigned', { conversationId, assignedUserId });
-      this.logger.log(`Emitted conversation_assigned for conversation ${conversationId}`);
+  emitConversationAssigned(conversationId: string, assignedUserId: string | null, tenantSchema?: string) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    const payload = { conversationId, assignedUserId };
+    if (room) {
+      this.server.to(room).emit('conversation_assigned', payload);
+    } else {
+      this.server.emit('conversation_assigned', payload);
     }
+    this.logger.log(`Emitted conversation_assigned for conversation ${conversationId}`);
   }
 
   emitTenantConsumptionUpdated(schemaName: string) {
-    if (this.server) {
-      this.server.emit('tenant_consumption_updated', { schemaName });
-      this.logger.log(`Emitted tenant_consumption_updated for schema ${schemaName}`);
-    }
+    if (!this.server) return;
+    const room = `tenant:${schemaName}`;
+    this.server.to(room).emit('tenant_consumption_updated', { schemaName });
+    this.logger.log(`Emitted tenant_consumption_updated for schema ${schemaName}`);
   }
 
-  emitMessageStatusUpdated(payload: {
-    messageId: string;
-    conversationId: string;
-    status: string;
-    externalMessageId?: string | null;
-    errorMessage?: string | null;
-  }) {
-    if (this.server) {
+  emitMessageStatusUpdated(
+    payload: {
+      messageId: string;
+      conversationId: string;
+      status: string;
+      externalMessageId?: string | null;
+      errorMessage?: string | null;
+    },
+    tenantSchema?: string,
+  ) {
+    if (!this.server) return;
+    const room = this.getTargetRoom(tenantSchema);
+    if (room) {
+      this.server.to(room).emit('message_status_updated', payload);
+    } else {
       this.server.emit('message_status_updated', payload);
-      this.logger.log(`Emitted message_status_updated for message ${payload.messageId} (${payload.status})`);
     }
+    this.logger.log(`Emitted message_status_updated for message ${payload.messageId} (${payload.status})`);
   }
 
   /**
