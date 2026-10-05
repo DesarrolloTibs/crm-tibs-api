@@ -12,6 +12,9 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { NestAppLogger } from './common/logger/nest-logger';
 
 async function bootstrap() {
+  // Configurar la zona horaria global del proceso Node.js a la definida en .env
+  process.env.TZ = process.env.NOTIFICATION_TIMEZONE || 'America/Mexico_City';
+
   const appLogger = new NestAppLogger('Bootstrap');
   const logger = appLogger;
 

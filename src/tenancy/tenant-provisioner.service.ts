@@ -232,6 +232,7 @@ export class TenantProvisionerService {
         ALTER TABLE "${schemaName}".activities ADD COLUMN IF NOT EXISTS "externalEventId" varchar(255) NULL;
         ALTER TABLE "${schemaName}".activities ADD COLUMN IF NOT EXISTS "externalProvider" varchar(50) NULL;
         ALTER TABLE "${schemaName}".activities ADD COLUMN IF NOT EXISTS "externalLastSyncedAt" timestamptz NULL;
+        ALTER TABLE "${schemaName}".activities ALTER COLUMN "date" TYPE timestamptz USING "date" AT TIME ZONE 'UTC';
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".user_calendar_integrations (
           id uuid NOT NULL DEFAULT gen_random_uuid(),

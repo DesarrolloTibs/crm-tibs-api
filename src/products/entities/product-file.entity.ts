@@ -22,6 +22,6 @@ export class ProductFile {
   @JoinColumn({ name: 'productId' })
   product: Product;
 
-  @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   uploadedAt: Date;
 }

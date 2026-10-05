@@ -5,6 +5,7 @@ import {
   BadRequestException,
   Logger,
   InternalServerErrorException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, FindManyOptions } from 'typeorm';
@@ -26,8 +27,24 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 import { ActivitiesGateway } from './activities.gateway';
 import { MailService } from '../mail/mail.service';
 
+export function parseActivityDate(dateInput: string | Date): Date {
+  if (!dateInput) return new Date();
+  if (dateInput instanceof Date) return dateInput;
+  if (typeof dateInput === 'string') {
+    // Si viene como cadena ISO ingenua sin indicador Z ni offset (+XX:XX / -XX:XX), ej: "2026-10-05T17:00"
+    const naiveIsoRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+    if (naiveIsoRegex.test(dateInput.trim())) {
+      const [datePart, timePart] = dateInput.trim().split('T');
+      const [year, month, day] = datePart.split('-').map(Number);
+      const [hours, minutes, seconds] = timePart.split(':').map(Number);
+      return new Date(year, month - 1, day, hours, minutes || 0, Math.floor(seconds || 0));
+    }
+  }
+  return new Date(dateInput);
+}
+
 @Injectable()
-export class ActivitiesService {
+export class ActivitiesService implements OnModuleInit {
   private readonly logger = new Logger('ActivitiesService');
 
   constructor(
@@ -45,6 +62,29 @@ export class ActivitiesService {
     private readonly activitiesGateway: ActivitiesGateway,
     private readonly mailService: MailService,
   ) { }
+
+  async onModuleInit() {
+    try {
+      const schemas = await this.activityRepository.query(`
+        SELECT schema_name FROM information_schema.schemata 
+        WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+      `);
+      for (const row of schemas) {
+        const sName = row.schema_name;
+        try {
+          await this.activityRepository.query(`
+            ALTER TABLE "${sName}".activities 
+            ALTER COLUMN "date" TYPE timestamptz USING "date" AT TIME ZONE 'UTC';
+          `);
+        } catch (e) {
+          // Ignorar si la tabla no existe en algún esquema secundario
+        }
+      }
+      this.logger.log('Auto-migración de actividades: columna date verificada/actualizada a timestamptz en todos los esquemas.');
+    } catch (err: any) {
+      this.logger.error(`Error en auto-migración de columna date en actividades: ${err.message}`);
+    }
+  }
 
 
   private fillDeletedType(activity: Activity): Activity {
@@ -254,8 +294,11 @@ export class ActivitiesService {
       dtoWithoutContacts.companyId = null;
     }
 
+    const parsedDate = parseActivityDate(createActivityDto.date);
+
     const activity = this.activityRepository.create({
       ...dtoWithoutContacts,
+      date: parsedDate,
       user: { id: userId } as User,
     });
 
@@ -437,9 +480,12 @@ export class ActivitiesService {
 
     const { contactIds, ...dtoWithoutContacts } = updateActivityDto;
 
+    const parsedDate = updateActivityDto.date ? parseActivityDate(updateActivityDto.date) : undefined;
+
     const activityToUpdate = await this.activityRepository.preload({
       id,
       ...dtoWithoutContacts,
+      ...(parsedDate ? { date: parsedDate } : {}),
     });
     if (!activityToUpdate) {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada para actualizar.`);

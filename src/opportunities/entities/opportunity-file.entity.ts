@@ -25,6 +25,6 @@ export class OpportunityFile {
   @JoinColumn({ name: 'opportunityId' })
   opportunity: Opportunity;
 
-  @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   uploadedAt: Date;
 }

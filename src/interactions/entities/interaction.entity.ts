@@ -16,7 +16,7 @@ export class Interaction {
   @Column({ type: 'text' })
   comment: string;
 
-  @CreateDateColumn({ type: 'timestamp', name: 'created_at' })
+  @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
   createdAt: Date;
 
   @Column({ type: 'uuid' })

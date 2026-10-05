@@ -41,6 +41,6 @@ export class Expense {
     @Column({ type: 'varchar', nullable: true })
     receiptUrl: string | null;
 
-    @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+    @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
     createdAt: Date;
 }

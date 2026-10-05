@@ -15,7 +15,7 @@ export class Reminder {
   @Column({ type: 'varchar', length: 255 })
   title: string;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: 'timestamptz' })
   date: Date;
 
   @Column({ type: 'boolean', default: false })

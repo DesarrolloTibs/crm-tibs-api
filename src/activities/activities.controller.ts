@@ -95,16 +95,14 @@ export class ActivitiesController {
   @ApiQuery({ name: 'userId', required: false, description: 'Filtrar por ID de usuario (solo Admins)' })
   @ApiQuery({ name: 'opportunityId', required: false, description: 'Filtrar por ID de oportunidad' })
   @ApiResponse({ status: 200, description: 'Lista de actividades.', type: [Activity] })
-  findAll(
+  async findAll(
     @GetUser() user: User,
     @Query('userId') userId?: string,
     @Query('opportunityId') opportunityId?: string,
   ) {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
-    // Lanzar sincronización en segundo plano de manera totalmente desacoplada
-    setImmediate(() => {
-      this.syncCoordinator.syncExternalChangesToCRM(tenantSchema, user.id).catch(() => null);
-    });
+    // Sincronizar cambios externos (Google/Outlook) antes de retornar para que se reflejen de inmediato
+    await this.syncCoordinator.syncExternalChangesToCRM(tenantSchema, user.id).catch(() => null);
 
     return this.activitiesService.findAll(user, userId, opportunityId);
   }

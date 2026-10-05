@@ -19,7 +19,7 @@ export class Activity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: 'timestamptz' })
   date: Date;
 
   @Column({ type: 'text' })

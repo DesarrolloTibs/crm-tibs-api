@@ -39,7 +39,7 @@ export class User {
   @Column({ type: 'varchar', nullable: true, name: 'reset_password_token' })
   resetPasswordToken: string | null;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'reset_password_expires' })
+  @Column({ type: 'timestamptz', nullable: true, name: 'reset_password_expires' })
   resetPasswordExpires: Date | null;
 
   @OneToMany(() => OpportunityTracking, (tracking) => tracking.changedBy)

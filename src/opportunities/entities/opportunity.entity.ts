@@ -136,10 +136,10 @@ export class Opportunity {
   @Column({ type: 'date', nullable: true, name: 'estimated_closure_date' })
   estimated_closure_date: Date;
 
-  @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 
-  @Column({ type: 'timestamp', nullable: true, name: 'stage_entered_at' })
+  @Column({ type: 'timestamptz', nullable: true, name: 'stage_entered_at' })
   stage_entered_at: Date | null;
 
   @Column({ type: 'integer', default: 1 })

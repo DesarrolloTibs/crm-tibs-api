@@ -14,7 +14,7 @@ export class OpportunityLabel {
   @Column({ type: 'boolean', default: true })
   blnstatus: boolean;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   dtmlastmodified: Date;
 
   @Column({ type: 'uuid', nullable: true })

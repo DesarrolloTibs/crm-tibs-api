@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { DataSource, Repository } from 'typeorm';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
@@ -7,6 +7,7 @@ import { GoogleCalendarService } from './google-calendar.service';
 import { OutlookCalendarService } from './outlook-calendar.service';
 import { Activity } from '../../activities/entities/activity.entity';
 import { Client, ClientCategory } from '../../clients/entities/client.entity';
+import { ActivitiesGateway } from '../../activities/activities.gateway';
 
 @Injectable()
 export class CalendarSyncCoordinatorService {
@@ -17,6 +18,8 @@ export class CalendarSyncCoordinatorService {
     private readonly dataSource: DataSource,
     private readonly googleService: GoogleCalendarService,
     private readonly outlookService: OutlookCalendarService,
+    @Inject(forwardRef(() => ActivitiesGateway))
+    private readonly activitiesGateway: ActivitiesGateway,
   ) {}
 
   /**
@@ -183,8 +186,8 @@ export class CalendarSyncCoordinatorService {
    */
   @OnEvent('activity.deleted')
   async handleActivityDeleted(payload: { activityId: string; externalEventId?: string; externalProvider?: string; userId: string; tenantSchema: string }) {
-    const { externalEventId, externalProvider, userId, tenantSchema } = payload;
-    if (!externalEventId || !externalProvider || !userId) return;
+    const { externalEventId, userId, tenantSchema } = payload;
+    if (!externalEventId || !userId) return;
 
     await TenantContextService.run({ tenantSchema }, async () => {
       try {
@@ -193,7 +196,7 @@ export class CalendarSyncCoordinatorService {
         const integration = await integrationRepo.findOne({ where: { userId } });
         if (!integration) return;
 
-        this.logger.log(`Eliminando evento en el calendario externo (${integration.provider})`);
+        this.logger.log(`Eliminando evento en el calendario externo (${integration.provider}) ID: ${externalEventId}`);
 
         if (integration.provider === 'google') {
           await this.googleService.deleteEvent(integration, integrationRepo, externalEventId);
@@ -252,6 +255,7 @@ export class CalendarSyncCoordinatorService {
             if (existingActivity) {
               this.logger.log(`Eliminando actividad ${existingActivity.id} debido a eliminación en el calendario externo.`);
               await activityRepo.delete(existingActivity.id);
+              this.activitiesGateway?.emitActivityDeleted(existingActivity.id);
             }
             continue;
           }
@@ -280,6 +284,10 @@ export class CalendarSyncCoordinatorService {
                 date: eventDate,
                 externalLastSyncedAt: new Date(),
               });
+              const updated = await activityRepo.findOne({ where: { id: existingActivity.id } });
+              if (updated) {
+                this.activitiesGateway?.emitActivityUpdated(updated);
+              }
             }
           } else {
             // No existe la actividad en el CRM: la creamos (Smart Match + Fallback)
@@ -318,7 +326,8 @@ export class CalendarSyncCoordinatorService {
               flaghistory: false,
             });
 
-            await activityRepo.save(newActivity);
+            const saved = await activityRepo.save(newActivity);
+            this.activitiesGateway?.emitActivityCreated(saved);
           }
         }
 

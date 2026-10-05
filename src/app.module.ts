@@ -79,6 +79,9 @@ import { CalendarIntegrationsModule } from './calendar-integrations/calendar-int
         autoLoadEntities: true,
         // synchronize activado de forma forzada a petición del usuario (sin migraciones)
         synchronize: true,
+        extra: {
+          timezone: configService.get<string>('NOTIFICATION_TIMEZONE') || 'America/Mexico_City',
+        },
       }),
       inject: [ConfigService],
     }),
@@ -351,6 +354,36 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
               CONSTRAINT "pk_${schema}_whatsapp_templates" PRIMARY KEY (id)
             );
           `).catch(() => null);
+
+          // Alter date columns to timestamptz across all tables in tenant schema
+          await queryRunner.query(`
+            ALTER TABLE "${schema}".activities ALTER COLUMN "date" TYPE timestamptz USING "date" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".users ALTER COLUMN "reset_password_expires" TYPE timestamptz USING "reset_password_expires" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".users ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".users ALTER COLUMN "updatedAt" TYPE timestamptz USING "updatedAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".tickets ALTER COLUMN "fecha_apertura" TYPE timestamptz USING "fecha_apertura" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".tickets ALTER COLUMN "fecha_cierre" TYPE timestamptz USING "fecha_cierre" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".tickets ALTER COLUMN "stage_entered_at" TYPE timestamptz USING "stage_entered_at" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".reminders ALTER COLUMN "date" TYPE timestamptz USING "date" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".conversations ALTER COLUMN "lastCustomerMessageAt" TYPE timestamptz USING "lastCustomerMessageAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".conversations ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".conversations ALTER COLUMN "updatedAt" TYPE timestamptz USING "updatedAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".messages ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".companies ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".companies ALTER COLUMN "updatedAt" TYPE timestamptz USING "updatedAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".clients ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".clients ALTER COLUMN "updatedAt" TYPE timestamptz USING "updatedAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".interactions ALTER COLUMN "created_at" TYPE timestamptz USING "created_at" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".ticket_interactions ALTER COLUMN "created_at" TYPE timestamptz USING "created_at" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".products ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".product_files ALTER COLUMN "uploadedAt" TYPE timestamptz USING "uploadedAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".opportunity_trackings ALTER COLUMN "changedAt" TYPE timestamptz USING "changedAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".opportunity_files ALTER COLUMN "uploadedAt" TYPE timestamptz USING "uploadedAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".tbloportunitylabels ALTER COLUMN "dtmlastmodified" TYPE timestamptz USING "dtmlastmodified" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".expenses ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".opportunities ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
+            ALTER TABLE "${schema}".opportunities ALTER COLUMN "stage_entered_at" TYPE timestamptz USING "stage_entered_at" AT TIME ZONE 'UTC';
+          `).catch(() => null);
         }
 
         // Also ensure public schema tables have stage_type and calendar columns
@@ -390,7 +423,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           );
         `).catch(() => null);
 
-        this.logger.log('Schema migrations (calendar, conversations, messages, whatsapp_templates) completed successfully.');
+        this.logger.log('Schema migrations (calendar, conversations, messages, whatsapp_templates, timestamptz dates) completed successfully.');
       }
 
     } catch (err) {

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ActivitiesService } from './activities.service';
 import { ActivitiesController } from './activities.controller';
@@ -22,7 +22,7 @@ import { ActivitiesGateway } from './activities.gateway';
     InteractionsModule,
     RemindersModule,
     NotificationsModule,
-    CalendarIntegrationsModule,
+    forwardRef(() => CalendarIntegrationsModule),
     MailModule,
   ],
   controllers: [ActivitiesController],

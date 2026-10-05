@@ -35,6 +35,6 @@ export class Company {
   @OneToMany(() => Client, (client) => client.company)
   contacts: Client[];
 
-  @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 }

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
 import { UserCalendarIntegration } from './entities/user-calendar-integration.entity';
@@ -8,11 +8,13 @@ import { CalendarWebhooksController } from './calendar-webhooks.controller';
 import { GoogleCalendarService } from './services/google-calendar.service';
 import { OutlookCalendarService } from './services/outlook-calendar.service';
 import { CalendarSyncCoordinatorService } from './services/calendar-sync-coordinator.service';
+import { ActivitiesModule } from '../activities/activities.module';
 
 @Module({
   imports: [
     ConfigModule,
     TypeOrmModule.forFeature([UserCalendarIntegration, CalendarWebhookMapping]),
+    forwardRef(() => ActivitiesModule),
   ],
   controllers: [CalendarIntegrationsController, CalendarWebhooksController],
   providers: [

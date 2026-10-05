@@ -23,7 +23,7 @@ export class OpportunityTracking {
   @JoinColumn({ name: 'stage_id' })
   stage: Stage;
 
-  @CreateDateColumn({ type: 'timestamp' })
+  @CreateDateColumn({ type: 'timestamptz' })
   changedAt: Date;
 
   @ManyToOne(() => User)

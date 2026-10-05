@@ -38,6 +38,6 @@ export class Product {
   @OneToMany(() => ProductFile, (file) => file.product, { cascade: true })
   files: ProductFile[];
 
-  @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   createdAt: Date;
 }

@@ -22,10 +22,10 @@ export class Ticket {
   @Column({ type: 'text' })
   description: string;
 
-  @CreateDateColumn({ type: 'timestamp' })
+  @CreateDateColumn({ type: 'timestamptz' })
   fecha_apertura: Date;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   fecha_cierre: Date | null;
 
   @Column({ type: 'text', nullable: true })
@@ -68,7 +68,7 @@ export class Ticket {
   @JoinColumn({ name: 'stage_id' })
   stage: TicketStage;
 
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @Column({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   stage_entered_at: Date;
 
   // External client contact info if they aren't registered yet
