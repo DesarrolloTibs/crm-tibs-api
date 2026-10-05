@@ -178,3 +178,10 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
   * Asigna la fecha del recordatorio calculada en el mismo día de la actividad en la zona horaria del CRM.
 * **Resolución Dinámica de Tipos de Actividad (`resolveTypeActivity`):**
   * Detecta el tipo tanto desde parámetros explícitos como desde el texto descriptivo de la acción (`Demostración`, `Reunión`, `Llamada`, `Visita`), validando contra el catálogo activo en el esquema del tenant (`tbltypeactivities`).
+
+### 5.10. Resolución Resiliente de Perfiles de Facebook Messenger (Fallback por Fan Page)
+* **Reto:** En versiones recientes de Meta Graph API, la consulta directa de nodos PSID (`GET /{PSID}?fields=first_name,last_name`) devuelve `error_code: 100, error_subcode: 33` si la App de Meta no ha completado el proceso de revisión pública o restringe perfiles.
+* **Estrategia Resiliente en `ConversationsService`:** Si la consulta directa al PSID no entrega el nombre, el sistema ejecuta de forma automática e inmediata un fallback consultando los participantes de la conversación mediante el endpoint de la Fan Page:
+  `GET /v19.0/{page_id}/conversations?user_id={senderId}&fields=participants`
+* **Auto-actualización de Entidades:** Extrae el participante coincidente de la lista (`participant.name`), asigna el nombre real a `conversation.clientName` y actualiza automáticamente el registro `client.nombre` en la base de datos del tenant, garantizando que el contacto deje de mostrarse como *"Usuario de Facebook"*.
+

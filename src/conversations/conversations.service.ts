@@ -273,6 +273,17 @@ export class ConversationsService {
         lastCustomerMessageAt: new Date(),
       });
       conversation = await this.conversationRepository.save(conversation);
+    } else if (
+      (conversation.clientName === 'Usuario de Facebook' || conversation.clientName === 'Usuario de Instagram' || !conversation.clientName) &&
+      clientNickname &&
+      clientNickname !== 'Usuario de Facebook' &&
+      clientNickname !== 'Usuario de Instagram'
+    ) {
+      conversation.clientName = clientNickname;
+      await this.conversationRepository.save(conversation);
+      if (conversation.clientId) {
+        await this.clientRepository.update(conversation.clientId, { nombre: clientNickname });
+      }
     }
 
     // 2. Guardar mensaje entrante del cliente
@@ -1983,15 +1994,37 @@ export class ConversationsService {
             if (channelConfig && channelConfig.accessToken) {
               try {
                 const res = await fetch(
-                  `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name&access_token=${channelConfig.accessToken}`
+                  `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name,profile_pic&access_token=${channelConfig.accessToken}`,
+                  { signal: AbortSignal.timeout(4000) }
                 );
                 if (res.ok) {
                   const data: any = await res.json();
-                  if (data && data.first_name) {
-                    clientNickname = `${data.first_name} ${data.last_name || ''}`.trim();
+                  if (data && (data.first_name || data.last_name)) {
+                    clientNickname = `${data.first_name || ''} ${data.last_name || ''}`.trim();
+                  }
+                } else {
+                  this.logger.debug(`[Webhook MESSENGER] Nodo directo PSID devolvió status ${res.status}. Ejecutando fallback de conversación por Fan Page...`);
+                }
+
+                // Fallback: Consultar participantes de la conversación mediante la página
+                if (clientNickname === 'Usuario de Facebook' && pageId) {
+                  try {
+                    const convUrl = `https://graph.facebook.com/v19.0/${pageId}/conversations?user_id=${senderId}&fields=participants&access_token=${channelConfig.accessToken}`;
+                    const convRes = await fetch(convUrl, { signal: AbortSignal.timeout(4000) });
+                    if (convRes.ok) {
+                      const convData: any = await convRes.json();
+                      const participants = convData?.data?.[0]?.participants?.data || [];
+                      const matchingUser = participants.find((p: any) => p.id === senderId);
+                      if (matchingUser && matchingUser.name) {
+                        clientNickname = matchingUser.name.trim();
+                        this.logger.log(`[Webhook MESSENGER] Nombre de usuario obtenido con éxito desde la conversación de la Fan Page: '${clientNickname}'`);
+                      }
+                    }
+                  } catch (convErr: any) {
+                    this.logger.warn(`Error consultando participantes de conversación en FB: ${convErr.message}`);
                   }
                 }
-              } catch (err) {
+              } catch (err: any) {
                 this.logger.error(`Error obteniendo perfil de FB: ${err.message}`);
               }
             }
@@ -2025,15 +2058,19 @@ export class ConversationsService {
             if (channelConfig && channelConfig.accessToken) {
               try {
                 const res = await fetch(
-                  `https://graph.facebook.com/v19.0/${senderId}?fields=username&access_token=${channelConfig.accessToken}`
+                  `https://graph.facebook.com/v19.0/${senderId}?fields=username,name&access_token=${channelConfig.accessToken}`,
+                  { signal: AbortSignal.timeout(4000) }
                 );
                 if (res.ok) {
                   const data: any = await res.json();
-                  if (data && data.username) {
-                    clientNickname = data.username;
+                  if (data && (data.username || data.name)) {
+                    clientNickname = data.username || data.name;
                   }
+                } else {
+                  const errData = await res.json().catch(() => ({}));
+                  this.logger.warn(`[Webhook INSTAGRAM] Meta Graph API devolvió error ${res.status} al consultar perfil de senderId ${senderId}: ${JSON.stringify(errData)}`);
                 }
-              } catch (err) {
+              } catch (err: any) {
                 this.logger.error(`Error obteniendo perfil de IG: ${err.message}`);
               }
             }

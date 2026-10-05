@@ -98,5 +98,7 @@ Para resolver este desafío arquitectónico sin romper el aislamiento multi-tena
 ---
 
 ## 4. Coordinador de Sincronización (`CalendarSyncCoordinatorService`)
-* **De CRM a Calendario Externo:** Al crear o modificar una actividad en el CRM, el coordinador invoca el método `upsertEvent()` del proveedor correspondiente, guardando el identificador devuelto en `activities.externalEventId`.
-* **De Calendario Externo a CRM:** Al procesar un webhook entrante, el coordinador compara las fechas y descripciones del evento externo contra la tabla `activities`. Si la cita no existe, la crea; si fue modificada en el teléfono del usuario, actualiza la actividad en el CRM.
+* **De CRM a Calendario Externo:** Al crear o modificar una actividad en el CRM, el coordinador invoca el método correspondiente del proveedor (`createEvent` / `updateEvent`), guardando el identificador devuelto en `activities.externalEventId`.
+* **De Calendario Externo a CRM:** Al recibir un webhook o consultar la agenda, el coordinador procesa los cambios incrementales (`syncToken` / `deltaLink`). Compara las fechas y descripciones contra la tabla `activities`. Si la cita no existe, la crea (con Smart Matching de clientes o asignación a cliente comodín `calendar-fallback@crm.com`); si fue modificada externamente, actualiza la actividad en el CRM; y si fue cancelada/eliminada en la agenda personal, la remueve del CRM.
+* **Sincronización Inmediata 100% en Tiempo Real:** Se eliminaron los filtros de retraso artificial (`timeSinceLastSync < 3000ms` y `lastSyncTimeMap` de 30s). La prevención de colisiones se gestiona de forma segura mediante un conjunto de bloqueos en memoria (`isSyncing = Set<string>()`) por `tenantSchema:userId` y la verificación directa de diferencias en el estado de la entidad antes de aplicar modificaciones a la BD.
+

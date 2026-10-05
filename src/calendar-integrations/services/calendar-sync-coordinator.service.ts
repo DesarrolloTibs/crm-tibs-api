@@ -12,7 +12,6 @@ import { Client, ClientCategory } from '../../clients/entities/client.entity';
 export class CalendarSyncCoordinatorService {
   private readonly logger = new Logger('CalendarSyncCoordinator');
   private isSyncing = new Set<string>(); // Evita colisiones de ejecuciones concurrentes
-  private lastSyncTimeMap = new Map<string, number>();
 
   constructor(
     private readonly dataSource: DataSource,
@@ -113,11 +112,6 @@ export class CalendarSyncCoordinatorService {
     const { activity, tenantSchema } = payload;
     if (!activity.userId || !activity.externalEventId || !activity.externalProvider) return;
 
-    // Si la actualización fue provocada por un webhook externo, no volvemos a sincronizar (evita bucles)
-    const timeSinceLastSync = Date.now() - new Date(activity.externalLastSyncedAt || 0).getTime();
-    if (timeSinceLastSync < 3000) {
-      return;
-    }
 
     await TenantContextService.run({ tenantSchema }, async () => {
       try {
@@ -219,14 +213,6 @@ export class CalendarSyncCoordinatorService {
     const lockKey = `${tenantSchema}:${userId}`;
     if (this.isSyncing.has(lockKey)) return;
 
-    if (!force) {
-      const now = Date.now();
-      const lastSync = this.lastSyncTimeMap.get(lockKey) || 0;
-      if (now - lastSync < 30000) {
-        return; // Skip if synced in the last 60 seconds
-      }
-      this.lastSyncTimeMap.set(lockKey, now);
-    }
 
     this.isSyncing.add(lockKey);
 
