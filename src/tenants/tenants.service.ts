@@ -341,13 +341,45 @@ export class TenantsService implements OnModuleInit {
         // Top usuarios internos (Webchat CRM, etc.)
         this.dataSource.query(
           `SELECT 
-            user_id,
-            COALESCE(user_name, 'Usuario ' || user_id::text) AS user_name,
-            COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
+            t.user_id,
+            COALESCE(
+              u.username,
+              pu.username,
+              MAX(t.user_name),
+              'Usuario ' || t.user_id::text
+            ) AS user_name,
+            COALESCE(SUM(t.total_tokens), 0)::bigint AS total_tokens,
             COUNT(*)::int AS request_count
-           FROM "${targetSchema}".transaction_history
-           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2 AND user_id IS NOT NULL
-           GROUP BY user_id, user_name
+           FROM "${targetSchema}".transaction_history t
+           LEFT JOIN "${targetSchema}".users u ON u.id::text = t.user_id::text
+           LEFT JOIN public.users pu ON pu.id::text = t.user_id::text
+           WHERE t.fecha_procesamiento >= $1 AND t.fecha_procesamiento <= $2 
+             AND t.user_id IS NOT NULL
+             AND (t.channel = 'webchat_interno' OR t.client_id IS NULL)
+           GROUP BY t.user_id, u.username, pu.username
+           ORDER BY total_tokens DESC
+           LIMIT 10`,
+          [periodStart, periodEnd],
+        ),
+
+        // Top clientes externos (WhatsApp, etc.)
+        this.dataSource.query(
+          `SELECT 
+            t.client_id,
+            COALESCE(
+              NULLIF(TRIM(COALESCE(c.nombre, '') || ' ' || COALESCE(c.apellido, '')), ''),
+              MAX(NULLIF(t.client_name, 'Usuario de Facebook')),
+              MAX(t.client_name),
+              'Cliente ' || t.client_id::text
+            ) AS client_name,
+            COALESCE(t.channel, 'whatsapp') AS channel,
+            COALESCE(SUM(t.total_tokens), 0)::bigint AS total_tokens,
+            COUNT(*)::int AS request_count
+           FROM "${targetSchema}".transaction_history t
+           LEFT JOIN "${targetSchema}".clients c ON c.id::text = t.client_id::text
+           WHERE t.fecha_procesamiento >= $1 AND t.fecha_procesamiento <= $2 
+             AND t.client_id IS NOT NULL
+           GROUP BY t.client_id, t.channel, c.nombre, c.apellido
            ORDER BY total_tokens DESC
            LIMIT 10`,
           [periodStart, periodEnd],
