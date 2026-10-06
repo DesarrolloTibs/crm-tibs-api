@@ -71,6 +71,41 @@ export class MetaOauthService {
    * Procesa el callback de Meta OAuth2, canjea el código por tokens de página,
    * suscribe los webhooks y persiste la configuración en el esquema del tenant.
    */
+    /**
+   * Verifica si un activo de Meta (Page ID o Instagram Account ID) ya está registrado y activo
+   * en otro tenant distinto al actual.
+   * Regla de negocio: Un activo externo debe pertenecer a un solo tenant a la vez.
+   */
+  async checkAssetConflictInOtherTenants(
+    channel: string,
+    accountId: string,
+    currentTenantSchema: string,
+  ): Promise<{ registered: boolean; otherTenantSchema?: string; otherTenantName?: string } | null> {
+    const dbChannel = channel === 'messenger' ? 'facebook' : channel;
+    const tenants: Array<{ schema_name: string; name: string }> = await this.channelConfigRepo.manager.query(
+      `SELECT schema_name, name FROM public.tenants WHERE is_active = true AND schema_name != $1`,
+      [currentTenantSchema],
+    );
+
+    for (const t of tenants) {
+      try {
+        const query = `SELECT id, name FROM "${t.schema_name}".channel_configs WHERE channel = $1 AND "accountId" = $2 AND "isActive" = true`;
+        const res = await this.channelConfigRepo.manager.query(query, [dbChannel, accountId]);
+        if (res && res.length > 0) {
+          return {
+            registered: true,
+            otherTenantSchema: t.schema_name,
+            otherTenantName: t.name || t.schema_name,
+          };
+        }
+      } catch {
+        // Ignorar esquemas que aún no tengan la tabla provisionada
+      }
+    }
+
+    return null;
+  }
+
   async handleCallback(
     code: string,
     state: string,
@@ -281,6 +316,16 @@ export class MetaOauthService {
           const igId = linkedIg.id;
           const igName = linkedIg.username ? `@${linkedIg.username}` : (linkedIg.name || 'Instagram Business');
 
+          // Validar regla de activo externo único por tenant
+          const igConflict = await this.checkAssetConflictInOtherTenants('instagram', igId, tenantSchema);
+          if (igConflict) {
+            this.logger.warn(`[handleCallback] Conflicto de cuenta Instagram: ${igId} ya está activa en tenant ${igConflict.otherTenantSchema}`);
+            return {
+              success: false,
+              message: `La cuenta de Instagram '${igName}' ya se encuentra vinculada y activa en Billy Sales & Services. Desactívala de la otra empresa antes de vincularla aquí.`,
+            };
+          }
+
           let igConfig = await repo.findOne({
             where: [
               { channel: 'instagram', accountId: igId },
@@ -318,6 +363,16 @@ export class MetaOauthService {
           };
         } else {
           // --- CANAL FACEBOOK EXCLUSIVO ---
+          // Validar regla de activo externo único por tenant
+          const fbConflict = await this.checkAssetConflictInOtherTenants('facebook', pageId, tenantSchema);
+          if (fbConflict) {
+            this.logger.warn(`[handleCallback] Conflicto de página Facebook: ${pageId} ya está activa en tenant ${fbConflict.otherTenantSchema}`);
+            return {
+              success: false,
+              message: `La página de Facebook '${pageName}' ya se encuentra vinculada y activa en Billy Sales & Services. Desactívala de la otra empresa antes de vincularla aquí.`,
+            };
+          }
+
           let fbConfig = await repo.findOne({
             where: [
               { channel: 'facebook', accountId: pageId },

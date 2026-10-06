@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Brackets } from 'typeorm';
@@ -1771,13 +1771,99 @@ export class ConversationsService {
     return result;
   }
 
+    /**
+   * Verifica si un activo externo (accountId o phoneNumberId) ya se encuentra activo en otro tenant.
+   * Regla de negocio: Un activo externo (Page ID de Facebook / WABA Phone Number ID / Instagram Account ID)
+   * debe pertenecer a un solo tenant a la vez.
+   */
+  async checkAssetConflictInOtherTenants(
+    channel: string,
+    criteria: { accountId?: string | null; phoneNumberId?: string | null },
+    currentTenantSchema: string,
+  ): Promise<{ registered: boolean; otherTenantSchema?: string; otherTenantName?: string } | null> {
+    const dbChannel = channel === 'messenger' ? 'facebook' : channel;
+    const tenants: Array<{ schema_name: string; name: string }> = await this.channelConfigRepository.manager.query(
+      `SELECT schema_name, name FROM public.tenants WHERE is_active = true AND schema_name != $1`,
+      [currentTenantSchema],
+    );
+
+    for (const t of tenants) {
+      try {
+        let query = `SELECT id, name FROM "${t.schema_name}".channel_configs WHERE channel = $1 AND "isActive" = true`;
+        const params: any[] = [dbChannel];
+
+        if (criteria.phoneNumberId) {
+          query += ` AND "phoneNumberId" = $2`;
+          params.push(criteria.phoneNumberId);
+        } else if (criteria.accountId) {
+          query += ` AND "accountId" = $2`;
+          params.push(criteria.accountId);
+        } else {
+          continue;
+        }
+
+        const res = await this.channelConfigRepository.manager.query(query, params);
+        if (res && res.length > 0) {
+          return {
+            registered: true,
+            otherTenantSchema: t.schema_name,
+            otherTenantName: t.name || t.schema_name,
+          };
+        }
+      } catch {
+        // Ignorar esquemas sin tabla o inaccesibles
+      }
+    }
+
+    return null;
+  }
+
   async saveChannel(dto: Partial<ChannelConfig>): Promise<ChannelConfig> {
+    const currentSchema = TenantContextService.getTenantSchema() || 'public';
+    const targetChannel = (dto.channel === 'messenger') ? 'facebook' : (dto.channel || 'whatsapp');
+    const targetAccountId = dto.accountId;
+    const targetPhoneId = dto.phoneNumberId;
+
     if (dto.id) {
       const existing = await this.channelConfigRepository.findOne({ where: { id: dto.id } });
       if (!existing) throw new NotFoundException('Canal no encontrado');
+
+      const checkAccountId = targetAccountId !== undefined ? targetAccountId : existing.accountId;
+      const checkPhoneId = targetPhoneId !== undefined ? targetPhoneId : existing.phoneNumberId;
+      const checkChannel = targetChannel || existing.channel;
+      const willBeActive = dto.isActive !== undefined ? dto.isActive : existing.isActive;
+
+      if (willBeActive && (checkAccountId || checkPhoneId)) {
+        const conflict = await this.checkAssetConflictInOtherTenants(
+          checkChannel,
+          { accountId: checkAccountId || undefined, phoneNumberId: checkPhoneId || undefined },
+          currentSchema,
+        );
+        if (conflict) {
+          const identifier = checkPhoneId || checkAccountId;
+          throw new ConflictException(
+            `El activo externo (${identifier}) ya se encuentra vinculado y activo en otra empresa ("${conflict.otherTenantName}"). Un activo externo (Page ID de Facebook / WABA Phone Number ID / Instagram Account ID) debe pertenecer a un solo tenant a la vez. Desactívalo de la otra empresa antes de activarlo aquí.`,
+          );
+        }
+      }
+
       Object.assign(existing, dto);
       return this.channelConfigRepository.save(existing);
     } else {
+      if (dto.isActive !== false && (targetAccountId || targetPhoneId)) {
+        const conflict = await this.checkAssetConflictInOtherTenants(
+          targetChannel,
+          { accountId: targetAccountId, phoneNumberId: targetPhoneId },
+          currentSchema,
+        );
+        if (conflict) {
+          const identifier = targetPhoneId || targetAccountId;
+          throw new ConflictException(
+            `El activo externo (${identifier}) ya se encuentra vinculado y activo en otra empresa ("${conflict.otherTenantName}"). Un activo externo (Page ID de Facebook / WABA Phone Number ID / Instagram Account ID) debe pertenecer a un solo tenant a la vez. Desactívalo de la otra empresa antes de registrarlo aquí.`,
+          );
+        }
+      }
+
       const newConfig = this.channelConfigRepository.create(dto);
       return this.channelConfigRepository.save(newConfig);
     }
