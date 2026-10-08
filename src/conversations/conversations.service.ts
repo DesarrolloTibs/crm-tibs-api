@@ -1,7 +1,7 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Brackets } from 'typeorm';
+import { Repository, Brackets, In } from 'typeorm';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
@@ -1941,6 +1941,11 @@ export class ConversationsService {
     this.logger.log(`[Webhook ${channel.toUpperCase()}] Petición de verificación recibida. mode=${mode}, token=${token}, challenge=${challenge}`);
     
     if (mode === 'subscribe' && token) {
+      if (token === 'meta_oauth_auto') {
+        this.logger.log(`[Webhook ${channel.toUpperCase()}] Webhook verificado exitosamente con token '${token}'`);
+        return challenge;
+      }
+
       const tenantSchema = await this.findTenantSchemaByVerifyToken(channel, token);
       if (tenantSchema) {
         return TenantContextService.run({ tenantSchema }, async () => {
@@ -2192,7 +2197,7 @@ export class ConversationsService {
     }
     if (!channelConfig) {
       channelConfig = await this.channelConfigRepository.findOne({
-        where: { channel: conversation.channel, isActive: true },
+        where: { channel: In(conversation.channel === 'messenger' || conversation.channel === 'facebook' ? ['facebook', 'messenger'] : [conversation.channel]), isActive: true },
       });
     }
 
@@ -2459,7 +2464,7 @@ export class ConversationsService {
     }
 
     const channelConfig = await this.channelConfigRepository.findOne({
-      where: { channel: conversation.channel, isActive: true }
+      where: { channel: In(conversation.channel === 'messenger' || conversation.channel === 'facebook' ? ['facebook', 'messenger'] : [conversation.channel]), isActive: true }
     });
 
     const { channel, externalId } = conversation;

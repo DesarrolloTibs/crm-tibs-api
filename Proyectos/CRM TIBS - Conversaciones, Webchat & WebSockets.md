@@ -141,14 +141,16 @@ Para eliminar la necesidad de configuración manual de credenciales (App ID, Pag
 * **Flujo OAuth2 Centralizado con Aislamiento Multi-Tenant:**
   * `GET /api/conversations/oauth/facebook/auth-url`: Genera la URL oficial de autorización de Meta (`https://www.facebook.com/v19.0/dialog/oauth`) codificando en el parámetro `state` el `tenantSchema`, `userId` y timestamp en Base64.
   * Scopes solicitados: `pages_show_list`, `pages_manage_metadata`, `pages_messaging`, `instagram_basic`, `instagram_manage_messages`, `public_profile`.
-* **Canje y Auto-Suscripción de Webhooks:**
+* **Canje, Auto-Suscripción y Verificación Estándar:**
   * `GET /api/conversations/oauth/facebook/callback`:
     1. Decodifica el `state` y extrae el `tenantSchema`.
     2. Canjea el código de autorización por un token de usuario y luego por un `Long-Lived User Access Token` (60 días).
     3. Consulta `GET /me/accounts` obteniendo las Páginas administradas y sus cuentas de Instagram Business vinculadas (`instagram_business_account`).
     4. Auto-suscribe automáticamente la página seleccionada a los Webhooks de Meta mediante `POST /{page-id}/subscribed_apps?subscribed_fields=messages,messaging_postbacks`.
-    5. Ejecuta la persistencia dentro de `TenantContextService.run({ tenantSchema }, ...)` para registrar o actualizar los registros en `channel_configs` (canal `facebook` y canal `instagram`).
-    6. Responde con `renderPopupResponse`: emite `window.opener.postMessage({ type: 'META_OAUTH_SUCCESS' })` y cierra la ventana emergente automáticamente.
+    5. Usa la verificación por defecto `'meta_oauth_auto'` (`verifyMetaWebhook`) sin requerir variables en `.env`.
+    6. Normaliza las consultas de credenciales de canal en TypeORM (`In(['facebook', 'messenger'])`) para asegurar que el canal `'messenger'` y `'facebook'` utilicen las mismas credenciales activas del tenant, resolviendo envíos de salida en tiempo real.
+    7. Ejecuta la persistencia dentro de `TenantContextService.run({ tenantSchema }, ...)` para registrar o actualizar los registros en `channel_configs` (canal `facebook` y canal `instagram`).
+    8. Responde con `renderPopupResponse`: emite `window.opener.postMessage({ type: 'META_OAUTH_SUCCESS' })` y cierra la ventana emergente automáticamente.
 
 ### 5.7. Capa Semántica: Resolución de Rangos Temporales e Intervalos Dinámicos (`WebchatCubeExecutorService`)
 Para garantizar que las consultas analíticas en lenguaje natural sobre intervalos temporales pasados o futuros no colapsen en un solo día:
@@ -165,11 +167,11 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
 * **Soporte de Placeholders Vacíos y Posicionales:**
   * Detecta y sustituye llaves vacías `{}` generadas por modelos LLM (estilo Python format) con el valor de la medida principal (`Actividades.count`, etc.) o secuencialmente según la lista de columnas.
   * Soporta índices posicionales (`{0}`, `{1}`) y alias semánticos comunes (`{total}`, `{count}`, `{cantidad}`, `{resultado}`, `{valor}`, `{monto}`).
-  * Limpia cualquier llave residual no resuelta (`/\{[a-zA-Z0-9_.]*\}/g`) para evitar que se muestren corchetes `{}` en la interfaz de usuario.
+  * Limpia cualquier llave residual no resuelta (`/\Rule\{[a-zA-Z0-9_.]*\}/g`) para evitar que se muestren corchetes `{}` en la interfaz de usuario.
 
 ### 5.9. Ejecución de Acciones: Agendamiento de Actividades, Días Relativos y Recordatorios (`WebchatActionExecutorService`)
 * **Resolución Temporal Inmune a Substring Matches (`parseNaturalDate`):**
-  * `pasado mañana` se evalúa estrictamente antes que `mañana` para evitar que la coincidencia por subcadena colapse una cita a +1 día en vez de +2 días.
+  * `pasado mañana` se evalúa strictly antes que `mañana` para evitar que la coincidencia por subcadena colapse una cita a +1 día en vez de +2 días.
   * Aislamiento de horas frente a días de mes (`4 de octubre a las 3 pm` no confunde el día `4` con la hora).
   * Aislamiento de textos de recordatorio (`a las 3 pm con recordatorio a la 1 pm` preserva `3 pm` para la actividad y `1 pm` para el recordatorio).
   * Función `buildDateInTz(year, month, day, hour, minute)` inmune a desfases en límites de mes y cambios de horario en `America/Mexico_City`.
@@ -184,4 +186,3 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
 * **Estrategia Resiliente en `ConversationsService`:** Si la consulta directa al PSID no entrega el nombre, el sistema ejecuta de forma automática e inmediata un fallback consultando los participantes de la conversación mediante el endpoint de la Fan Page:
   `GET /v19.0/{page_id}/conversations?user_id={senderId}&fields=participants`
 * **Auto-actualización de Entidades:** Extrae el participante coincidente de la lista (`participant.name`), asigna el nombre real a `conversation.clientName` y actualiza automáticamente el registro `client.nombre` en la base de datos del tenant, garantizando que el contacto deje de mostrarse como *"Usuario de Facebook"*.
-
