@@ -238,11 +238,14 @@ export class RagService implements OnModuleInit {
 
     const connectionString = `postgresql://${dbUser}:${dbPass}@${dbHost}:${dbPort}/${dbName}?options=-c%20search_path%3D${tenantSchema}%2Cpublic`;
 
-
     const store = await PGVectorStore.initialize(embeddings, {
-
       postgresConnectionOptions: {
         connectionString,
+        max: 5,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
       },
       tableName: 'product_knowledge_base',
       columns: {
@@ -253,6 +256,28 @@ export class RagService implements OnModuleInit {
       },
     });
 
+    // 🛡️ Blindaje contra ECONNRESET y fuga de sockets inactivos:
+    // PGVectorStore._initializeClient() reserva un cliente 'this.client' del pool pero nunca lo
+    // libera ni le asocia un manejador de eventos 'error'. Si PostgreSQL o el pooler cierran el socket
+    // por inactividad, Node.js lanza un evento 'error' no capturado (ECONNRESET) que detiene el servidor.
+    const rawStore = store as any;
+    if (rawStore.client) {
+      rawStore.client.on('error', (err: any) => {
+        this.logger.warn(`PGVectorStore Client error capturado [${tenantSchema}]: ${err?.message || err}`);
+      });
+      try {
+        rawStore.client.release();
+        rawStore.client = undefined;
+      } catch (err: any) {
+        this.logger.warn(`No se pudo liberar el cliente reservado de PGVectorStore [${tenantSchema}]: ${err?.message || err}`);
+      }
+    }
+
+    if (rawStore.pool) {
+      rawStore.pool.on('error', (err: any) => {
+        this.logger.warn(`PGVectorStore Pool error capturado [${tenantSchema}]: ${err?.message || err}`);
+      });
+    }
 
     this.vectorStoresByTenant.set(tenantSchema, store);
     this.logger.log(`Base de datos vectorial pgvector inicializada con éxito para el esquema ${tenantSchema}.`);
@@ -312,8 +337,16 @@ export class RagService implements OnModuleInit {
       },
     }));
 
-    // 4. Guardar embeddings en pgvector
-    await store.addDocuments(documents);
+    // 4. Guardar embeddings en pgvector (con reintento automático si la conexión se reinició)
+    try {
+      await store.addDocuments(documents);
+    } catch (ingestErr: any) {
+      this.logger.warn(`Error al guardar embeddings en PGVector (${ingestErr?.message}). Reintentando con nueva conexión...`);
+      const currentSchema = activeSchema || 'public';
+      this.vectorStoresByTenant.delete(currentSchema);
+      const freshStore = await this.initializeVectorStore();
+      await freshStore.addDocuments(documents);
+    }
     this.logger.log(`Ingestados con éxito ${documents.length} fragmentos de '${fileName}' para el producto '${productKey}'.`);
 
     // Registrar consumo de tokens de embedding para tenants
@@ -360,12 +393,25 @@ export class RagService implements OnModuleInit {
     }
 
 
-    // Ejecutar búsqueda por similitud con filtro por metadata si aplica
-    const results = await store.similaritySearch(
-      query,
-      limit,
-      productKey ? { product: productKey } : undefined
-    );
+    // Ejecutar búsqueda por similitud con filtro por metadata si aplica (con autoreconexión)
+    let results: any[];
+    try {
+      results = await store.similaritySearch(
+        query,
+        limit,
+        productKey ? { product: productKey } : undefined
+      );
+    } catch (searchErr: any) {
+      this.logger.warn(`Error en similaritySearch (${searchErr?.message}). Reintentando con nueva conexión...`);
+      const currentSchema = activeSchema || 'public';
+      this.vectorStoresByTenant.delete(currentSchema);
+      const freshStore = await this.initializeVectorStore();
+      results = await freshStore.similaritySearch(
+        query,
+        limit,
+        productKey ? { product: productKey } : undefined
+      );
+    }
 
     // Registrar consumo de tokens del query para tenants
     if (activeSchema && activeSchema !== 'public') {

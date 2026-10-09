@@ -79,8 +79,17 @@ import { CalendarIntegrationsModule } from './calendar-integrations/calendar-int
         autoLoadEntities: true,
         // synchronize activado de forma forzada a petición del usuario (sin migraciones)
         synchronize: true,
+        poolErrorHandler: (err: any) => {
+          const poolLogger = new Logger('TypeOrmPool');
+          poolLogger.warn(`PostgreSQL Pool interceptó un error de conexión: ${err?.message || err}`);
+        },
         extra: {
           timezone: configService.get<string>('NOTIFICATION_TIMEZONE') || 'America/Mexico_City',
+          max: 20,
+          idleTimeoutMillis: 30000,
+          connectionTimeoutMillis: 10000,
+          keepAlive: true,
+          keepAliveInitialDelayMillis: 10000,
         },
       }),
       inject: [ConfigService],

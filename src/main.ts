@@ -18,6 +18,23 @@ async function bootstrap() {
   const appLogger = new NestAppLogger('Bootstrap');
   const logger = appLogger;
 
+  // ── Blindaje del proceso Node.js contra eventos 'error' no capturados (ECONNRESET / socket drop) ──
+  process.on('uncaughtException', (err: any) => {
+    if (err?.code === 'ECONNRESET' || err?.code === 'EPIPE' || err?.message?.includes('ECONNRESET')) {
+      logger.warn(`[Network/Database] Socket reseteado (${err.code || 'ECONNRESET'}) interceptado para evitar caída del servidor: ${err.message}`);
+      return;
+    }
+    logger.error(`Excepción no capturada crítica (uncaughtException): ${err?.message || err}`, err?.stack);
+  });
+
+  process.on('unhandledRejection', (reason: any) => {
+    if (reason?.code === 'ECONNRESET' || reason?.message?.includes('ECONNRESET')) {
+      logger.warn(`[Network/Database] Promesa rechazada interceptada (${reason?.code || 'ECONNRESET'}): ${reason?.message || reason}`);
+      return;
+    }
+    logger.error('Promesa rechazada no controlada (unhandledRejection):', reason);
+  });
+
   // Guardia de seguridad: bloquear inicio si synchronize:true en producción
   if (process.env.NODE_ENV === 'production' && process.env.DB_SYNCHRONIZE === 'true') {
     logger.error('FATAL: DB_SYNCHRONIZE=true está prohibido en NODE_ENV=production. Abortando inicio.');
