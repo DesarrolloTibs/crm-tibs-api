@@ -77,6 +77,10 @@ En lugar de depender de prompts estáticos, el agente opera mediante un grafo de
      * **OpenAI:** `text-embedding-3-small` (vía `@langchain/openai`).
      * **IBM Watsonx:** Adaptador nativo `CustomWatsonxEmbeddings` que negocia tokens OAuth IAM (`https://iam.cloud.ibm.com/identity/token`) y genera vectores con `ibm/slate-125m-english-rtrvr`.
 5. **Persistencia Vectorial:** Los vectores y metadatos se almacenan en la tabla vectorial de PostgreSQL mediante `PGVectorStore`.
+   * **Blindaje contra `ECONNRESET` & Fugas de Conexión en `PGVectorStore`:**
+     - `PGVectorStore.initialize()` reserva un cliente persistente en memoria (`this.client = await this.pool.connect()`) que por defecto carece de listener de error y nunca es liberado. Al expirar el timeout TCP de PostgreSQL/Supabase por inactividad, ese socket inactivo emitía un evento no controlado `Unhandled 'error' event (ECONNRESET)` que derribaba el servidor.
+     - `RagService` ahora libera inmediatamente dicho cliente (`store.client.release()`), asocia listeners de evento `'error'` tanto al cliente como al pool de conexiones, habilita `keepAlive: true` (`keepAliveInitialDelayMillis: 10000`, `idleTimeoutMillis: 30000`) y añade reintento automático con reinicialización de pool en `searchSimilar` e `ingestPdf`.
+     - De forma complementaria, `AppModule` (TypeORM) y `main.ts` cuentan con blindaje de pool (`poolErrorHandler`, TCP KeepAlive) y proceso (`uncaughtException` e `unhandledRejection` para `ECONNRESET`/`EPIPE`) para garantizar operación ininterrumpida.
 
 ### 3.2. Consulta Semántica (`POST /api/rag/query`)
 * Ante una duda del cliente, el servicio convierte la pregunta en vector y ejecuta una búsqueda por similitud de coseno (`similaritySearchWithScore`), inyectando los fragmentos documentales más relevantes en el contexto del prompt del agente.
