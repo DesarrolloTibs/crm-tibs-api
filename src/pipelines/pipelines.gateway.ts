@@ -4,6 +4,9 @@ import {
   OnGatewayInit,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  SubscribeMessage,
+  MessageBody,
+  ConnectedSocket,
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
@@ -46,13 +49,25 @@ export class PipelinesGateway implements OnGatewayInit, OnGatewayConnection, OnG
       if (!secret) throw new Error('JWT_SECRET no configurado');
 
       const decoded: any = jwt.verify(token, secret);
-      const tenantSchema = decoded.tenantSchema || decoded.tenant || 'public';
+      const isSuperAdmin = decoded.role === 'superadmin';
+      const tokenTenant = decoded.tenantSchema || decoded.tenant || 'public';
+      const requestedTenant =
+        (client.handshake.auth?.tenantSchema as string) ||
+        (client.handshake.query?.tenantSchema as string) ||
+        (client.handshake.headers?.['x-tenant-schema'] as string) ||
+        tokenTenant;
+
+      // Si es superadmin o el token es de public, permitir escuchar el tenant solicitado
+      const tenantSchema = (isSuperAdmin || tokenTenant === 'public') ? requestedTenant : tokenTenant;
       const userId = decoded.sub || decoded.userId || decoded.id;
 
       (client as any).tenantSchema = tenantSchema;
       (client as any).userId = userId;
 
       client.join(`tenant:${tenantSchema}`);
+      if (tokenTenant !== tenantSchema) {
+        client.join(`tenant:${tokenTenant}`);
+      }
       if (userId) client.join(`user:${userId}`);
 
       this.logger.log(`Client ${client.id} conectado a Pipelines WS (tenant: ${tenantSchema}, user: ${userId})`);
@@ -64,6 +79,35 @@ export class PipelinesGateway implements OnGatewayInit, OnGatewayConnection, OnG
 
   handleDisconnect(client: Socket) {
     this.logger.debug(`Client disconnected from Pipelines WebSocket: ${client.id}`);
+  }
+
+  @SubscribeMessage('set_tenant')
+  handleSetTenant(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { tenantSchema: string },
+  ) {
+    if (data?.tenantSchema) {
+      const current = (client as any).tenantSchema;
+      if (current && current !== data.tenantSchema) {
+        client.leave(`tenant:${current}`);
+      }
+      (client as any).tenantSchema = data.tenantSchema;
+      client.join(`tenant:${data.tenantSchema}`);
+      this.logger.log(`Client ${client.id} cambió de tenant a tenant:${data.tenantSchema}`);
+      return { status: 'ok', room: `tenant:${data.tenantSchema}` };
+    }
+  }
+
+  @SubscribeMessage('join_tenant')
+  handleJoinTenant(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { tenantSchema: string },
+  ) {
+    if (data?.tenantSchema) {
+      client.join(`tenant:${data.tenantSchema}`);
+      this.logger.log(`Client ${client.id} joined room tenant:${data.tenantSchema}`);
+      return { status: 'ok', room: `tenant:${data.tenantSchema}` };
+    }
   }
 
   private getTargetRoom(tenantSchema?: string): string | null {

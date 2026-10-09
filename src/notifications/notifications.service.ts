@@ -24,8 +24,12 @@ export class NotificationsService {
     private readonly configService: ConfigService,
   ) {}
 
+  private static checkedSchemas = new Set<string>();
+
   private async ensureTableExists() {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    if (NotificationsService.checkedSchemas.has(tenantSchema)) return;
+
     try {
       await this.notificationRepository.query(`
         CREATE TABLE IF NOT EXISTS "${tenantSchema}".notifications (
@@ -42,6 +46,7 @@ export class NotificationsService {
 
         ALTER TABLE "${tenantSchema}".notifications DROP CONSTRAINT IF EXISTS notifications_user_id_fkey;
       `);
+      NotificationsService.checkedSchemas.add(tenantSchema);
     } catch (e) {}
   }
 
@@ -88,44 +93,46 @@ export class NotificationsService {
       this.logger.error(`Error emitiendo websocket para ejecutivo ${userId}:`, wsError);
     }
 
-    // Envío por correo al ejecutivo asignado o SuperAdmin
+    // Envío por correo al ejecutivo asignado o SuperAdmin en segundo plano (sin bloquear la respuesta HTTP)
     if (sendEmail) {
-      try {
-        let user = await this.userRepository.findOne({ where: { id: userId } }).catch(() => null);
-        if (!user) {
-          try {
-            const pubUsers = await this.notificationRepository.manager.query(
-              `SELECT id, username, email, "isActive" FROM public.users WHERE id::text = $1 OR LOWER(username) = LOWER($1)`,
-              [userId]
-            );
-            if (pubUsers && pubUsers.length > 0) user = pubUsers[0] as User;
-          } catch (e) {}
-        }
-
-        if (user && user.email && (user.isActive ?? true)) {
-          const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
-          let actionUrl: string | undefined = undefined;
-
-          if (saved.relatedId && saved.type) {
-            if (saved.type.includes('opportunity') || saved.type.includes('activity') || saved.type.includes('semaphore')) {
-              actionUrl = `${frontendUrl}/pipeline?opportunityId=${saved.relatedId}`;
-            } else if (saved.type.includes('ticket')) {
-              actionUrl = `${frontendUrl}/helpdesk?ticketId=${saved.relatedId}`;
-            }
+      setImmediate(async () => {
+        try {
+          let user = await this.userRepository.findOne({ where: { id: userId } }).catch(() => null);
+          if (!user) {
+            try {
+              const pubUsers = await this.notificationRepository.manager.query(
+                `SELECT id, username, email, "isActive" FROM public.users WHERE id::text = $1 OR LOWER(username) = LOWER($1)`,
+                [userId]
+              );
+              if (pubUsers && pubUsers.length > 0) user = pubUsers[0] as User;
+            } catch (e) {}
           }
 
-          await this.mailService.sendGeneralNotificationEmail(
-            user.email,
-            title,
-            message,
-            actionUrl,
-            saved.type,
-            user.username,
-          );
+          if (user && user.email && (user.isActive ?? true)) {
+            const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
+            let actionUrl: string | undefined = undefined;
+
+            if (saved.relatedId && saved.type) {
+              if (saved.type.includes('opportunity') || saved.type.includes('activity') || saved.type.includes('semaphore')) {
+                actionUrl = `${frontendUrl}/pipeline?opportunityId=${saved.relatedId}`;
+              } else if (saved.type.includes('ticket')) {
+                actionUrl = `${frontendUrl}/helpdesk?ticketId=${saved.relatedId}`;
+              }
+            }
+
+            await this.mailService.sendGeneralNotificationEmail(
+              user.email,
+              title,
+              message,
+              actionUrl,
+              saved.type,
+              user.username,
+            );
+          }
+        } catch (mailError) {
+          this.logger.error(`Error enviando correo de notificación a ejecutivo ${userId}:`, mailError);
         }
-      } catch (mailError) {
-        this.logger.error(`Error enviando correo de notificación a ejecutivo ${userId}:`, mailError);
-      }
+      });
     }
 
     return saved;

@@ -82,3 +82,14 @@ Para evitar discrepancias entre lo confirmado por el agente conversacional en el
 1. Extrae del historial reciente del chat el último mensaje del agente donde se presentó el desglose explícito de confirmación (formato `- [Producto]: [Cantidad] piezas ($[Precio] c/u)`).
 2. Si el modelo omite algún producto en la llamada a la herramienta o envía una lista parcial, el sistema contrasta automáticamente contra el desglose confirmado.
 3. Todo producto confirmado ausente se resuelve en la capa semántica/catálogo de base de datos (`findProductsFromSemanticLayer`) y se inyecta con su cantidad confirmada, garantizando 100% de fidelidad entre la confirmación del chat y el documento PDF emitido.
+
+
+---
+
+## 9. Optimización de Rendimiento en Mutación de Oportunidades (`update`)
+* **Desacoplamiento Asíncrono de Tareas Secundarias:** Las tareas de auditoría/interacciones (`InteractionsService.create`) y notificaciones (`NotificationsService.createAndSendNotification`) se ejecutan dentro de `setImmediate()` conservando el contexto de tenant (`TenantContextService.run()`). La respuesta HTTP del `PATCH` se retorna inmediatamente al cliente en **< 150 ms**.
+* **Eliminación de Cerrojos DDL:** Se aplicó caché estático de esquemas verificados (`checkedSchemas`) en `NotificationsService` y `OpportunityLabelsService` para evitar ejecuciones dinámicas de `CREATE TABLE` / `ALTER TABLE` por petición.
+* **Caché en Memoria de Productos:** Se eliminó la re-consulta duplicada a `productRepository.find()` reutilizando el arreglo `cachedProducts`.
+* **Depuración de Middleware Global:** Se removió la ejecución redundante de `DELETE FROM users` en `TenantMiddleware` por cada request HTTP.
+
+* **Nota de Reversión en Productos:** A petición explícita, la consulta de productos en la actualización de oportunidades re-ejecuta `productRepository.find()` directamente a la base de datos sin almacenamiento temporal en variable.

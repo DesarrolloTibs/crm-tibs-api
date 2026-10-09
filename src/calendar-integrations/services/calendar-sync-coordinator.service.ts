@@ -260,8 +260,32 @@ export class CalendarSyncCoordinatorService {
             continue;
           }
 
-          // Extraer campos del evento externo
-          const summary = item.summary || item.subject || 'Actividad Sincronizada';
+          // Extraer campos del evento externo de manera inteligente (Google: summary, Outlook: subject/bodyPreview)
+          let rawSummary = (item.summary || item.subject || '').trim();
+          
+          if (!rawSummary && item.bodyPreview) {
+            const firstLine = String(item.bodyPreview).split('\n')[0].replace(/<[^>]+>/g, '').trim();
+            if (firstLine.length > 0) {
+              rawSummary = firstLine.length > 60 ? `${firstLine.substring(0, 57)}...` : firstLine;
+            }
+          }
+
+          if (!rawSummary) {
+            const sensitivity = String(item.sensitivity || item.visibility || '').toLowerCase();
+            const showAs = String(item.showAs || '').toLowerCase();
+
+            if (sensitivity === 'private' || sensitivity === 'confidential') {
+              rawSummary = '[Evento Privado]';
+            } else if (showAs === 'oof' || showAs === 'workingelsewhere') {
+              rawSummary = '[Fuera de la Oficina]';
+            } else if (showAs === 'busy') {
+              rawSummary = '[Cita / Horario Reservado]';
+            } else {
+              rawSummary = 'Actividad Sincronizada';
+            }
+          }
+
+          const summary = rawSummary;
           const description = item.description || (item.body ? item.body.content : '') || '';
           
           let eventDate: Date | null = null;

@@ -96,11 +96,6 @@ export class TenantMiddleware implements NestMiddleware {
           `La organización '${tenantSchema}' se encuentra INACTIVA o su suscripción ha expirado.`,
         );
       }
-
-      // Asegurar que el esquema del tenant NO almacene usuarios SuperAdmin (los SuperAdmin residen exclusivamente en public.users)
-      await this.dataSource.query(`
-        DELETE FROM "${tenantSchema}".users WHERE LOWER(role::text) = 'superadmin';
-      `).catch(() => null);
     }
 
     // Ejecutar la petición dentro del contexto aislado de AsyncLocalStorage

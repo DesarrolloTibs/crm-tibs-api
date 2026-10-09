@@ -26,6 +26,7 @@ import { Stage } from '../stages/entities/stage.entity';
 import { Product } from '../products/entities/product.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PipelinesGateway } from '../pipelines/pipelines.gateway';
+import { TenantContextService } from 'src/tenancy/tenant-context.service';
 
 @Injectable()
 export class OpportunitiesService {
@@ -652,66 +653,74 @@ export class OpportunitiesService {
 
     // Registrar cambios e interacciones en segundo plano para no bloquear la respuesta HTTP (TTFB fast)
     if (changes.length > 0) {
-      const comment = `El usuario ${username} modificó la oportunidad:\n${changes.join('\n')}`;
-      this.interactionsService.create({
-        opportunity_id: id,
-        comment,
-      }).catch(err => this.logger.error(`Error al registrar interacción en segundo plano: ${err.message}`));
+      const currentStore = TenantContextService.getStore();
+      const tenantSchema = currentStore?.tenantSchema || 'public';
+      const currentUserId = currentStore?.userId;
+      const currentRole = currentStore?.role;
 
-      // Solo notifica al ejecutivo asignado. Si la oportunidad no tiene ejecutivo, no notifica a nadie.
-      if (savedOpportunity.ejecutivo_id) {
-        const notificationChanges = changes.map(c => c.replace(/\s*->\s*/, ' a ').replace(/^- /, '• '));
-        const changesText = notificationChanges.join('\n');
-        const detailMessage = `El usuario ${username} modificó la oportunidad "${savedOpportunity.nombre_proyecto}":\n${changesText}`;
+      setImmediate(() => {
+        TenantContextService.run({ tenantSchema, userId: currentUserId, role: currentRole }, async () => {
+          try {
+            const comment = `El usuario ${username} modificó la oportunidad:\n${changes.join('\n')}`;
+            await this.interactionsService.create({
+              opportunity_id: id,
+              comment,
+            });
 
-        if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
-          const assignMessage = `Te han asignado la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>. El usuario <strong>${username}</strong> modificó la oportunidad ${savedOpportunity.nombre_proyecto}.<br/><br/>Ejecutivo: de <strong>${oldEjecutivoName} -> ${newEjecutivoName}</strong>.`;
+            if (savedOpportunity.ejecutivo_id) {
+              if (updateOpportunityDto.ejecutivo_id !== undefined && updateOpportunityDto.ejecutivo_id !== existingOpportunity.ejecutivo_id) {
+                const assignMessage = `Te han asignado la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>. El usuario <strong>${username}</strong> modificó la oportunidad ${savedOpportunity.nombre_proyecto}.<br/><br/>Ejecutivo: de <strong>${oldEjecutivoName} -> ${newEjecutivoName}</strong>.`;
 
-          this.notificationsService.createAndSendNotification(
-            savedOpportunity.ejecutivo_id,
-            'Asignación de Oportunidad',
-            assignMessage,
-            'opportunity_assigned',
-            savedOpportunity.id,
-          ).catch(err => this.logger.error(`Error al enviar notificación de asignación: ${err.message}`));
-        } else if (updateOpportunityDto.stage_id && updateOpportunityDto.stage_id !== originalStageId) {
-          const newStageName = selectedStage ? selectedStage.strname : 'N/A';
-          const moveMessage = `El usuario <strong>${username}</strong> realizó una actualización en la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>Etapa: de <strong>${originalStageName} -> ${newStageName}</strong>.<br/><br/>Ingresa a la plataforma para ver el detalle del movimiento.`;
+                await this.notificationsService.createAndSendNotification(
+                  savedOpportunity.ejecutivo_id,
+                  'Asignación de Oportunidad',
+                  assignMessage,
+                  'opportunity_assigned',
+                  savedOpportunity.id,
+                );
+              } else if (updateOpportunityDto.stage_id && updateOpportunityDto.stage_id !== originalStageId) {
+                const newStageName = selectedStage ? selectedStage.strname : 'N/A';
+                const moveMessage = `El usuario <strong>${username}</strong> realizó una actualización en la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>Etapa: de <strong>${originalStageName} -> ${newStageName}</strong>.<br/><br/>Ingresa a la plataforma para ver el detalle del movimiento.`;
 
-          this.notificationsService.createAndSendNotification(
-            savedOpportunity.ejecutivo_id,
-            'Movimiento de Oportunidad',
-            moveMessage,
-            'opportunity_moved',
-            savedOpportunity.id,
-          ).catch(err => this.logger.error(`Error al enviar notificación de movimiento: ${err.message}`));
-        } else {
-          const formattedChanges = changes.map(c => {
-            let cleaned = c.replace(/^- /, '');
-            const parts = cleaned.split(/\s*->\s*/);
-            if (parts.length === 2) {
-              const colonIndex = parts[0].indexOf(':');
-              if (colonIndex !== -1) {
-                const label = parts[0].substring(0, colonIndex).trim();
-                const originalVal = parts[0].substring(colonIndex + 1).replace(/"/g, '').trim();
-                const newVal = parts[1].replace(/"/g, '').trim();
-                return `${label}: de <strong>${originalVal} -> ${newVal}</strong>.`;
+                await this.notificationsService.createAndSendNotification(
+                  savedOpportunity.ejecutivo_id,
+                  'Movimiento de Oportunidad',
+                  moveMessage,
+                  'opportunity_moved',
+                  savedOpportunity.id,
+                );
+              } else {
+                const formattedChanges = changes.map(c => {
+                  let cleaned = c.replace(/^- /, '');
+                  const parts = cleaned.split(/\s*->\s*/);
+                  if (parts.length === 2) {
+                    const colonIndex = parts[0].indexOf(':');
+                    if (colonIndex !== -1) {
+                      const label = parts[0].substring(0, colonIndex).trim();
+                      const originalVal = parts[0].substring(colonIndex + 1).replace(/"/g, '').trim();
+                      const newVal = parts[1].replace(/"/g, '').trim();
+                      return `${label}: de <strong>${originalVal} -> ${newVal}</strong>.`;
+                    }
+                  }
+                  return cleaned;
+                }).join('<br/>');
+
+                const updateMessage = `El usuario <strong>${username}</strong> realizó una actualización en la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>${formattedChanges}<br/><br/>Ingresa a la plataforma para revisar los cambios y dar el seguimiento correspondiente, si es necesario.`;
+
+                await this.notificationsService.createAndSendNotification(
+                  savedOpportunity.ejecutivo_id,
+                  'Oportunidad Actualizada',
+                  updateMessage,
+                  'opportunity_updated',
+                  savedOpportunity.id,
+                );
               }
             }
-            return cleaned;
-          }).join('<br/>');
-
-          const updateMessage = `El usuario <strong>${username}</strong> realizó una actualización en la oportunidad <strong>${savedOpportunity.nombre_proyecto}</strong>.<br/><br/><strong>Cambio realizado:</strong><br/><br/>${formattedChanges}<br/><br/>Ingresa a la plataforma para revisar los cambios y dar el seguimiento correspondiente, si es necesario.`;
-
-          this.notificationsService.createAndSendNotification(
-            savedOpportunity.ejecutivo_id,
-            'Oportunidad Actualizada',
-            updateMessage,
-            'opportunity_updated',
-            savedOpportunity.id,
-          ).catch(err => this.logger.error(`Error al enviar notificación de actualización: ${err.message}`));
-        }
-      }
+          } catch (err: any) {
+            this.logger.error(`Error procesando notificaciones e interacciones en segundo plano: ${err.message}`);
+          }
+        });
+      });
     }
 
     const fullOpportunity = await this.findOne(savedOpportunity.id);

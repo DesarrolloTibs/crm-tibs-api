@@ -13,8 +13,12 @@ export class OpportunityLabelsService implements OnModuleInit {
     private readonly labelRepository: Repository<OpportunityLabel>,
   ) {}
 
+  private static checkedSchemas = new Set<string>();
+
   private async ensureTableExists() {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    if (OpportunityLabelsService.checkedSchemas.has(tenantSchema)) return;
+
     try {
       await this.labelRepository.manager.query(`
         CREATE TABLE IF NOT EXISTS "${tenantSchema}".tbloportunitylabels (
@@ -44,6 +48,7 @@ export class OpportunityLabelsService implements OnModuleInit {
         SELECT 'c6d3df39-53e7-40b9-8e2b-f1de16b5394f', 'Licenciamiento', 'licenciamiento', true
         WHERE NOT EXISTS (SELECT 1 FROM "${tenantSchema}".tbloportunitylabels WHERE field_key = 'licenciamiento');
       `);
+      OpportunityLabelsService.checkedSchemas.add(tenantSchema);
     } catch (e) {}
   }
 
