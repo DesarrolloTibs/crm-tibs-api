@@ -73,12 +73,16 @@ Cada plan define:
 
 ### 3.2. Medición y Validación de Consumo (`SubscriptionValidatorService` y `TenantsService`)
 * Cada inferencia realizada por el agente de IA o el procesador RAG consulta el consumo acumulado del tenant en el período activo $[T_{\text{inicio}}, T_{\text{corte}}[$.
-* Si el consumo acumulado supera `tokens_limit`:
-  * Si `allow_extra === true`: Se permite la ejecución de sobreconsumo sujeto a un **Hard Cap del 100% adicional** ($2 \times \text{tokens\_limit}$).
-    * Si $\text{consumo} \le 2 \times \text{tokens\_limit}$: Permite la ejecución y registra la transacción con `is_extra = true` en `transaction_history`.
-    * Si $\text{consumo} > 2 \times \text{tokens\_limit}$: Bloquea con `HttpException(402, EXTRA_TOKENS_LIMIT_EXCEEDED)`.
-  * Si `allow_extra === false`: Se bloquea la ejecución inmediatamente con `HttpException(402, TOKENS_LIMIT_EXCEEDED)`.
-    * **Política de Absorción por Cortesía Técnica e Inmutabilidad:** El desborde producido por la última llamada aprobada del plan base se cataloga como cortesía técnica absorbida por el sistema (`tokens_overage_absorbed = baseTotal - tokensLimit`). Esta cortesía es **inmutable y permanente**: si el cliente activa el consumo extra (`allow_extra = true`) con posterioridad, la cortesía previa NO se le convierte en consumo extra cobrable; su consumo extra arranca limpiamente en 0 (`tokens_extra_used = extraTotal` contabilizando exclusivamente transacciones con `is_extra = true`).
+* **Validación de Capacidad Base:**
+  * Si no existe desborde previo (`baseCourtesy === 0`) y el consumo base no ha alcanzado ni rebasado la cuota contratada (`baseTotal < tokensLimit`), la petición se procesa en el plan base (`is_extra: false`).
+* **Validación de Capacidad Extra (`allow_extra === true`):**
+  * Sujeto a un **Hard Cap del 100% adicional** ($2 \times \text{tokens\_limit}$).
+  * **Regla de Bloqueo Estricto:** La cuota extra solo admite llamadas si no existe un desborde previo (`extraCourtesy === 0`) y el acumulado extra no ha alcanzado el 100% adicional (`extraTotal < maxExtraTokens`).
+  * Si $\text{extraTotal} \ge \text{maxExtraTokens}$ o $\text{extraCourtesy} > 0$: Se bloquea de forma inmediata e incondicional con `HttpException(402, EXTRA_TOKENS_LIMIT_EXCEEDED)`. Esto previene que una vez agotado el 100% del margen extra se sigan aprobando llamadas que filtren tokens hacia cortesía técnica.
+* **Política de Absorción por Cortesía Técnica e Inmutabilidad:**
+  * El desborde producido exclusivamente por la **última llamada aprobada** (sea del plan base o del margen extra) se cataloga como cortesía técnica absorbida por el sistema (`tokens_overage_absorbed = baseCourtesy + extraCourtesy`).
+  * Esta cortesía es **inmutable y permanente**: si el cliente activa el consumo extra (`allow_extra = true`) con posterioridad, la cortesía base previa NO se convierte en consumo extra cobrable; su consumo extra arranca limpiamente en 0 (`tokens_extra_used = extraTotal` contabilizando exclusivamente transacciones con `is_extra = true`).
+  * Al llegar al 100% de consumo extra, **no se generan más tokens de cortesía**, bloqueando tajantemente cualquier petición adicional de IA.
 * **Supervisión y Auditoría para SuperAdmin:**
   * `GET /api/tenants/courtesy-overages`: Reporte global consolidado de todas las organizaciones con el total de tokens de cortesía absorbidos (`total_tokens_absorbed`) y la lista de tenants en desborde.
   * `GET /api/tenants/:id/consumption`: Detalle atómico del tenant exponiendo `total_tokens_consumed`, `tokens_overage_absorbed` y `has_courtesy_overage`.

@@ -11,7 +11,7 @@ export class WebchatPromptBuilderService {
   buildRouterPrompt(userId: string, userRole: string, username: string): string {
     const { roleDescription, fechaHoy, todayISO, horaActual, timezone } = this.getUserContext(userId, userRole, username);
 
-    return `Eres el Agente Orquestador y Clasificador de Inteligencia del CRM. Analiza la consulta del usuario, clasifica intención/dominio o estructura la acción solicitada.
+    return `Eres el Agente Orquestador y Clasificador de Inteligencia del CRM. Analiza la consulta, clasifica intención/dominio o estructura la acción solicitada.
 
 [USUARIO ACTUAL]
 Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO}) ${horaActual} (${timezone})
@@ -33,8 +33,9 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 2. Si es "CONVERSATIONAL", usa intent/domain "CONVERSATIONAL" y "responseTemplate".
 3. Si es "ACTION_EXECUTION", usa intent/domain "ACTION_EXECUTION" y genera "actionPlan":
    { "action": "createOpportunity" | "modifyOpportunity" | "createActivity" | "modifyActivity" | "createTicket", "parameters": { ... } }
-   * En "createActivity": extrae "activity" (detalle), "tipoActividad" (ej. "Demostración", "Reunión", "Llamada"), "date" (fecha/hora), "cliente", "empresa" y "recordatorio" (hora ej. "1 pm", "2 horas antes", "misma hora" o true).
-   * En "modifyOpportunity": extrae "nombreProyecto" (u "oportunidad"), "etapa" (si solicitan mover o cambiar etapa, ej. "Calificado", "Propuesta", "Negociación", "Cierre Exitoso", "Ganada"), "cliente", "montoLicenciamiento", "montoServicios", "nuevoNombre".
+   * "createActivity": "activity", "tipoActividad" ("Llamada", "Reunión", "Demostración"), "fecha" (YYYY-MM-DD; si indican día numérico como 12 de Octubre, usa el día exacto YYYY-MM-12), "hora" (HH:mm, default "10:00"), "cliente", "empresa", "recordatorio" (hora ej. "13:00", bool o texto).
+   * "modifyOpportunity": "nombreProyecto", "etapa" ("Calificado", "Propuesta", "Negociación", "Ganada"), "cliente", "montoLicenciamiento", "montoServicios".
+   * "modifyActivity": "targetTime"/"targetDate" (original a buscar), "newTime"/"newDate" (nueva hora/fecha), "activity" (nuevo nombre).
 4. Si piden ver gráfica/dashboard, incluye "dashboardRedirect": { "tab": "commercial" | "support", "executiveId": "${userId}" }.
 
 [FORMATO JSON]
@@ -53,9 +54,8 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 - "crea oportunidad Bimbo 50000 MXN desarrollo" → {"thought": "Crear opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createOpportunity", "parameters": {"nombreProyecto": "Bimbo", "monto": 50000, "moneda": "MXN", "lineaNegocio": "Desarrollo"}}}
 - "a oportunidad prueba agrega 5000 licenciamiento" → {"thought": "Modificar opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "prueba", "montoLicenciamiento": 5000}}}
 - "cotizacion red magic de pedro perez muevela a calificado" → {"thought": "Mover opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "Cotización Red Magic", "cliente": "Pedro Pérez", "etapa": "Calificado"}}}
-- "muevela a calificado" → {"thought": "Mover opp previa", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"etapa": "Calificado"}}}
-- "crea demostracion con Andrea de Constructora Pacifico pasado mañana a las 3 pm con recordatorio a la 1 pm" → {"thought": "Crear demo", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Demostración con Andrea", "tipoActividad": "Demostración", "date": "pasado mañana a las 3 pm", "cliente": "Andrea", "empresa": "Constructora Pacifico", "recordatorio": "1 pm"}}}
-- "reprograma reunión de las 3 para mañana 5pm" → {"thought": "Modificar act", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetDate": "las 3", "newDate": "mañana a las 5pm"}}}
+- "crear recordatorio para llamar a javier flores el lunes 12 Octubre a las 10 am" → {"thought": "Crear llamada", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamar a Javier Flores", "tipoActividad": "Llamada", "fecha": "2026-10-12", "hora": "10:00", "cliente": "Javier Flores", "recordatorio": true}}}
+- "reprograma reunión de las 3 para mañana 5pm" → {"thought": "Modificar act", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetTime": "15:00", "newTime": "17:00", "newDate": "mañana"}}}
 - "levanta ticket por caída de servidor" → {"thought": "Crear ticket", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createTicket", "parameters": {"title": "Caída de servidor", "priority": 3}}}
 - "cuanto he vendido este mes" → {"thought": "Ventas", "intent": "ANALYTICAL", "domain": "OPORTUNIDADES", "actionPlan": null}`;
   }

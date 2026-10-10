@@ -122,7 +122,16 @@ export class SubscriptionValidatorService implements OnModuleInit {
     periodStart: Date, 
     periodEnd: Date,
     tokensLimit: number
-  ): Promise<{ tokensUsed: number; tokensExtraUsed: number; tokensCourtesyUsed: number; totalAccumulated: number }> {
+  ): Promise<{ 
+    tokensUsed: number; 
+    tokensExtraUsed: number; 
+    tokensCourtesyUsed: number; 
+    totalAccumulated: number;
+    baseTotal: number;
+    extraTotal: number;
+    baseCourtesy: number;
+    extraCourtesy: number;
+  }> {
     try {
       const result = await this.dataSource.query(
         `SELECT 
@@ -140,23 +149,50 @@ export class SubscriptionValidatorService implements OnModuleInit {
       const totalAccumulated = result[0]?.total_accumulated ? parseInt(result[0].total_accumulated, 10) : (baseTotal + extraTotal);
 
       if (tokensLimit <= 0) {
-        return { tokensUsed: baseTotal, tokensExtraUsed: extraTotal, tokensCourtesyUsed: 0, totalAccumulated };
+        return { 
+          tokensUsed: baseTotal, 
+          tokensExtraUsed: extraTotal, 
+          tokensCourtesyUsed: 0, 
+          totalAccumulated,
+          baseTotal,
+          extraTotal,
+          baseCourtesy: 0,
+          extraCourtesy: 0,
+        };
       }
 
       // Consumo base imputado (hasta el tope contratado)
       const tokensUsed = Math.min(baseTotal, tokensLimit);
       // Cortesía absorbida del plan base (desborde técnico previo al encendido de allow_extra)
       const baseCourtesy = Math.max(0, baseTotal - tokensLimit);
-      // Cortesía absorbida del plan extra si excediera el 100% adicional
+      // Cortesía absorbida del plan extra si excediera el 100% adicional (desborde de la última llamada aprobada)
       const extraCourtesy = Math.max(0, extraTotal - tokensLimit);
       const tokensCourtesyUsed = baseCourtesy + extraCourtesy;
 
       // Consumo extra imputado (hasta el 100% adicional)
       const tokensExtraUsed = Math.min(extraTotal, tokensLimit);
 
-      return { tokensUsed, tokensExtraUsed, tokensCourtesyUsed, totalAccumulated };
+      return { 
+        tokensUsed, 
+        tokensExtraUsed, 
+        tokensCourtesyUsed, 
+        totalAccumulated,
+        baseTotal,
+        extraTotal,
+        baseCourtesy,
+        extraCourtesy,
+      };
     } catch (e) {
-      return { tokensUsed: 0, tokensExtraUsed: 0, tokensCourtesyUsed: 0, totalAccumulated: 0 };
+      return { 
+        tokensUsed: 0, 
+        tokensExtraUsed: 0, 
+        tokensCourtesyUsed: 0, 
+        totalAccumulated: 0,
+        baseTotal: 0,
+        extraTotal: 0,
+        baseCourtesy: 0,
+        extraCourtesy: 0,
+      };
     }
   }
 
@@ -230,19 +266,37 @@ export class SubscriptionValidatorService implements OnModuleInit {
     const tokensLimit = tenantInfo.tokens_limit;
     const baseUsed = consumption.tokensUsed;
     const extraUsed = consumption.tokensExtraUsed;
-    const courtesyUsed = consumption.tokensCourtesyUsed;
+    const baseTotal = consumption.baseTotal;
+    const extraTotal = consumption.extraTotal;
+    const baseCourtesy = consumption.baseCourtesy;
+    const extraCourtesy = consumption.extraCourtesy;
 
-    // c) Verificar si cabe en el plan base (solo si no hubo desborde de cortesía y no se satura el plan base)
-    if (courtesyUsed === 0 && (baseUsed + estimatedTokens <= tokensLimit)) {
+    // c) Verificar si cabe en el plan base:
+    // Solo cabe si no hay desborde previo de cortesía base y no se satura el plan base contratado.
+    const hasBaseCapacity = baseCourtesy === 0 && (
+      estimatedTokens > 0 
+        ? (baseTotal + estimatedTokens <= tokensLimit) 
+        : (baseTotal < tokensLimit)
+    );
+
+    if (hasBaseCapacity) {
       return { is_extra: false };
     }
 
-    // Excede límite base: verificar si allow_extra == True
+    // d) Excede límite base: verificar si allow_extra == True
     if (tenantInfo.allow_extra) {
       const maxExtraTokens = tokensLimit; // Límite de consumo extra del 100% del plan
 
-      // La cuota extra solo contabiliza lo que realmente se ha procesado como extra (extraUsed)
-      if (extraUsed + estimatedTokens <= maxExtraTokens) {
+      // La cuota extra solo permite peticiones si:
+      // 1. No existe un desborde previo sobre el límite extra (extraCourtesy === 0)
+      // 2. El consumo extra no ha alcanzado ni rebasado el 100% adicional (extraTotal < maxExtraTokens)
+      const hasExtraCapacity = extraCourtesy === 0 && (
+        estimatedTokens > 0 
+          ? (extraTotal + estimatedTokens <= maxExtraTokens) 
+          : (extraTotal < maxExtraTokens)
+      );
+
+      if (hasExtraCapacity) {
         return { is_extra: true };
       }
 
@@ -250,7 +304,7 @@ export class SubscriptionValidatorService implements OnModuleInit {
       throw new HttpException(
         {
           code: 'EXTRA_TOKENS_LIMIT_EXCEEDED',
-          message: `Ha alcanzado el límite máximo de consumo extra permitido (100% adicional del plan: ${maxExtraTokens.toLocaleString()} tokens). Extra consumido: ${extraUsed.toLocaleString()}.`,
+          message: `Ha alcanzado el límite máximo de consumo extra permitido (100% adicional del plan: ${maxExtraTokens.toLocaleString()} tokens). Extra consumido: ${extraTotal.toLocaleString()}.`,
           tokens_used: baseUsed,
           tokens_limit: tokensLimit,
           tokens_extra_used: extraUsed,
@@ -296,7 +350,7 @@ export class SubscriptionValidatorService implements OnModuleInit {
           
           const consumption = await this.getTokensConsumptionInPeriod(schemaName, periodStart, tenantInfo.next_renewal_date, tenantInfo.tokens_limit);
           // Si el plan base ya se saturó (baseUsed >= tokensLimit o hubo desborde de cortesía), esta nueva transacción ES EXTRA
-          if (consumption.tokensCourtesyUsed > 0 || consumption.tokensUsed >= tenantInfo.tokens_limit) {
+          if (consumption.baseCourtesy > 0 || consumption.baseTotal >= tenantInfo.tokens_limit || consumption.tokensUsed >= tenantInfo.tokens_limit) {
             calculatedIsExtra = true;
           }
         }

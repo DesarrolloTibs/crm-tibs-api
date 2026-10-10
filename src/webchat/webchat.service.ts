@@ -98,7 +98,8 @@ Genera tu respuesta JSON:`;
       this.logger.log(`[WebChat - Router Raw] ${rawRouterResponse.substring(0, 250)}`);
 
       classification = this.queryPlanner.parseRouterClassification(rawRouterResponse, question);
-      this.logger.log(`[WebChat - Router Classification] Domain: ${classification.domain} | Intent: ${classification.intent}`);
+      const isRouterAiFirst = !classification.thought?.includes('Recuperación');
+      this.logger.log(`[WebChat - Router Classification] [${isRouterAiFirst ? 'AI-FIRST' : 'FALLBACK HEURISTICO'}] Domain: ${classification.domain} | Intent: ${classification.intent}${classification.actionPlan ? ` | Action: ${classification.actionPlan.action}` : ''}`);
 
       // 3. Si el Orquestador determina EJECUCIÓN DE ACCIÓN (crear/modificar oportunidad, actividad, ticket)
       if (classification.actionPlan || classification.intent === 'ACTION_EXECUTION' || classification.domain === 'ACTION_EXECUTION') {
@@ -145,6 +146,8 @@ Genera tu respuesta JSON:`;
 
       // 7. Parsear y estructurar el plan de consulta del sub-agente
       const queryPlan = this.queryPlanner.parsePlanFromLlm(rawSubAgentResponse, question);
+      const isSubAgentAiFirst = !queryPlan.thought?.includes('Recuperación');
+      this.logger.log(`[WebChat - SubAgent (${classification.domain})] [${isSubAgentAiFirst ? 'AI-FIRST' : 'FALLBACK HEURISTICO'}] Intent: ${queryPlan.intent} | Entidad: ${queryPlan.detectedEntity || 'N/A'}`);
       if (classification.dashboardRedirect && !queryPlan.dashboardRedirect) {
         queryPlan.dashboardRedirect = classification.dashboardRedirect;
       }
@@ -230,7 +233,7 @@ Genera tu respuesta JSON:`;
     userRole: string,
   ): Promise<WebchatResponse> {
     const searchTerm = queryPlan.canonicalSearchTerm || question.trim();
-    this.logger.log(`[WebChat - Vague Search] Buscando multi-entidad para: "${searchTerm}"`);
+    this.logger.log(`[WebChat - Vague Search] [AI-FIRST] Buscando multi-entidad para término canónico: "${searchTerm}"`);
 
     // 1. Generar queries multi-entidad para Cube.dev
     const candidateQueries = this.entityMatcher.buildMultiEntityCubeQueries(searchTerm, userRole, userId);
@@ -241,7 +244,7 @@ Genera tu respuesta JSON:`;
 
     // 3. Si Cube.dev devolvió 0 resultados (por typos o separación de nombre/apellido), aplicar fallback en BD
     if (matchItems.length === 0) {
-      this.logger.log(`[WebChat - Fallback Fuzzy] 0 resultados en Cube.dev. Ejecutando búsqueda difusa en BD para "${searchTerm}"`);
+      this.logger.log(`[WebChat - Fallback Fuzzy] [FALLBACK HEURISTICO] 0 resultados en Cube.dev. Ejecutando búsqueda difusa en BD para "${searchTerm}"`);
       matchItems = await this.entityMatcher.fallbackFuzzyEntitySearch(searchTerm, userRole, userId);
     }
 
@@ -324,7 +327,7 @@ Genera tu respuesta JSON:`;
     const fallbackSearchTerm = queryPlan.canonicalSearchTerm || this.extractFallbackSearchTerm(queriesToExecute);
 
     if (allCubeData.length === 0 && fallbackSearchTerm) {
-      this.logger.log(`[WebChat] 0 resultados en consulta específica. Probando fallback fuzzy para "${fallbackSearchTerm}"`);
+      this.logger.log(`[WebChat - Fallback Fuzzy] [FALLBACK HEURISTICO] 0 resultados en consulta específica de Cube. Probando búsqueda difusa en BD para "${fallbackSearchTerm}"`);
       const fallbackMatches = await this.entityMatcher.fallbackFuzzyEntitySearch(
         fallbackSearchTerm,
         userRole,

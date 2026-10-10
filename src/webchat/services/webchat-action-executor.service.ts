@@ -108,13 +108,19 @@ export class WebchatActionExecutorService {
     originalQuestion: string,
     conversationHistory?: ConversationHistoryMessage[],
   ): Promise<WebchatResponse> {
-    this.logger.log(`[WebChat - Action Executor] Ejecutando acción '${actionPlan.action}' para usuario ${user.username} (Rol: ${user.role})`);
     let params = actionPlan.parameters || {};
 
     // Si faltan datos en params, enriquecer con el contexto previo de la conversación
     if (conversationHistory && conversationHistory.length > 0) {
+      const prevKeys = Object.keys(params);
       params = this.mergeHistoryContext(actionPlan.action, params, conversationHistory);
+      if (Object.keys(params).length > prevKeys.length) {
+        this.logger.log(`[WebChat - Action Executor] 🔄 Parámetros enriquecidos por historial multi-turno: ${JSON.stringify(params)}`);
+      }
     }
+
+    const isActionAiFirst = !!(actionPlan.thought && !actionPlan.thought.includes('Recuperación'));
+    this.logger.log(`[WebChat - Action Executor] [${isActionAiFirst ? 'AI-FIRST' : 'FALLBACK HEURISTICO'}] Ejecutando acción '${actionPlan.action}' para usuario ${user.username} (Rol: ${user.role}) | Parámetros: ${JSON.stringify(params)}`);
 
     switch (actionPlan.action) {
       case 'createOpportunity':
@@ -153,9 +159,10 @@ export class WebchatActionExecutorService {
       if (action === 'createActivity') {
         // 1. Extraer fecha/hora si no está presente
         if (!merged.date && !merged.fecha && !merged.hora && !merged.proposedDate) {
-          const dateMatch = msg.match(/(?:para\s+el\s+|el\s+|para\s+)?(pasado\s+mañana|pasado\s+manana|pasadomañana|pasadomanana|hoy|mañana|manana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}\s+de\s+[a-z]+|\d{4}-\d{2}-\d{2})(?:\s+(?:a\s+las\s+|las\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i);
-          if (dateMatch && dateMatch[0]) {
-            merged.date = dateMatch[0].trim();
+          const dateSegmentMatch = msg.match(/(?:para\s+el\s+|el\s+|para\s+)?\b(pasado\s+mañana|pasado\s+manana|pasadomañana|pasadomanana|hoy|mañana|manana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}(?:\s+de|\s+)[a-záéíóú]+|\d{4}-\d{2}-\d{2})\b.*$/i)
+            || msg.match(/\b(?:a\s+las?\s+|a\s+la\s+|para\s+las?\s+)\d{1,2}(?::\d{2})?\s*(?:am|pm)?.*$/i);
+          if (dateSegmentMatch && dateSegmentMatch[0]) {
+            merged.date = dateSegmentMatch[0].trim();
           }
         }
 
@@ -949,7 +956,8 @@ export class WebchatActionExecutorService {
       missingFields.push('• Fecha y Hora: Especifica para cuándo deseas agendarla (ej. "mañana a las 4pm", "el viernes a las 11:00").');
     }
 
-    const proposedDate = dateRaw ? this.parseNaturalDate(dateRaw) : null;
+    const timeExplicit = params.hora || params.time || params.hour || undefined;
+    const proposedDate = dateRaw ? this.parseNaturalDate(dateRaw, timeExplicit) : null;
     if (dateRaw && (!proposedDate || isNaN(proposedDate.getTime()))) {
       missingFields.push('• Fecha y Hora no válida: Por favor indica una fecha y hora clara (ej. "mañana a las 10am", "2026-09-01 a las 16:00").');
     }
@@ -1269,11 +1277,14 @@ export class WebchatActionExecutorService {
 
     // 1. Extraer y normalizar parámetros de búsqueda y actualización
     const id = params.id || params.activityId;
-    const targetDateRaw = params.targetDate || params.originalDate || params.currentDate || params.fechaOriginal || params.targetTime || params.horaOriginal || params.dateOriginal || params.existingDate;
+    const targetDateRaw = params.targetDate || params.originalDate || params.currentDate || params.fechaOriginal || params.dateOriginal || params.existingDate;
+    const targetTimeRaw = params.targetTime || params.horaOriginal || params.originalTime;
     const targetActivityRaw = params.targetActivity || params.currentActivity || params.originalActivity || params.nombreOriginal || params.searchActivity || params.existingActivity;
     const newActivityRaw = params.newActivity || params.nuevoNombre || params.newName || params.nuevoTitulo || params.newTitle || params.nombreNuevo || params.tituloNuevo;
-    const newDateRaw = params.newDate || params.nuevaFecha || params.rescheduleDate || params.newProposedDate || params.nuevaHora || params.newTime;
-    const genericDate = params.date || params.fecha || params.hora || params.time;
+    const newDateRaw = params.newDate || params.nuevaFecha || params.rescheduleDate || params.newProposedDate;
+    const newTimeRaw = params.newTime || params.nuevaHora;
+    const genericDate = params.date || params.fecha;
+    const genericTime = params.hora || params.time;
     const genericActivity = params.activity || params.activityText || params.description || params.actividad || params.nombre || params.title;
 
     let activity: Activity | null = null;
@@ -1288,9 +1299,9 @@ export class WebchatActionExecutorService {
     }
 
     // Estrategia 2: Búsqueda por Ventana Horaria / Fecha Objetivo (ej. "a las 3", "las 15:00 de hoy")
-    const searchDateCandidate = targetDateRaw || (newDateRaw ? null : (newActivityRaw ? genericDate : null)) || (genericDate && !targetActivityRaw ? genericDate : null);
+    const searchDateCandidate = targetDateRaw || targetTimeRaw || (newDateRaw || newTimeRaw ? null : (newActivityRaw ? (genericDate || genericTime) : null)) || ((genericDate || genericTime) && !targetActivityRaw ? (genericDate || genericTime) : null);
     if (!activity && searchDateCandidate) {
-      const parsedTarget = this.parseNaturalDate(searchDateCandidate);
+      const parsedTarget = this.parseNaturalDate(searchDateCandidate, targetTimeRaw);
       if (parsedTarget && !isNaN(parsedTarget.getTime())) {
         const windowStart = new Date(parsedTarget.getTime() - 75 * 60 * 1000);
         const windowEnd = new Date(parsedTarget.getTime() + 75 * 60 * 1000);
@@ -1381,9 +1392,9 @@ export class WebchatActionExecutorService {
     const updateDto: any = {};
 
     // A. Actualización de Fecha / Hora (Reprogramación con checkAvailability)
-    const candidateNewDateStr = newDateRaw || (targetActivityRaw && genericDate ? genericDate : null);
+    const candidateNewDateStr = newDateRaw || newTimeRaw || (targetActivityRaw && (genericDate || genericTime) ? (genericDate || genericTime) : null);
     if (candidateNewDateStr) {
-      const newDate = this.parseNaturalDate(candidateNewDateStr);
+      const newDate = this.parseNaturalDate(candidateNewDateStr, newTimeRaw);
       if (newDate && !isNaN(newDate.getTime())) {
         const diffMs = Math.abs(newDate.getTime() - new Date(activity.date).getTime());
         if (diffMs > 60000) { // Si la fecha/hora es distinta
@@ -1600,10 +1611,22 @@ export class WebchatActionExecutorService {
     proposedDate: Date,
     excludeActivityId?: string,
   ): Promise<{ available: boolean; suggestedSlots?: string[]; message?: string }> {
-    const dayStart = new Date(proposedDate);
-    dayStart.setUTCHours(0, 0, 0, 0);
-    const dayEnd = new Date(proposedDate);
-    dayEnd.setUTCHours(23, 59, 59, 999);
+    const tz = this.getTimezone();
+    const dateParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(proposedDate);
+    const pMap: Record<string, string> = {};
+    for (const p of dateParts) pMap[p.type] = p.value;
+    const year = parseInt(pMap.year, 10);
+    const month = parseInt(pMap.month, 10);
+    const day = parseInt(pMap.day, 10);
+
+    const dayStart = this.buildDateInTz(year, month, day, 0, 0);
+    const dayEnd = this.buildDateInTz(year, month, day, 23, 59);
+    dayEnd.setSeconds(59, 999);
 
     const dayActivities = await this.activitiesService.findByUserAndDate(targetUserId, dayStart, dayEnd);
     const filteredActivities = excludeActivityId
@@ -1620,16 +1643,10 @@ export class WebchatActionExecutorService {
       return { available: true, message: 'Horario disponible.' };
     }
 
-    // Calcular horarios sugeridos en la zona horaria del sistema
-    const tz = this.getTimezone();
+    // Calcular horarios sugeridos en la zona horaria del sistema del tenant
     const suggestedSlots: string[] = [];
-    const baseDateString = proposedDate.toLocaleDateString('en-CA', { timeZone: tz }); // YYYY-MM-DD
-
     for (let hour = 9; hour <= 17; hour++) {
-      const padHour = String(hour).padStart(2, '0');
-      // Construir timestamp representativo del slot en zona horaria local
-      const slotCandidate = new Date(`${baseDateString}T${padHour}:00:00`);
-      // Ajustar con la hora convertida exacta
+      const slotCandidate = this.buildDateInTz(year, month, day, hour, 0);
       const hasConflict = filteredActivities.some(act => {
         return Math.abs(new Date(act.date).getTime() - slotCandidate.getTime()) < CONFLICT_WINDOW_MS;
       });
@@ -1937,8 +1954,8 @@ export class WebchatActionExecutorService {
     return { items, totalPrice };
   }
 
-  parseNaturalDate(dateInput: any): Date {
-    if (!dateInput) {
+  parseNaturalDate(dateInput: any, timeInput?: any): Date {
+    if (!dateInput && !timeInput) {
       const d = new Date();
       d.setHours(d.getHours() + 2, 0, 0, 0);
       return d;
@@ -1946,21 +1963,11 @@ export class WebchatActionExecutorService {
     if (dateInput instanceof Date && !isNaN(dateInput.getTime())) {
       return dateInput;
     }
-    const str = String(dateInput).trim();
 
-    // Si ya es un ISO string absoluto con Z o timezone explícito (+/-HH:MM)
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(str)) {
-      const parsedUtc = new Date(str);
-      if (!isNaN(parsedUtc.getTime())) {
-        return parsedUtc;
-      }
-    }
-
-    const lower = str.toLowerCase();
     const tz = this.getTimezone();
+    const now = new Date();
 
     // Obtener componentes actuales en la zona horaria del CRM
-    const now = new Date();
     const formatter = new Intl.DateTimeFormat('en-US', {
       timeZone: tz,
       year: 'numeric',
@@ -1981,16 +1988,41 @@ export class WebchatActionExecutorService {
     let targetHour = 10;
     let targetMinute = 0;
 
-    // 1. Si viene en formato ISO (ej. 2026-10-03T10:00:00 o 2026-10-03 10:00)
-    const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{2}))?/);
-    if (isoMatch) {
-      targetYear = parseInt(isoMatch[1], 10);
-      targetMonth = parseInt(isoMatch[2], 10) - 1;
-      targetDay = parseInt(isoMatch[3], 10);
-      if (isoMatch[4]) targetHour = parseInt(isoMatch[4], 10);
-      if (isoMatch[5]) targetMinute = parseInt(isoMatch[5], 10);
+    const rawDateStr = String(dateInput || '').trim();
+    const rawTimeStr = String(timeInput || '').trim();
+
+    // Caso A: Si ya es un ISO string absoluto completo
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(rawDateStr)) {
+      const parsedUtc = new Date(rawDateStr);
+      if (!isNaN(parsedUtc.getTime())) {
+        this.logger.log(`[WebChat - Temporal Engine] [AI-FIRST FLOW] Entrada ISO 8601 completa: "${rawDateStr}" -> ${parsedUtc.toISOString()}`);
+        return parsedUtc;
+      }
+    }
+
+    // Caso B: Si fecha viene en formato YYYY-MM-DD
+    const isoDateMatch = rawDateStr.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{1,2}):(\d{2}))?/);
+    if (isoDateMatch) {
+      targetYear = parseInt(isoDateMatch[1], 10);
+      targetMonth = parseInt(isoDateMatch[2], 10) - 1;
+      targetDay = parseInt(isoDateMatch[3], 10);
+      if (isoDateMatch[4]) targetHour = parseInt(isoDateMatch[4], 10);
+      if (isoDateMatch[5]) targetMinute = parseInt(isoDateMatch[5], 10);
+      this.logger.log(`[WebChat - Temporal Engine] [AI-FIRST FLOW] Fecha normalizada estructurada: "${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}" | Hora: "${rawTimeStr || `${targetHour}:${String(targetMinute).padStart(2, '0')}`}"`);
     } else {
-      // 2. Días relativos
+      // Caso C: Fecha en lenguaje natural
+      const lower = rawDateStr.toLowerCase();
+      const monthNames: Record<string, number> = {
+        enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+        julio: 6, agosto: 7, septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+        ene: 0, feb: 1, mar: 2, abr: 3, may: 4, jun: 5, jul: 6, ago: 7, sep: 8, oct: 9, nov: 10, dic: 11,
+      };
+      const dayMap: Record<string, number> = {
+        domingo: 0, lunes: 1, martes: 2, miércoles: 3, miercoles: 3,
+        jueves: 4, viernes: 5, sábado: 6, sabado: 6,
+      };
+
+      // 1. Días relativos
       if (
         lower.includes('pasado mañana') ||
         lower.includes('pasado manana') ||
@@ -2010,58 +2042,114 @@ export class WebchatActionExecutorService {
       } else if (lower.includes('hoy') || lower.includes('today')) {
         // hoy mantiene targetDay
       } else {
-        // Día exacto con nombre de mes: ej. "15 de octubre", "4 de noviembre"
-        const monthNames: Record<string, number> = {
-          enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
-          julio: 6, agosto: 7, septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
-        };
-        const textDateMatch = lower.match(/(\d{1,2})\s+de\s+([a-záéíóú]+)(?:\s+(?:de\s+)?(\d{4}))?/i);
+        // 2. Día exacto con nombre de mes (con o sin 'de', ej. "12 de octubre", "12 octubre", "12 oct")
+        const textDateMatch = lower.match(/(?:el\s+)?(\d{1,2})(?:\s+de|\s+)?\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)(?:\s+(?:de\s+)?(\d{4}))?/i);
         if (textDateMatch && monthNames[textDateMatch[2].toLowerCase()] !== undefined) {
           targetDay = parseInt(textDateMatch[1], 10);
           targetMonth = monthNames[textDateMatch[2].toLowerCase()];
           if (textDateMatch[3]) targetYear = parseInt(textDateMatch[3], 10);
         } else {
-          const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado'];
-          for (let d = 0; d < dias.length; d++) {
-            const diaName = dias[d];
-            if (lower.includes(diaName)) {
-              const currentDayOfWeek = new Date(Date.UTC(targetYear, targetMonth, targetDay)).getUTCDay();
-              const targetDayOfWeek = d > 6 ? (d === 8 ? 6 : 3) : (d === 4 ? 3 : d);
-              let diff = targetDayOfWeek - currentDayOfWeek;
-              if (diff <= 0) diff += 7;
-              const targetD = new Date(Date.UTC(targetYear, targetMonth, targetDay + diff));
-              targetYear = targetD.getUTCFullYear();
-              targetMonth = targetD.getUTCMonth();
-              targetDay = targetD.getUTCDate();
-              break;
+          // 3. Día de la semana con número opcional (ej. "viernes 16", "el 16")
+          const weekDayWithNumMatch = lower.match(/(?:el\s+)?(domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)\s+(\d{1,2})\b/i);
+          if (weekDayWithNumMatch) {
+            targetDay = parseInt(weekDayWithNumMatch[2], 10);
+          } else {
+            // Día de la semana solo (ej. "el lunes", "este viernes")
+            let matchedDow = false;
+            for (const [diaName, targetDow] of Object.entries(dayMap)) {
+              if (lower.includes(diaName)) {
+                const currentDayOfWeek = new Date(Date.UTC(targetYear, targetMonth, targetDay)).getUTCDay();
+                let diff = targetDow - currentDayOfWeek;
+                if (diff <= 0) diff += 7;
+                const targetD = new Date(Date.UTC(targetYear, targetMonth, targetDay + diff));
+                targetYear = targetD.getUTCFullYear();
+                targetMonth = targetD.getUTCMonth();
+                targetDay = targetD.getUTCDate();
+                matchedDow = true;
+                break;
+              }
+            }
+            if (!matchedDow) {
+              // Día del mes solo: ej. "el 20 a las 3"
+              const singleDayMatch = lower.match(/(?:el\s+d[ií]a\s+|el\s+)(\d{1,2})\b/i);
+              if (singleDayMatch) {
+                targetDay = parseInt(singleDayMatch[1], 10);
+              }
             }
           }
         }
       }
+    }
 
-      // Evitar que el día del mes (ej. "4 de octubre") sea capturado erróneamente como la hora
-      const stringWithoutDate = lower.replace(/\b\d{1,2}\s+de\s+[a-záéíóú]+(?:\s+(?:de\s+)?\d{4})?/i, '');
-      // Si el texto incluye recordatorio en la misma cadena, aislar el texto previo para no confundir la hora de la actividad
-      const stringForTime = stringWithoutDate.split(/(?:con\s+)?(?:recordatorio|reordatorio|alarma|recordar)/i)[0];
+    // ── EXTRACCIÓN DE HORA ──
+    let stringForTime = rawTimeStr || rawDateStr;
 
-      // Extraer hora (ej. "a las 3 pm", "a la 1 pm", "10am", "4pm", "15:00", "11:30 am")
-      const timeMatch = stringForTime.match(/(?:a\s+las?\s+|de\s+las?\s+|las?\s+|para\s+las?\s+|a\s+la\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i)
-        || stringForTime.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
-      if (timeMatch) {
-        let hour = parseInt(timeMatch[1], 10);
-        const minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
-        const meridiem = timeMatch[3]?.toLowerCase();
+    if (!rawTimeStr) {
+      const lowerDate = rawDateStr.toLowerCase();
+      // Eliminar día y mes con o sin 'de' (ej: "12 de octubre", "12 octubre", "12 oct")
+      const monthRegexStr = '(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)';
+      const replaceMonthRegex = new RegExp('\\b\\d{1,2}(?:\\s+de|\\s+)\\s+' + monthRegexStr + '(?:\\s+(?:de\\s+)?\\d{4})?', 'gi');
+      let clean = lowerDate.replace(replaceMonthRegex, ' ');
 
-        if (meridiem === 'pm' && hour < 12) hour += 12;
-        if (meridiem === 'am' && hour === 12) hour = 0;
-        if (!meridiem && hour < 8) hour += 12;
+      // Eliminar día de semana acompañado de número (ej. "viernes 16")
+      clean = clean.replace(/\b(domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)\s+\d{1,2}\b/gi, ' ');
+      // Eliminar días relativos y de la semana
+      clean = clean.replace(/\b(hoy|mañana|manana|pasado\s+mañana|pasado\s+manana|domingo|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado)\b/gi, ' ');
+      // Eliminar "el 20" si fue día del mes
+      clean = clean.replace(/(?:el\s+d[ií]a\s+|el\s+)\d{1,2}\b/gi, ' ');
+
+      // Si la frase tiene alarma secundaria ("con recordatorio a las 2 pm"), aislar la actividad principal
+      const reminderSplit = clean.split(/\b(?:con\s+)?(?:recordatorio|reordatorio|alarma|recordar)\b/i);
+      if (reminderSplit.length > 1 && reminderSplit[0].trim().length > 3) {
+        clean = reminderSplit[0];
+      } else if (reminderSplit.length > 1) {
+        clean = reminderSplit.slice(1).join(' ');
+      }
+      stringForTime = clean;
+    }
+
+    const sLower = stringForTime.toLowerCase();
+
+    if (sLower.includes('mediodía') || sLower.includes('mediodia')) {
+      targetHour = 12;
+      targetMinute = 0;
+    } else if (sLower.includes('medianoche')) {
+      targetHour = 0;
+      targetMinute = 0;
+    } else {
+      // 1. Prioridad A: Hora con dos puntos "HH:MM"
+      const colonMatch = sLower.match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
+      // 2. Prioridad B: Prefijo explícito "a las / a la / para las" o sufijo explícito "am / pm"
+      const explicitMatch = sLower.match(/(?:a\s+las?\s+|de\s+las?\s+|las?\s+|para\s+las?\s+|a\s+la\s+)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i)
+        || sLower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i)
+        || sLower.match(/(\d{1,2})\s*(?:hrs?|horas?|h)\b/i);
+
+      const timeCandidate = colonMatch || explicitMatch;
+
+      if (timeCandidate) {
+        let hour = parseInt(timeCandidate[1], 10);
+        const minutes = timeCandidate[2] ? parseInt(timeCandidate[2], 10) : 0;
+        const ampm = timeCandidate[3]?.toLowerCase()
+          || (sLower.includes('pm') ? 'pm' : (sLower.includes('am') ? 'am' : null));
+        const isPm = ampm === 'pm' || sLower.includes('de la tarde') || sLower.includes('de la noche');
+        const isAm = ampm === 'am' || sLower.includes('de la mañana');
+
+        if (isPm && hour < 12) hour += 12;
+        if (isAm && hour === 12) hour = 0;
+        if (!isPm && !isAm && hour < 8) hour += 12;
 
         targetHour = hour;
         targetMinute = minutes;
       }
     }
 
-    return this.buildDateInTz(targetYear, targetMonth + 1, targetDay, targetHour, targetMinute);
+    if (!isoDateMatch) {
+      this.logger.log(`[WebChat - Temporal Engine] [REGEX FALLBACK FLOW] Texto natural: "${rawDateStr}" | TimeInput: "${rawTimeStr || 'ninguno'}" -> Resuelto: ${targetDay}/${targetMonth + 1}/${targetYear} a las ${targetHour}:${String(targetMinute).padStart(2, '0')}`);
+    }
+
+    const calculatedDate = this.buildDateInTz(targetYear, targetMonth + 1, targetDay, targetHour, targetMinute);
+    this.logger.log(`[WebChat - Temporal Engine] [RESULTADO] Fecha calculada en TZ (${tz}): ${calculatedDate.toISOString()}`);
+    return calculatedDate;
   }
 
   parseNumeric(value: any): number {

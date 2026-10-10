@@ -950,8 +950,9 @@ describe('WebchatActionExecutorService', () => {
     });
 
     it('parseNaturalDate aísla correctamente la hora sin confundirse con el día del mes o textos de recordatorio', () => {
-      const d1 = service.parseNaturalDate('pasado mañana a las 3 pm');
       const tz = service.getTimezone();
+
+      const d1 = service.parseNaturalDate('pasado mañana a las 3 pm');
       const time1 = d1.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
       expect(time1).toBe('15:00');
 
@@ -964,6 +965,41 @@ describe('WebchatActionExecutorService', () => {
       const d3 = service.parseNaturalDate('pasado mañana a las 3 pm con reordatorio a la 1 pm');
       const time3 = d3.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
       expect(time3).toBe('15:00');
+
+      // Caso crítico: día del mes sin 'de' ("12 Octubre") no debe competir con la hora ("10 am")
+      const d4 = service.parseNaturalDate('crear recordatorio para llamar a javier flores el lunes 12 Octubre a las 10 am');
+      const time4 = d4.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      const day4 = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: tz, day: 'numeric' }).format(d4), 10);
+      expect(time4).toBe('10:00');
+      expect(day4).toBe(12);
+
+      const d5 = service.parseNaturalDate('15 octubre a las 4 pm');
+      const time5 = d5.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      const day5 = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: tz, day: 'numeric' }).format(d5), 10);
+      expect(time5).toBe('16:00');
+      expect(day5).toBe(15);
+
+      // Inversión de hora antes de la fecha
+      const d6 = service.parseNaturalDate('a las 10 am el lunes 12 Octubre');
+      const time6 = d6.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      expect(time6).toBe('10:00');
+
+      // Mediodía
+      const d7 = service.parseNaturalDate('mañana a mediodía');
+      const time7 = d7.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      expect(time7).toBe('12:00');
+
+      // Desacoplado: fecha ISO + hora explícita
+      const d8 = service.parseNaturalDate('2026-10-12', '10:00');
+      const time8 = d8.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      const day8 = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: tz, day: 'numeric' }).format(d8), 10);
+      expect(time8).toBe('10:00');
+      expect(day8).toBe(12);
+
+      // Desacoplado: fecha ISO + hora en formato natural
+      const d9 = service.parseNaturalDate('2026-10-12', '10 am');
+      const time9 = d9.toLocaleTimeString('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      expect(time9).toBe('10:00');
     });
   });
 

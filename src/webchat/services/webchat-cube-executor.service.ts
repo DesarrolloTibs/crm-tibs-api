@@ -282,6 +282,14 @@ export class WebchatCubeExecutorService {
 
         const resolved = this.resolveDateRange(td.dateRange, timezone);
         if (resolved) {
+          const isStandardOrIso = (typeof td.dateRange === 'string' && ['today', 'yesterday', 'this week', 'last week', 'this month', 'last month', 'this quarter', 'this year', 'last year', 'last 30 days'].includes(td.dateRange.toLowerCase().trim()))
+            || (Array.isArray(td.dateRange) && td.dateRange.every((d: string) => /^\d{4}-\d{2}-\d{2}$/.test(String(d))));
+
+          if (isStandardOrIso) {
+            this.logger.log(`[Cube Executor - TimeDimensions] [AI-FIRST] Rango temporal estructurado por LLM: Dimensión="${td.dimension}", DateRange=${JSON.stringify(resolved)}`);
+          } else {
+            this.logger.log(`[Cube Executor - TimeDimensions] [REGEX FALLBACK] Expresión textual "${td.dateRange}" resuelta heurísticamente a: ${JSON.stringify(resolved)}`);
+          }
           return { ...td, dateRange: resolved };
         }
 

@@ -160,3 +160,22 @@ En lugar de depender de prompts estáticos, el agente opera mediante un grafo de
   1. Se introdujo `TurnTokenAccumulator` en `ConsumptionAuditContext` con contadores en memoria (`promptTokens`, `completionTokens`, `totalTokens`, `steps: string[]`, `models: string[]`).
   2. Al procesar mensajes entrantes (`AiAgentOrchestratorService.processIncomingMessage` y `WebchatService.processQuery`), las llamadas internas al LLM acumulan su consumo en el acumulador en lugar de escribir de inmediato en la base de datos.
   3. En el bloque `finally` de la interacción, se ejecuta `commitTurnConsumption`, persistiendo **un único registro consolidado en `transaction_history`** con la suma exacta de recursos (`prompt_tokens`, `completion_tokens`, `total_tokens`), etiquetado con la acción del subagente resolutivo (ej. `subagent_comercial`, `subagent_ventas`) y registrando en `metadata.steps` la traza de pasos (`['router', 'subagent']`).
+
+
+### 🕒 Desacoplamiento de Fecha/Hora y Resolución Temporal AI-First (`WebchatActionExecutorService` & `parseNaturalDate`)
+* **Problema Identificado en Producción:**
+  - Al solicitar acciones en lenguaje natural como *"crear recordatorio para llamar a javier flores el lunes 12 Octubre a las 10 am"*, el sistema programaba la actividad a las *12:00 p.m.* (o con horas alteradas).
+  - **Causa Raíz 1 (Colisión Numérica):** En `parseNaturalDate`, la expresión regular de meses requería obligatoriamente la preposición *"de"* (`de\s+(enero|...)`). Al omitirse (`12 Octubre`), el día numérico (`12`) no era enmascarado y la expresión regular de hora capturaba el primer número suelto (`12`) como la hora del evento en lugar de `10 am`.
+  - **Causa Raíz 2 (Truncado en Flujos de Rescate y Multi-Turno):** En `extractBasicActionParams` y `mergeHistoryContext`, los regex truncaban cadenas como `el lunes 12`, descartando el segmento de hora.
+  - **Causa Raíz 3 (Desfase UTC vs Tenant en `checkAvailability`):** La validación de disponibilidad y generación de slots libres usaba `Date.setHours` sobre la hora local de Node.js (UTC en contenedores de producción), desfasando el rango de agenda respecto a la zona horaria del tenant (`America/Mexico_City`).
+* **Solución Implementada:**
+  1. **Arquitectura AI-First con Extracción Desacoplada:**
+     - En `WebchatPromptBuilderService` (`buildRouterPrompt`), se instruye al modelo a extraer `fecha` (`YYYY-MM-DD` resuelta con el contexto actual) y `hora` (`HH:mm`) de forma desacoplada y unívoca.
+  2. **Parser Temporal Resiliente (`parseNaturalDate`):**
+     - En `WebchatActionExecutorService`, `parseNaturalDate(dateInput, timeInput?)` procesa la hora de forma prioritaria e independiente (`HH:MM`, `a las X`, `am/pm`, `de la tarde`), eliminando ambigüedades con números de día.
+     - Detección flexible de meses con o sin preposición (*"12 Octubre"*, *"12 de Octubre"*, abreviaturas) y días de la semana (`viernes 16`), sin generar falsos positivos con frases horarias (*"de la tarde"*).
+     - Corrección del diccionario de días de la semana (`dayMap`) alineado con `Date.getDay()`.
+  3. **Alineación Estricta de Zona Horaria en `checkAvailability`:**
+     - Se migraron los límites de inicio y fin de jornada y la generación de candidatos a `buildDateInTz`, operando siempre en la zona horaria del tenant (`process.env.NOTIFICATION_TIMEZONE || 'America/Mexico_City'`).
+  4. **Desacoplamiento en Reprogramaciones (`handleModifyActivity`):**
+     - Se separó estrictamente `targetTime`/`targetDate` (hora/fecha original a buscar) de `newTime`/`newDate` (nueva hora/fecha), previniendo sobrescrituras involuntarias en flujos de modificación de actividades.

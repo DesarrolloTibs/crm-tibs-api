@@ -171,10 +171,11 @@ export class WebchatQueryPlannerService {
         params.tipoActividad = typeMatch[1].trim();
       }
 
-      // Extraer fecha si está presente en el texto (priorizando pasado mañana sobre mañana)
-      const dateMatch = q.match(/(?:para\s+el\s+|el\s+|para\s+)?(pasado\s+mañana|pasado\s+manana|pasadomañana|pasadomanana|hoy|mañana|manana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}\s+de\s+[a-z]+|\d{4}-\d{2}-\d{2})(?:\s+(?:a\s+las?\s+|las?\s+|a\s+la\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?/i);
-      if (dateMatch && dateMatch[0]) {
-        params.date = dateMatch[0].trim();
+      // Extraer fecha y hora preservando el segmento completo temporal (sin truncar el día del mes)
+      const dateSegmentMatch = q.match(/(?:para\s+el\s+|el\s+|para\s+)?\b(pasado\s+mañana|pasado\s+manana|pasadomañana|pasadomanana|hoy|mañana|manana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}(?:\s+de|\s+)[a-záéíóú]+|\d{4}-\d{2}-\d{2})\b.*$/i)
+        || q.match(/\b(?:a\s+las?\s+|a\s+la\s+|para\s+las?\s+)\d{1,2}(?::\d{2})?\s*(?:am|pm)?.*$/i);
+      if (dateSegmentMatch && dateSegmentMatch[0]) {
+        params.date = dateSegmentMatch[0].trim();
       } else {
         params.date = 'mañana a las 10am';
       }
