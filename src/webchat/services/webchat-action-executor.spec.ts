@@ -949,6 +949,46 @@ describe('WebchatActionExecutorService', () => {
       expect(response.answer).toContain('Demostración');
     });
 
+    it('No crea la actividad y solicita Fecha y Hora requerida si el usuario no especificó referencias temporales, ignorando alucinaciones del LLM', async () => {
+      mockActivitiesService.findByUserAndDate.mockResolvedValue([]);
+
+      const response = await service.executeAction(
+        {
+          action: 'createActivity',
+          parameters: {
+            activity: 'Llamada a Miguel Santos',
+            tipoActividad: 'Llamada',
+            fecha: '2026-10-12', // Fecha alucinada por el LLM
+            hora: '10:41',       // Hora alucinada por el LLM
+            cliente: 'Miguel Santos',
+          },
+          thought: 'Crear llamada para Miguel Santos',
+        },
+        adminUser,
+        'crea una llamada para el cliente miguel santos',
+      );
+
+      expect(mockActivitiesService.create).not.toHaveBeenCalled();
+      expect(response.answer).toContain('Para agendar la actividad, por favor proporciona los siguientes datos requeridos');
+      expect(response.answer).toContain('Fecha y Hora');
+    });
+
+    it('hasTemporalReference identifica con precisión la presencia o ausencia de referencias temporales sin falsos positivos con nombres de personas', () => {
+      // Sin referencias temporales
+      expect(service.hasTemporalReference('crea una llamada para el cliente miguel santos')).toBe(false);
+      expect(service.hasTemporalReference('agenda una reunión con el cliente julio borges')).toBe(false);
+      expect(service.hasTemporalReference('llamada para abril gomez')).toBe(false);
+      expect(service.hasTemporalReference('seguimiento con pedro')).toBe(false);
+
+      // Con referencias temporales
+      expect(service.hasTemporalReference('crea una llamada mañana a las 10 am')).toBe(true);
+      expect(service.hasTemporalReference('agenda para el viernes')).toBe(true);
+      expect(service.hasTemporalReference('reunión el 15 de octubre')).toBe(true);
+      expect(service.hasTemporalReference('visita a las 4pm')).toBe(true);
+      expect(service.hasTemporalReference('llamada hoy')).toBe(true);
+      expect(service.hasTemporalReference('reunión para el 3 de julio')).toBe(true);
+    });
+
     it('parseNaturalDate aísla correctamente la hora sin confundirse con el día del mes o textos de recordatorio', () => {
       const tz = service.getTimezone();
 

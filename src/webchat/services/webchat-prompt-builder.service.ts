@@ -17,25 +17,25 @@ export class WebchatPromptBuilderService {
 Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO}) ${horaActual} (${timezone})
 
 [DOMINIOS DISPONIBLES]
-1. "OPORTUNIDADES": Ventas ganadas, cotizaciones, montos, pipeline, marcas, líneas de negocio.
-2. "TICKETS": Mesa de ayuda, soporte técnico, tickets abiertos o resueltos.
-3. "CLIENTES_EMPRESAS": Directorio de clientes, datos de empresas, cuentas.
-4. "ACTIVIDADES": Agenda, actividades, reuniones, llamadas, tareas.
-5. "GASTOS": Registro de gastos, viáticos, comprobantes.
-6. "PRODUCTOS": Catálogo de productos, precios base unitarios.
-7. "VAGUE_SEARCH": 1 o 2 palabras con NOMBRE PROPIO sin verbo ("Juan", "Acme", "Dell").
-8. "CONVERSATIONAL": Saludos, despedidas o capacidades ("Hola", "¿Quién eres?").
+1. "OPORTUNIDADES": Ventas, cotizaciones, montos, pipeline.
+2. "TICKETS": Soporte técnico, incidencias, reportes.
+3. "CLIENTES_EMPRESAS": Clientes, cuentas, empresas.
+4. "ACTIVIDADES": Agenda, actividades, reuniones, llamadas.
+5. "GASTOS": Gastos, viáticos, comprobantes.
+6. "PRODUCTOS": Catálogo y precios de productos.
+7. "VAGUE_SEARCH": 1 o 2 palabras con NOMBRE PROPIO ("Juan", "Acme").
+8. "CONVERSATIONAL": Saludos, despedidas ("Hola", "¿Quién eres?").
 9. "ACTION_EXECUTION": Comandos para CREAR o MODIFICAR registros (Oportunidad, Actividad, Ticket).
-10. "MULTI_DOMAIN": Consulta que abarca más de un dominio.
+10. "MULTI_DOMAIN": Consulta de múltiples dominios.
 
 [REGLAS]
 1. Responde SIEMPRE con un único objeto JSON válido sin texto adicional.
 2. Si es "CONVERSATIONAL", usa intent/domain "CONVERSATIONAL" y "responseTemplate".
 3. Si es "ACTION_EXECUTION", usa intent/domain "ACTION_EXECUTION" y genera "actionPlan":
    { "action": "createOpportunity" | "modifyOpportunity" | "createActivity" | "modifyActivity" | "createTicket", "parameters": { ... } }
-   * "createActivity": "activity", "tipoActividad" ("Llamada", "Reunión", "Demostración"), "fecha" (YYYY-MM-DD; si indican día numérico como 12 de Octubre, usa el día exacto YYYY-MM-12), "hora" (HH:mm, default "10:00"), "cliente", "empresa", "recordatorio" (hora ej. "13:00", bool o texto).
+   * "createActivity": "activity", "tipoActividad" ("Llamada", "Reunión", "Demostración"), "fecha" (YYYY-MM-DD solo si se indicó), "hora" (HH:mm solo si se indicó), "cliente", "empresa", "recordatorio" (bool/texto). ¡PROHIBIDO INVENTAR FECHA/HORA! Si no se indicaron, omítelas para pedir datos requeridos. Nunca uses fecha u hora actual.
    * "modifyOpportunity": "nombreProyecto", "etapa" ("Calificado", "Propuesta", "Negociación", "Ganada"), "cliente", "montoLicenciamiento", "montoServicios".
-   * "modifyActivity": "targetTime"/"targetDate" (original a buscar), "newTime"/"newDate" (nueva hora/fecha), "activity" (nuevo nombre).
+   * "modifyActivity": "targetTime"/"targetDate" (a buscar), "newTime"/"newDate" (nueva hora/fecha), "activity" (nuevo nombre).
 4. Si piden ver gráfica/dashboard, incluye "dashboardRedirect": { "tab": "commercial" | "support", "executiveId": "${userId}" }.
 
 [FORMATO JSON]
@@ -53,8 +53,9 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 - "Hola" → {"thought": "Saludo", "intent": "CONVERSATIONAL", "domain": "CONVERSATIONAL", "responseTemplate": "¡Hola! Soy tu asistente del CRM. ¿En qué te ayudo?"}
 - "crea oportunidad Bimbo 50000 MXN desarrollo" → {"thought": "Crear opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createOpportunity", "parameters": {"nombreProyecto": "Bimbo", "monto": 50000, "moneda": "MXN", "lineaNegocio": "Desarrollo"}}}
 - "a oportunidad prueba agrega 5000 licenciamiento" → {"thought": "Modificar opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "prueba", "montoLicenciamiento": 5000}}}
-- "cotizacion red magic de pedro perez muevela a calificado" → {"thought": "Mover opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "Cotización Red Magic", "cliente": "Pedro Pérez", "etapa": "Calificado"}}}
+- "cotizacion red magic de pedro perez muevela a calificado" → {"thought": "Mover opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "Red Magic", "cliente": "Pedro Pérez", "etapa": "Calificado"}}}
 - "crear recordatorio para llamar a javier flores el lunes 12 Octubre a las 10 am" → {"thought": "Crear llamada", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamar a Javier Flores", "tipoActividad": "Llamada", "fecha": "2026-10-12", "hora": "10:00", "cliente": "Javier Flores", "recordatorio": true}}}
+- "crea una llamada para el cliente miguel santos" → {"thought": "Crear llamada sin fecha", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamada a Miguel Santos", "tipoActividad": "Llamada", "cliente": "Miguel Santos"}}}
 - "reprograma reunión de las 3 para mañana 5pm" → {"thought": "Modificar act", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetTime": "15:00", "newTime": "17:00", "newDate": "mañana"}}}
 - "levanta ticket por caída de servidor" → {"thought": "Crear ticket", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createTicket", "parameters": {"title": "Caída de servidor", "priority": 3}}}
 - "cuanto he vendido este mes" → {"thought": "Ventas", "intent": "ANALYTICAL", "domain": "OPORTUNIDADES", "actionPlan": null}`;
@@ -63,7 +64,13 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
   /**
    * Construye el prompt especializado para el sub-agente correspondiente al dominio solicitado.
    */
-  buildDomainPrompt(domain: WebchatDomain, userId: string, userRole: string, username: string): string {
+  buildDomainPrompt(
+    domain: WebchatDomain,
+    userId: string,
+    userRole: string,
+    username: string,
+    options?: { activeActivityTypes?: string[] },
+  ): string {
     const baseHeader = this.buildBaseHeader(userId, userRole, username);
     const sharedRules = this.buildSharedRules(userId, userRole);
     const now = new Date();
@@ -336,7 +343,41 @@ ${this.buildResponseJsonSchema()}
 - "dame los datos del cliente Juan Pérez" →
   {"thought": "Consulta específica sobre cliente 'Juan Pérez'.", "intent": "SPECIFIC_ENTITY", "detectedEntity": "Clientes", "canonicalSearchTerm": "Juan Pérez", "cubeQuery": {"dimensions": ["Clientes.nombreCompleto", "Clientes.correo", "Clientes.telefono", "Clientes.category", "Empresas.nombre", "Usuarios.username"], "filters": [{"member": "Clientes.nombreCompleto", "operator": "contains", "values": ["Juan Pérez"]}]}, "responseTemplate": "Datos del cliente {Clientes.nombreCompleto}: Correo: {Clientes.correo}, Teléfono: {Clientes.telefono}, Empresa: {Empresas.nombre}."}`;
 
-      case 'ACTIVIDADES':
+      case 'ACTIVIDADES': {
+        const catalogTypes = (options?.activeActivityTypes && options.activeActivityTypes.length > 0)
+          ? options.activeActivityTypes
+          : ['Llamada', 'Reunión', 'Demostración', 'Visita', 'Correo'];
+
+        const hasCitaType = catalogTypes.some(t => {
+          const norm = (t || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .trim();
+          return norm === 'cita' || norm === 'citas';
+        });
+
+        const catalogListStr = catalogTypes.map(t => `"${t}"`).join(', ');
+
+        const typeFilteringRule = hasCitaType
+          ? `   - Tipos de actividad activos en este tenant: ${catalogListStr}.
+   - REGLA CRÍTICA DE TIPOS:
+     * Este tenant TIENE configurado el tipo de actividad "Cita" en su catálogo. Si el usuario solicita filtrar por citas o actividades de tipo Cita, SÍ debes filtrar por:
+       { "member": "TiposActividad.nombre", "operator": "equals", "values": ["Cita"] }
+     * Solo filtra por TiposActividad.nombre si el usuario pide explícitamente uno de los tipos activos de este tenant (${catalogListStr}).`
+          : `   - Tipos de actividad activos en este tenant: ${catalogListStr}.
+   - REGLA CRÍTICA DE TIPOS:
+     * Términos como "citas", "agenda", "eventos", "compromisos" o "actividades" son términos genéricos para la agenda completa y NO son un tipo del catálogo en este tenant. ¡NO filtres por TiposActividad.nombre = "Cita"!
+     * Solo filtra por TiposActividad.nombre si el usuario pide explícitamente uno de los tipos activos de este tenant (${catalogListStr}). Si piden "citas", "agenda", "eventos" o "actividades", consulta todas las actividades del periodo SIN filtrar por TiposActividad.nombre.`;
+
+        const genericExampleThought = hasCitaType
+          ? 'El tenant tiene configurado el tipo de actividad Cita. Se filtra por TiposActividad.nombre = "Cita" y timeDimension.'
+          : 'El usuario solicita el listado general de citas/actividades de hace 2 semanas. En este tenant "Citas" es sinónimo genérico de actividades (no existe como tipo de catálogo), por lo que no se filtra por tipo, solo por timeDimension.';
+
+        const genericExampleFilters = hasCitaType
+          ? ', "filters": [{"member": "TiposActividad.nombre", "operator": "equals", "values": ["Cita"]}]'
+          : '';
+
         return `${baseHeader}
 Eres el Sub-Agente Especialista en Agenda y Actividades del CRM. Tu tarea es generar el plan de consulta para la Capa Semántica (Cube.dev) enfocado en actividades, tareas, llamadas, reuniones y agenda.
 
@@ -353,16 +394,18 @@ ${sharedRules}
 2. **TiposActividad** (tabla: tbltypeactivities — Catálogo de tipos de actividad)
    - Measures: count
    - Dimensions: id, nombre, status
+${typeFilteringRule}
 
 3. **Usuarios** (tabla: users)
    - Dimensions: id, username, correo, role, status
 
 [GUÍA DE CLASIFICACIÓN SEMÁNTICA PARA ACTIVIDADES]
-1. **Actividades y Agenda** (Preguntas: "actividades de esta semana", "mis actividades de hoy", "agenda de Juan", "actividades para esta semana", "cuántas actividades tengo", "reuniones de Carlos", "mis eventos"):
+1. **Actividades, Citas y Agenda** (Preguntas: "citas de hace 2 semanas", "listado general de citas", "actividades de esta semana", "mis actividades de hoy", "agenda de Juan", "mis eventos", "compromisos"):
    - Entidad: Actividades
+   ${hasCitaType ? '- Si piden "citas", filtra por TiposActividad.nombre = "Cita".' : '- Si piden "citas", "agenda", "eventos" o "actividades", consulta todas las actividades del periodo SIN filtrar por TiposActividad.nombre.'}
    - Measures: ["Actividades.count"] (únicamente si piden conteo general cuantitativo sin ver el detalle; al listar actividades o ver agenda, NO uses measures)
    - Dimensions sugeridas para detalle: ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"]
-   - TimeDimensions: [{ "dimension": "Actividades.fecha", "dateRange": "This week" }] (o "Today", "This month")
+   - TimeDimensions: [{ "dimension": "Actividades.fecha", "dateRange": "This week" }] (o "Today", "hace 2 semanas", "This month")
 
 2. **Siguiente / Próxima Actividad** (Preguntas: "cuál es la siguiente actividad de Juan", "próxima actividad", "mis siguientes eventos"):
    - Filtrar con { "member": "Actividades.fecha", "operator": "gte", "values": ["${todayISO}"] } para buscar únicamente hacia el futuro a partir de hoy.
@@ -374,6 +417,9 @@ ${sharedRules}
 ${this.buildResponseJsonSchema()}
 
 [EJEMPLOS DE ENTENDIMIENTO NATURAL]
+- "listado general de citas de hace 2 semanas" / "citas de la semana pasada" →
+  {"thought": "${genericExampleThought}", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"]${genericExampleFilters}, "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "hace 2 semanas"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Citas y actividades de hace 2 semanas:"}
+
 - "actividades de juan para mañana" / "mis actividades de mañana" →
   {"thought": "El usuario consulta las actividades programadas para mañana. Se filtra por Usuarios.username y timeDimension en Actividades.fecha con dateRange 'Tomorrow'.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"dimensions": ["Actividades.actividad", "TiposActividad.nombre", "Actividades.fecha", "Usuarios.username", "Oportunidades.nombreProyecto", "Empresas.nombre"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["Juan"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "Tomorrow"}], "order": {"Actividades.fecha": "asc"}}, "responseTemplate": "Actividades de Juan para mañana:"}
 
@@ -400,6 +446,7 @@ ${this.buildResponseJsonSchema()}
 
 - "cuantas actividades tuvo admin el mes pasado" / "total de actividades de Carlos" →
   {"thought": "El usuario consulta el conteo de actividades de un asesor en un periodo.", "intent": "ANALYTICAL", "detectedEntity": "Actividades", "cubeQuery": {"measures": ["Actividades.count"], "filters": [{"member": "Usuarios.username", "operator": "contains", "values": ["admin"]}], "timeDimensions": [{"dimension": "Actividades.fecha", "dateRange": "Last month"}]}, "responseTemplate": "El usuario 'admin' tuvo {Actividades.count} actividades el mes pasado."}`;
+      }
 
       case 'GASTOS':
         return `${baseHeader}

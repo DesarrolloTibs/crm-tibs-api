@@ -134,15 +134,25 @@ export class WebchatSecurityService {
    * Maneja placeholders ("me", "yo", "usuario_actual"), nombres en texto (convirtiéndolos a Usuarios.username para Admin)
    * y consultas globales de SuperAdmin.
    */
-  sanitizeFilters(cubeQuery: CubeQuery | undefined, userId: string, userRole: string): void {
+  sanitizeFilters(
+    cubeQuery: CubeQuery | undefined,
+    userId: string,
+    userRole: string,
+    options?: { validActivityTypes?: string[] },
+  ): void {
     if (!cubeQuery || !cubeQuery.filters) return;
-    cubeQuery.filters = this.sanitizeFilterList(cubeQuery.filters, userId, userRole);
+    cubeQuery.filters = this.sanitizeFilterList(cubeQuery.filters, userId, userRole, options);
   }
 
   /**
    * Sanitiza recursivamente una lista de filtros, soportando bloques OR y AND.
    */
-  private sanitizeFilterList(filters: any[], userId: string, userRole: string): any[] {
+  private sanitizeFilterList(
+    filters: any[],
+    userId: string,
+    userRole: string,
+    options?: { validActivityTypes?: string[] },
+  ): any[] {
     if (!filters || !Array.isArray(filters)) return [];
 
     const roleLower = (userRole || '').toLowerCase().trim();
@@ -191,7 +201,7 @@ export class WebchatSecurityService {
       if (!filter) continue;
 
       if (filter.or && Array.isArray(filter.or)) {
-        const sanitizedOr = this.sanitizeFilterList(filter.or, userId, userRole);
+        const sanitizedOr = this.sanitizeFilterList(filter.or, userId, userRole, options);
         if (sanitizedOr.length > 0) {
           sanitizedFilters.push({ or: sanitizedOr });
         }
@@ -199,7 +209,7 @@ export class WebchatSecurityService {
       }
 
       if (filter.and && Array.isArray(filter.and)) {
-        const sanitizedAnd = this.sanitizeFilterList(filter.and, userId, userRole);
+        const sanitizedAnd = this.sanitizeFilterList(filter.and, userId, userRole, options);
         if (sanitizedAnd.length > 0) {
           sanitizedFilters.push({ and: sanitizedAnd });
         }
@@ -217,6 +227,43 @@ export class WebchatSecurityService {
         ) {
           this.logger.warn(`[WebChat - Sanitize] Filtro descartado por no existir en el catálogo de productos: ${filter.member}`);
           continue;
+        }
+
+        // Sanitizar filtros en TiposActividad.nombre:
+        // Validar dinámicamente contra los tipos activos configurados en el tenant actual.
+        // Si el término coincide con un tipo real del tenant (ej. 'Cita', 'Reunión', 'Llamada'), se mantiene y normaliza.
+        // Si NO coincide con ningún tipo activo del tenant (por ejemplo, 'Cita' cuando el tenant no lo tiene creado, o términos genéricos como 'evento', 'actividad', etc.),
+        // se descarta el filtro para consultar toda la agenda en lugar de romper con 0 filas en Cube.
+        if (lowerMem === 'tiposactividad.nombre') {
+          const tenantTypes = options?.validActivityTypes && options.validActivityTypes.length > 0
+            ? options.validActivityTypes
+            : ['Llamada', 'Reunión', 'Demostración', 'Visita', 'Correo'];
+
+          if (Array.isArray(filter.values) && filter.values.length > 0) {
+            const rawVal = String(filter.values[0] || '').trim();
+            const normVal = this.normalizeString(rawVal);
+
+            // Buscar si coincide con algún tipo activo del tenant (exacto, singular/plural, o alias comunes)
+            const matchedCatalogType = tenantTypes.find(t => {
+              const normT = this.normalizeString(t);
+              if (normT === normVal) return true;
+              if (normVal === `${normT}s` || normVal === `${normT}es`) return true;
+              if (`${normVal}s` === normT || `${normVal}es` === normT) return true;
+              if ((normVal === 'demo' || normVal === 'demos') && normT.includes('demostracion')) return true;
+              if ((normVal === 'email' || normVal === 'emails') && normT.includes('correo')) return true;
+              return false;
+            });
+
+            if (matchedCatalogType) {
+              filter.values = [matchedCatalogType];
+              this.logger.log(`[WebChat - Sanitize] Filtro TiposActividad.nombre normalizado a tipo activo: "${matchedCatalogType}"`);
+            } else {
+              this.logger.warn(
+                `[WebChat - Sanitize] Filtro descartado: "${rawVal}" no coincide con ningún tipo de actividad activo en este tenant (${tenantTypes.join(', ')}). Se consultará toda la agenda del periodo.`,
+              );
+              continue;
+            }
+          }
         }
       }
 
@@ -328,5 +375,13 @@ export class WebchatSecurityService {
   isExecutive(role: string): boolean {
     const r = (role || '').toLowerCase().trim();
     return r === 'executive' || r === 'ejecutivo';
+  }
+
+  private normalizeString(str: string): string {
+    return (str || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
   }
 }

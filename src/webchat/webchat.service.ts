@@ -106,7 +106,11 @@ Genera tu respuesta JSON:`;
         const plan = classification.actionPlan || {
           action: this.queryPlanner.inferActionTypeFromQuestion(question) || 'createOpportunity',
           parameters: {},
+          thought: classification.thought || 'Recuperación heurística de acción.',
         };
+        if (!plan.thought && classification.thought) {
+          plan.thought = classification.thought;
+        }
         return await this.actionExecutor.executeAction(plan, userObj, question, conversationHistory);
       }
 
@@ -129,7 +133,18 @@ Genera tu respuesta JSON:`;
       }
 
       // 6. PASO 2: Invocación del Sub-Agente Especializado del Dominio detectado
-      const subAgentPrompt = this.promptBuilder.buildDomainPrompt(classification.domain, userId, userRole, username);
+      let activeActivityTypes: string[] | undefined;
+      if (classification.domain === 'ACTIVIDADES') {
+        activeActivityTypes = await this.actionExecutor.getActiveActivityTypeNames();
+      }
+
+      const subAgentPrompt = this.promptBuilder.buildDomainPrompt(
+        classification.domain,
+        userId,
+        userRole,
+        username,
+        { activeActivityTypes },
+      );
       const fullSubAgentPrompt = `${subAgentPrompt}
 
 ${historyText ? `[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n` : ''}
@@ -186,7 +201,7 @@ Genera tu respuesta JSON:`;
       }
 
       // 11. Ejecutar consulta analítica / específica
-      return await this.handleSpecificOrAnalyticalQuery(question, queryPlan, userId, userRole);
+      return await this.handleSpecificOrAnalyticalQuery(question, queryPlan, userId, userRole, { activeActivityTypes });
 
     } catch (error: any) {
       this.logger.error(`[WebChat] Error procesando consulta: ${error.message}`, error.stack);
@@ -283,6 +298,7 @@ Genera tu respuesta JSON:`;
     queryPlan: CubeQueryPlan,
     userId: string,
     userRole: string,
+    options?: { activeActivityTypes?: string[] },
   ): Promise<WebchatResponse> {
     const queriesToExecute = this.queryPlanner.extractAndSplitQueries(queryPlan);
 
@@ -299,7 +315,9 @@ Genera tu respuesta JSON:`;
 
     for (const q of queriesToExecute) {
       this.securityService.applySecurityFilters(q, userId, userRole);
-      this.securityService.sanitizeFilters(q, userId, userRole);
+      this.securityService.sanitizeFilters(q, userId, userRole, {
+        validActivityTypes: options?.activeActivityTypes,
+      });
 
       if (q.filters) {
         allExecutedFilters.push(...q.filters);

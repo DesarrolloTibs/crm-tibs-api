@@ -290,6 +290,11 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(actPrompt).toContain('Actividades.actividad');
       expect(actPrompt).toContain('TiposActividad.nombre');
 
+      const actPromptWithCita = promptBuilder.buildDomainPrompt('ACTIVIDADES', 'user-1', 'admin', 'Admin User', {
+        activeActivityTypes: ['Cita', 'Llamada', 'Reunión'],
+      });
+      expect(actPromptWithCita).toContain('Este tenant TIENE configurado el tipo de actividad "Cita"');
+
       const expPrompt = promptBuilder.buildDomainPrompt('GASTOS', 'user-1', 'admin', 'Admin User');
       expect(expPrompt).toContain('Sub-Agente Especialista en Finanzas y Gastos');
       expect(expPrompt).toContain('Gastos.montoSum');
@@ -493,6 +498,60 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(query.filters).toHaveLength(1);
       expect(query.filters[0].or).toHaveLength(1);
       expect(query.filters[0].or[0].member).toBe('Oportunidades.cuentaOCliente');
+    });
+
+    it('should drop generic activity terms like Cita/Evento when NOT in catalog and normalize valid types', () => {
+      const queryWithCita: any = {
+        filters: [
+          {
+            member: 'TiposActividad.nombre',
+            operator: 'equals',
+            values: ['Cita'],
+          },
+        ],
+      };
+
+      // Sin 'Cita' en el catálogo: se descarta como término no existente para evitar 0 filas
+      securityService.sanitizeFilters(queryWithCita, '11111111-1111-1111-1111-111111111111', 'admin');
+      expect(queryWithCita.filters).toHaveLength(0);
+
+      const queryWithReunion: any = {
+        filters: [
+          {
+            member: 'TiposActividad.nombre',
+            operator: 'equals',
+            values: ['reuniones'],
+          },
+        ],
+      };
+
+      securityService.sanitizeFilters(queryWithReunion, '11111111-1111-1111-1111-111111111111', 'admin');
+      expect(queryWithReunion.filters).toHaveLength(1);
+      expect(queryWithReunion.filters[0].values).toEqual(['Reunión']); // Normalized
+    });
+
+    it('should preserve and normalize Cita when the tenant HAS configured a Cita activity type', () => {
+      const queryWithCita: any = {
+        filters: [
+          {
+            member: 'TiposActividad.nombre',
+            operator: 'equals',
+            values: ['citas'],
+          },
+        ],
+      };
+
+      // Con catálogo dinámico del tenant que sí incluye 'Cita'
+      securityService.sanitizeFilters(
+        queryWithCita,
+        '11111111-1111-1111-1111-111111111111',
+        'admin',
+        { validActivityTypes: ['Cita', 'Llamada', 'Reunión'] },
+      );
+
+      // Ahora el filtro SÍ se preserva y se normaliza a 'Cita'
+      expect(queryWithCita.filters).toHaveLength(1);
+      expect(queryWithCita.filters[0].values).toEqual(['Cita']);
     });
   });
 

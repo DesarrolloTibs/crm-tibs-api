@@ -24,13 +24,17 @@ export class WebchatQueryPlannerService {
       let intent = parsed.intent || (domain === 'CONVERSATIONAL' ? 'CONVERSATIONAL' : (domain === 'ACTION_EXECUTION' ? 'ACTION_EXECUTION' : 'ANALYTICAL'));
 
       let actionPlan = parsed.actionPlan || null;
-      if (!actionPlan && (parsed.action || domain === 'ACTION_EXECUTION' || intent === 'ACTION_EXECUTION')) {
+      if (actionPlan) {
+        if (!actionPlan.thought) {
+          actionPlan.thought = parsed.thought || 'Ruteo estructurado por IA.';
+        }
+      } else if (parsed.action || domain === 'ACTION_EXECUTION' || intent === 'ACTION_EXECUTION') {
         const actionType = parsed.action || this.inferActionTypeFromQuestion(question);
         if (actionType) {
           actionPlan = {
             action: actionType,
             parameters: parsed.parameters || parsed.params || parsed.data || {},
-            thought: parsed.thought,
+            thought: parsed.thought || 'Ruteo estructurado por IA.',
           };
           intent = 'ACTION_EXECUTION';
         }

@@ -179,3 +179,46 @@ En lugar de depender de prompts estáticos, el agente opera mediante un grafo de
      - Se migraron los límites de inicio y fin de jornada y la generación de candidatos a `buildDateInTz`, operando siempre en la zona horaria del tenant (`process.env.NOTIFICATION_TIMEZONE || 'America/Mexico_City'`).
   4. **Desacoplamiento en Reprogramaciones (`handleModifyActivity`):**
      - Se separó estrictamente `targetTime`/`targetDate` (hora/fecha original a buscar) de `newTime`/`newDate` (nueva hora/fecha), previniendo sobrescrituras involuntarias en flujos de modificación de actividades.
+
+##### 🛡️ Validación Antialucinación de Valores Requeridos y Auditoría de Logs AI-First en Actividades
+
+* **Problema Identificado en Producción:**
+  - Al solicitar la creación de actividades sin fecha ni hora explícita (ej. *"crea una llamada para el cliente miguel santos"*), el LLM tomaba la fecha y el minuto exacto actual del encabezado contextual (`[USUARIO ACTUAL]`) y generaba `"fecha": "YYYY-MM-DD", "hora": "HH:mm"`, agendando la actividad inmediatamente en el CRM.
+  - Al procesar la acción, la consola mostraba `[WebChat - Router Classification] [AI-FIRST]` pero inmediatamente en el ejecutor `[WebChat - Action Executor] [FALLBACK HEURISTICO]`.
+* **Causa Raíz:**
+  1. **Alucinación de Fecha/Hora:** El prompt del orquestador indicaba un valor por defecto para la hora (`default "10:00"`) y no prohibía explícitamente asumir la fecha actual. Al recibir parámetros completos por alucinación, `handleCreateActivity` no detectaba la ausencia de fecha.
+  2. **Discrepancia en Logs (`[FALLBACK HEURISTICO]`):** En `WebchatQueryPlannerService`, el LLM genera `thought` en la raíz del JSON, por lo que `actionPlan.thought` quedaba `undefined`. En `WebchatActionExecutorService`, `const isActionAiFirst = !!(actionPlan.thought && !actionPlan.thought.includes('Recuperación'))` evaluaba a `false` por el valor `undefined`, registrando falsamente fallback heurístico.
+* **Solución Implementada:**
+  1. **Propagación Integral de Intención (`thought`):** En `WebchatQueryPlannerService`, si `actionPlan.thought` no está definido, se propaga automáticamente `parsed.thought`. En `WebchatActionExecutorService`, se evalúa `!actionPlan.thought?.includes('Recuperación')` garantizando la coherencia del log `[AI-FIRST]`.
+  2. **Directiva Estricta en Prompt (`buildRouterPrompt`):** Instrucción explícita prohibiendo inventar fecha u hora para actividades si no fueron provistas por el usuario, omitiéndolas para forzar la solicitud de datos requeridos.
+  3. **Guardrail Determinista Antialucinación (`hasTemporalReference`):** En `handleCreateActivity`, si la consulta del usuario y su historial reciente no contienen referencias temporales válidas (días relativos, días de la semana, meses contextualizados u horas), se descartan los parámetros temporales alucinados y se solicita de forma obligatoria la fecha y hora.
+
+* **Resolución Semántica y Catálogo Dinámico de Tipos de Actividad en Agenda (`TiposActividad.nombre`):**
+  - **Problema Inicial:** Consultas analíticas como *"listado general de citas de hace 2 semanas"* provocaban que el sub-agente de Actividades interpretara la palabra "citas" como un tipo de actividad específico, inyectando el filtro `TiposActividad.nombre = 'Cita'`. Al no existir dicho valor en el catálogo de base de datos (`Llamada`, `Reunión`, `Demostración`, `Visita`, `Correo`), Cube.dev devolvía 0 filas a pesar de existir actividades agendadas en dicho periodo.
+  - **Evolución Multi-Tenant (Soporte para Tipo "Cita" Dinámico):** Si un inquilino/tenant crea un tipo de actividad personalizado llamado `"Cita"` en `tbltypeactivities`, el sistema no debe bloquear ni descartar el filtro.
+  - **Solución Dinámica Multi-Tenant Implementada:**
+    1. **Consulta en Tiempo de Ejecución (`WebchatActionExecutorService.getActiveActivityTypeNames`):** Se consulta la tabla `tbltypeactivities` con `blnstatus = true` en el esquema PostgreSQL del tenant activo (`TenantContextService`).
+    2. **Inyección Dinámica en Prompt (`WebchatPromptBuilderService`):** El sub-agente de Actividades recibe la lista real de tipos configurados en el tenant. Si el tenant tiene configurado `"Cita"`, se le instruye explícitamente a filtrar por `TiposActividad.nombre = 'Cita'`. Si el tenant NO lo tiene configurado, se instruye que *"citas"* es un término genérico de agenda y no debe filtrarse por tipo.
+    3. **Sanitización Contextual por Tenant (`WebchatSecurityService`):** En `sanitizeFilterList`, `TiposActividad.nombre` se valida dinámicamente contra los tipos activos reales del tenant (`validActivityTypes`): si coincide (insensible a acentos/mayúsculas/plural), se preserva y normaliza; si NO coincide con ningún tipo del tenant, se descarta para evitar devolver 0 filas vacías en Cube.dev.
+
+
+### 📅 Validación Bidireccional de Disponibilidad de Agenda (Asesor + Cliente en `checkAvailability`)
+
+* **Problema Identificado en Producción:**
+  - Al solicitar agendar una actividad en lenguaje natural (ej. *"el miercoles a las 2 pm"* para el cliente Miguel Santos), el asistente programó con éxito la cita *"Cita con Migue Santos"*, a pesar de que el cliente **ya tenía una sesión programada a esa misma hora** en el CRM (*"Llamada a Miguel Santos"* a las 2:00 p.m. con el asesor Jonathan Amador).
+* **Causa Raíz:**
+  1. **Validación Unidireccional (Solo Asesor):** El método `checkAvailability` únicamente consultaba `activitiesService.findByUserAndDate(targetUserId, dayStart, dayEnd)`. Si el usuario logueado o asesor asignado (`targetUserId`, ej. `admin`) estaba libre, la verificación retornaba `available: true`, ignorando si el cliente ya estaba comprometido en otra actividad con otro miembro del equipo.
+  2. **Inversión de Pasos en `handleCreateActivity`:** La verificación `checkAvailability` se ejecutaba en el Paso 5, *antes* de que en el Paso 6 se resolvieran las entidades de cliente (`clientEntity`, `clientId`), por lo que no existía referencia al cliente al validar la agenda.
+* **Solución Implementada:**
+  1. **Resolución Previa de Entidades:** En `handleCreateActivity`, la resolución de Cliente, Empresa, Oportunidad y Contactos (junto con la validación de correo obligatorio) se ejecuta **antes** de la verificación de disponibilidad.
+  2. **Detección Bidireccional de Colisiones (`checkAvailability`):**
+     - Se extendió la firma con `CheckAvailabilityOptions`: `{ excludeActivityId?: string; clientId?: string; clientName?: string; targetUserName?: string }`.
+     - Si `clientId` está presente, se consultan las actividades del día vinculadas al cliente o sus contactos (`activity.clientId = :clientId OR contact.id = :clientId`).
+     - Se identifican colisiones independientes en una ventana de 60 minutos tanto para el asesor (`advisorConflict`) como para el cliente (`clientConflict`).
+  3. **Mensajes Diferenciados y Transparentes:**
+     - Si el conflicto es del cliente: informa explícitamente que el cliente ya tiene una actividad en ese horario, indicando el título de la actividad y el nombre del asesor con quien está agendado (ej. *"El cliente Miguel Santos ya tiene una sesión programada a esa hora (miércoles, 14 de octubre de 2026, 2:00 p.m.) con Jonathan Amador (Actividad: 'Llamada a Miguel Santos')"*).
+     - Si el conflicto es del asesor: informa que el horario propuesto ya está ocupado en su agenda.
+  4. **Cálculo de Horarios Libres Compartidos (`suggestedSlots`):**
+     - Los slots sugeridos garantizan que **ambas partes** (asesor y cliente) estén 100% disponibles.
+  5. **Protección en Reprogramación (`handleModifyActivity`):**
+     - La modificación de fecha/hora de actividades existentes también valida bidireccionalmente la agenda del cliente excluyendo la actividad en edición (`excludeActivityId`).

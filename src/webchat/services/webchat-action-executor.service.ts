@@ -119,7 +119,7 @@ export class WebchatActionExecutorService {
       }
     }
 
-    const isActionAiFirst = !!(actionPlan.thought && !actionPlan.thought.includes('Recuperación'));
+    const isActionAiFirst = !actionPlan.thought?.includes('Recuperación');
     this.logger.log(`[WebChat - Action Executor] [${isActionAiFirst ? 'AI-FIRST' : 'FALLBACK HEURISTICO'}] Ejecutando acción '${actionPlan.action}' para usuario ${user.username} (Rol: ${user.role}) | Parámetros: ${JSON.stringify(params)}`);
 
     switch (actionPlan.action) {
@@ -128,7 +128,7 @@ export class WebchatActionExecutorService {
       case 'modifyOpportunity':
         return this.handleModifyOpportunity(params, user);
       case 'createActivity':
-        return this.handleCreateActivity(params, user, originalQuestion);
+        return this.handleCreateActivity(params, user, originalQuestion, conversationHistory);
       case 'modifyActivity':
         return this.handleModifyActivity(params, user);
       case 'createTicket':
@@ -171,6 +171,14 @@ export class WebchatActionExecutorService {
           const quoteMatch = msg.match(/["']([^"']{3,})["']/);
           if (quoteMatch && quoteMatch[1]) {
             merged.activity = quoteMatch[1].trim();
+          } else {
+            const actMatch = msg.match(/(?:crea(?:r)?|agenda(?:r)?|programa(?:r)?)\s+(?:una\s+)?(llamada|reuni[oó]n|visita|demostraci[oó]n|actividad|cita)\s+(?:para|con)?\s*([^,\.]+)/i);
+            if (actMatch) {
+              merged.activity = `${actMatch[1]} ${actMatch[2]}`.trim();
+              if (!merged.tipoActividad) {
+                merged.tipoActividad = actMatch[1].trim();
+              }
+            }
           }
         }
 
@@ -902,7 +910,12 @@ export class WebchatActionExecutorService {
    * Crea una actividad validando campos requeridos, checkAvailability de agenda y RBAC.
    * Si falta la fecha, el detalle o el tipo de actividad, solicita los datos al usuario.
    */
-  async handleCreateActivity(params: any, user: User, originalQuestion?: string): Promise<WebchatResponse> {
+  async handleCreateActivity(
+    params: any,
+    user: User,
+    originalQuestion?: string,
+    conversationHistory?: ConversationHistoryMessage[],
+  ): Promise<WebchatResponse> {
     const isExec = this.isExecutive(user.role);
     const missingFields: string[] = [];
 
@@ -950,7 +963,22 @@ export class WebchatActionExecutorService {
       missingFields.push('• Detalle / Asunto: Indica el motivo de la actividad (ej. "Reunión de seguimiento comercial", "Llamada técnica").');
     }
 
-    // 3. Fecha y Hora en zona horaria de NOTIFICATION_TIMEZONE (Requerida - no inventar al azar)
+    // 3. Verificación estricta de Fecha y Hora (Requerida - PROHIBIDO ALUCINAR O ASUMIR)
+    // Si la invocación proviene del flujo del usuario (originalQuestion definido) y no se especificó
+    // ninguna expresión temporal ni en la consulta ni en el historial reciente, se descartan
+    // fechas u horas generadas por alucinación del LLM.
+    if (originalQuestion !== undefined) {
+      const hasTemporal = this.hasTemporalReference(originalQuestion, conversationHistory);
+      if (!hasTemporal) {
+        delete params.date;
+        delete params.fecha;
+        delete params.hora;
+        delete params.proposedDate;
+        delete params.time;
+        delete params.hour;
+      }
+    }
+
     const dateRaw = params.date || params.fecha || params.hora || params.proposedDate || params.time;
     if (!dateRaw) {
       missingFields.push('• Fecha y Hora: Especifica para cuándo deseas agendarla (ej. "mañana a las 4pm", "el viernes a las 11:00").');
@@ -1833,6 +1861,23 @@ export class WebchatActionExecutorService {
     return resolved ? resolved.id : 1;
   }
 
+  /**
+   * Obtiene la lista de nombres de tipos de actividad activos para el tenant actual.
+   * Utilizado para inyectar el catálogo dinámico en el subagente y sanitizar filtros analíticos.
+   */
+  async getActiveActivityTypeNames(): Promise<string[]> {
+    try {
+      const types = await this.typeActivityRepo.find({
+        where: { blnstatus: true },
+        select: ['strname'],
+      });
+      return types.map(t => t.strname).filter(Boolean);
+    } catch (err: any) {
+      this.logger.warn(`[WebchatActionExecutor] Error obteniendo tipos de actividad activos: ${err.message}`);
+      return ['Llamada', 'Reunión', 'Demostración', 'Visita', 'Correo'];
+    }
+  }
+
   async resolveClient(hint: string): Promise<Client | null> {
     if (!hint) return null;
     const clean = hint.replace(/^["']|["']$/g, '').trim();
@@ -2168,5 +2213,92 @@ export class WebchatActionExecutorService {
   isExecutive(role: string): boolean {
     const r = (role || '').toLowerCase().trim();
     return r === 'executive' || r === 'ejecutivo';
+  }
+
+  /**
+   * Verifica si el texto proporcionado por el usuario (o su historial reciente)
+   * contiene una referencia temporal explícita (días relativos, días de la semana,
+   * meses, horas o expresiones horarias). Evita que el sistema asuma o alucine fechas/horas
+   * cuando el usuario no las proporcionó.
+   */
+  hasTemporalReference(text?: string, conversationHistory?: ConversationHistoryMessage[]): boolean {
+    if (this.checkTemporalText(text)) return true;
+
+    if (conversationHistory && conversationHistory.length > 0) {
+      const userMsgs = conversationHistory
+        .filter(m => m.role === 'user')
+        .slice(-3);
+      for (const msg of userMsgs) {
+        if (this.checkTemporalText(msg.content)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private checkTemporalText(text?: string): boolean {
+    if (!text || typeof text !== 'string') return false;
+    const t = text.toLowerCase().trim();
+
+    // 1. Días relativos
+    if (/\b(hoy|mañana|manana|pasado\s+mañana|pasado\s+manana|pasadomañana|pasadomanana|ayer)\b/i.test(t)) {
+      return true;
+    }
+
+    // 2. Días de la semana
+    if (/\b(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)\b/i.test(t)) {
+      return true;
+    }
+    if (/\b(?:el|este|pr[oó]ximo|para\s+el)\s+domingo\b/i.test(t) || /\bdomingo\s+(?:a\s+las?|\d{1,2}|pr[oó]ximo)\b/i.test(t)) {
+      return true;
+    }
+
+    // 3. Meses (excluyendo 'julio' y 'abril' aislados porque son nombres propios de personas)
+    if (/\b(enero|febrero|marzo|mayo|junio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/i.test(t)) {
+      return true;
+    }
+    if (/\b(?:\d{1,2}\s+(?:de\s+)?|el\s+mes\s+de\s+|mediados\s+de\s+|principios\s+de\s+|finales\s+de\s+)(?:julio|abril)\b/i.test(t)) {
+      return true;
+    }
+    if (/\b(?:julio|abril)\s+(?:del?\s+)?\d{4}\b/i.test(t)) {
+      return true;
+    }
+    if (/\b(?:en|para)\s+(?:julio|abril)(?:\s+(?:del?\s+)?\d{4}|[\.,;]|$)/i.test(t)) {
+      return true;
+    }
+
+    // 4. Horas y momentos del día
+    if (/\b(?:a\s+las?|a\s+la|para\s+las?|para\s+la)\s+\d{1,2}(?::\d{2})?/i.test(t)) {
+      return true;
+    }
+    if (/\b\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.|hrs?|horas?)\b/i.test(t)) {
+      return true;
+    }
+    if (/\b(?:mediod[ií]a|medio\s+d[ií]a|en\s+la\s+mañana|en\s+la\s+tarde|en\s+la\s+noche)\b/i.test(t)) {
+      return true;
+    }
+
+    // 5. Formatos numéricos de fecha
+    if (/\b\d{4}-\d{2}-\d{2}\b/.test(t)) {
+      return true;
+    }
+    if (/\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/.test(t)) {
+      return true;
+    }
+    if (/\b(?:el|para\s+el|d[ií]a)\s+\d{1,2}\b/i.test(t)) {
+      return true;
+    }
+
+    // 6. Indicadores de fecha relativa / futura
+    if (/\b(?:pr[oó]xim[oa]|siguiente)\s+(?:semana|mes|d[ií]a)\b/i.test(t)) {
+      return true;
+    }
+    if (/\ben\s+\d+\s+(?:d[ií]as|horas|semanas|minutos)\b/i.test(t)) {
+      return true;
+    }
+
+    return false;
   }
 }
