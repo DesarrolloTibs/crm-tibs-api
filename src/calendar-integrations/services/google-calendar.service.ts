@@ -317,6 +317,7 @@ export class GoogleCalendarService {
   async getSyncChanges(
     integration: UserCalendarIntegration,
     integrationRepo: Repository<UserCalendarIntegration>,
+    forceFreshWindow = false,
   ): Promise<{ items: any[]; nextSyncToken: string | null }> {
     const token = await this.getValidToken(integration, integrationRepo);
     const calendarId = integration.calendarId || 'primary';
@@ -325,46 +326,65 @@ export class GoogleCalendarService {
       maxResults: '250',
     };
 
-    if (integration.syncToken) {
+    if (integration.syncToken && !forceFreshWindow) {
       params.syncToken = integration.syncToken;
+    } else {
+      const past = new Date();
+      past.setDate(past.getDate() - 30);
+      params.timeMin = past.toISOString();
     }
 
-    let url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
-      calendarId,
-    )}/events?${new URLSearchParams(params).toString()}`;
+    const items: any[] = [];
+    let nextSyncToken: string | null = null;
+    let pageToken: string | undefined = undefined;
+    let pageCount = 0;
 
-    let response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    do {
+      pageCount++;
+      if (pageToken) {
+        params.pageToken = pageToken;
+      } else {
+        delete params.pageToken;
+      }
 
-    // Si el syncToken expiró (410), hacemos sincronización completa desde hace un día
-    if (response.status === 410) {
-      this.logger.warn('Google Calendar syncToken expirado. Iniciando sincronización completa...');
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      
-      const fullParams = new URLSearchParams({
-        maxResults: '250',
-        timeMin: yesterday.toISOString(),
-      });
-      url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+      let url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
         calendarId,
-      )}/events?${fullParams.toString()}`;
-      response = await fetch(url, {
+      )}/events?${new URLSearchParams(params).toString()}`;
+
+      let response = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
-    }
 
-    if (!response.ok) {
-      const err = await response.text();
-      this.logger.error(`Error al obtener eventos de Google: ${err}`);
-      throw new Error('No se pudieron descargar los cambios de Google.');
-    }
+      // Si el syncToken expiró (410), hacemos sincronización completa desde hace 30 días
+      if (response.status === 410) {
+        this.logger.warn('Google Calendar syncToken expirado. Iniciando sincronización completa...');
+        delete params.syncToken;
+        const past = new Date();
+        past.setDate(past.getDate() - 30);
+        params.timeMin = past.toISOString();
+        items.length = 0;
+        pageToken = undefined;
+        continue;
+      }
 
-    const data = await response.json();
+      if (!response.ok) {
+        const err = await response.text();
+        this.logger.error(`Error al obtener eventos de Google: ${err}`);
+        throw new Error('No se pudieron descargar los cambios de Google.');
+      }
+
+      const data = await response.json();
+      if (Array.isArray(data.items)) {
+        items.push(...data.items);
+      }
+
+      pageToken = data.nextPageToken;
+      nextSyncToken = data.nextSyncToken || null;
+    } while (pageToken && pageCount < 20);
+
     return {
-      items: data.items || [],
-      nextSyncToken: data.nextSyncToken || null,
+      items,
+      nextSyncToken,
     };
   }
 }

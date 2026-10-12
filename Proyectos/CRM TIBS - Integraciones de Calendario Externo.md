@@ -109,3 +109,11 @@ Para resolver este desafío arquitectónico sin romper el aislamiento multi-tena
 ## 5. Mapeo Inteligente de Títulos en Sincronización Externa
 * **Manejo de Propiedades por Proveedor:** Google usa `summary`, mientras que Microsoft Outlook Graph usa `subject`.
 * **Soporte para Eventos Privados y Sin Asunto:** Si un evento de Outlook/Google viene sin título por estar configurado como "Privado" (`sensitivity = 'private'`), "Fuera de la Oficina" (`showAs = 'oof'`), o sin asunto escrito, el sistema intenta extraer la primera línea de `bodyPreview` o asigna etiquetas descriptivas explícitas (`[Evento Privado]`, `[Fuera de la Oficina]`, `[Cita / Horario Reservado]`) en lugar de usar un texto genérico no informativo.
+
+### 6. Ventana Deslizante Delta, Renovación Automática y Normalización UTC
+* **Ventana Móvil Delta en Outlook:** Para evitar que `$deltatoken` quede anclado a un mes del pasado y deje fuera las citas presentes y futuras, `OutlookCalendarService` almacena un estado compacto `{ d, t, wStart, wEnd }` y reinicia automáticamente una ventana fresca `[hoy - 30 días, hoy + 60 días]` si el token supera las 24 horas o el final de la ventana monitoreada está a menos de 7 días.
+* **Paginación Exhaustiva (`@odata.nextLink` / `pageToken`):** Procesa en bucle todas las páginas de Microsoft Graph y Google Calendar para garantizar que ningún evento sea omitido si la lista excede el tamaño de lote (50/250 items).
+* **Auto-Renovación de Webhooks y Cron Cada 12 Horas (`autoRenewExpiringWebhooks`):**
+  - Microsoft Graph limita la vigencia a 2.9 días y exige `changeType = 'created,updated,deleted'`.
+  - El sistema auto-renueva preventivamente la suscripción push tanto en el cron bi-diario como en el flujo interactivo de consulta del usuario (`syncExternalChangesToCRM`).
+* **Normalización de Fechas UTC (`parseExternalEventDate`):** Concatena el sufijo `Z` cuando Graph entrega cadenas sin offset con `timeZone: 'UTC'` (`2026-10-12T16:00:00.0000000Z`), previniendo desfases horarios al ser parseadas por Node.js en zonas horarias locales.

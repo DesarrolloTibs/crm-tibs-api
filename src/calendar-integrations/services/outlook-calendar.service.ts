@@ -271,7 +271,7 @@ export class OutlookCalendarService {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        changeType: 'updated,deleted',
+        changeType: 'created,updated,deleted',
         notificationUrl: webhookAddress,
         resource: 'me/events',
         expirationDateTime: expiration.toISOString(),
@@ -289,6 +289,57 @@ export class OutlookCalendarService {
     return {
       expiration: new Date(data.expirationDateTime),
     };
+  }
+
+  /**
+   * Renueva una suscripción de webhook activa o crea una nueva si expiró.
+   */
+  async renewWebhookSubscription(
+    integration: UserCalendarIntegration,
+    integrationRepo: Repository<UserCalendarIntegration>,
+  ): Promise<{ subscriptionId: string; expiration: Date }> {
+    const token = await this.getValidToken(integration, integrationRepo);
+    const expiration = new Date();
+    expiration.setMinutes(expiration.getMinutes() + 4000); // ~2.8 días
+
+    if (integration.webhookSubscriptionId) {
+      try {
+        const response = await fetch(
+          `https://graph.microsoft.com/v1.0/subscriptions/${integration.webhookSubscriptionId}`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              expirationDateTime: expiration.toISOString(),
+            }),
+          },
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+          const newExp = new Date(data.expirationDateTime);
+          integration.webhookExpiration = newExp;
+          await integrationRepo.save(integration);
+          this.logger.log(`Webhook de Outlook renovado exitosamente para usuario ${integration.userId}. Expira: ${newExp.toISOString()}`);
+          return { subscriptionId: integration.webhookSubscriptionId, expiration: newExp };
+        }
+        this.logger.warn(`No se pudo renovar suscripción previa (${response.status}). Creando nueva suscripción...`);
+      } catch (err) {
+        this.logger.warn(`Fallo al intentar PATCH en suscripción: ${err.message}. Recreando...`);
+      }
+    }
+
+    // Si no había suscripción previa o falló el PATCH (ej: 404 por expiración), crear una nueva
+    const newSubId = crypto.randomUUID();
+    const created = await this.createWebhookSubscription(integration, integrationRepo, newSubId);
+    integration.webhookSubscriptionId = newSubId;
+    integration.webhookExpiration = created.expiration;
+    await integrationRepo.save(integration);
+    this.logger.log(`Nueva suscripción de webhook creada para usuario ${integration.userId}. ID: ${newSubId}`);
+    return { subscriptionId: newSubId, expiration: created.expiration };
   }
 
   /**
@@ -313,63 +364,109 @@ export class OutlookCalendarService {
   }
 
   /**
-   * Sincroniza cambios usando Graph API Delta queries.
+   * Sincroniza cambios usando Graph API Delta queries con ventana temporal deslizante y paginación completa.
    */
   async getSyncChanges(
     integration: UserCalendarIntegration,
     integrationRepo: Repository<UserCalendarIntegration>,
+    forceFreshWindow = false,
   ): Promise<{ items: any[]; nextSyncToken: string | null }> {
     const token = await this.getValidToken(integration, integrationRepo);
 
-    let url = integration.syncToken || '';
-    
-    // Si no hay deltaLink previo, inicializar una consulta delta
-    if (!url || !url.startsWith('http')) {
-      const start = new Date();
-      start.setDate(start.getDate() - 1); // Desde ayer
-      const end = new Date();
-      end.setDate(end.getDate() + 30); // 30 días al futuro
-
-      url = `https://graph.microsoft.com/v1.0/me/calendarView/delta?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`;
-    }
-
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    // Si delta token es inválido o expiró, intentamos hacer un reset sin token
-    if (!response.ok && integration.syncToken) {
-      this.logger.warn('Delta Link de Microsoft Graph inválido. Reintentando sincronización completa...');
-      const start = new Date();
-      start.setDate(start.getDate() - 1);
-      const end = new Date();
-      end.setDate(end.getDate() + 30);
-
-      const fallbackUrl = `https://graph.microsoft.com/v1.0/me/calendarView/delta?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`;
-      const retryResponse = await fetch(fallbackUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!retryResponse.ok) {
-        const err = await retryResponse.text();
-        throw new Error(`Error en delta sync fallback de Outlook: ${err}`);
+    // Parsear estado previo del delta token si existe
+    let state: { d: string; t: number; wStart: string; wEnd: string } | null = null;
+    if (integration.syncToken && !forceFreshWindow) {
+      try {
+        if (integration.syncToken.startsWith('{')) {
+          state = JSON.parse(integration.syncToken);
+        }
+      } catch {
+        state = null;
       }
-      const data = await retryResponse.json();
-      return {
-        items: data.value || [],
-        nextSyncToken: data['@odata.deltaLink'] || null,
-      };
     }
 
-    if (!response.ok) {
-      const err = await response.text();
-      this.logger.error(`Error en delta query de Outlook: ${err}`);
-      throw new Error('No se pudieron descargar los cambios de Outlook.');
+    // Determinar si necesitamos abrir una ventana delta fresca:
+    // 1. Solicitud explícita (forceFreshWindow)
+    // 2. No hay estado previo (o es el formato antiguo de URL simple)
+    // 3. El delta token tiene más de 24 horas (para mantener actualizada la ventana móvil de citas)
+    // 4. El fin de la ventana monitoreada está a menos de 7 días del presente
+    const now = Date.now();
+    const isStateExpired = state ? (now - state.t > 24 * 60 * 60 * 1000) : true;
+    const isWindowEndingSoon = state?.wEnd ? (new Date(state.wEnd).getTime() - now < 7 * 24 * 60 * 60 * 1000) : false;
+    const needsFreshWindow = forceFreshWindow || !state || isStateExpired || isWindowEndingSoon;
+
+    let url: string;
+    let windowStartStr = state?.wStart;
+    let windowEndStr = state?.wEnd;
+
+    if (needsFreshWindow) {
+      const start = new Date();
+      start.setDate(start.getDate() - 30); // 30 días al pasado
+      const end = new Date();
+      end.setDate(end.getDate() + 60);    // 60 días al futuro
+
+      windowStartStr = start.toISOString();
+      windowEndStr = end.toISOString();
+      url = `https://graph.microsoft.com/v1.0/me/calendarView/delta?startDateTime=${windowStartStr}&endDateTime=${windowEndStr}`;
+      this.logger.log(`Iniciando ventana delta fresca de Outlook [${windowStartStr} - ${windowEndStr}] para usuario ${integration.userId}`);
+    } else {
+      url = state!.d;
     }
 
-    const data = await response.json();
+    const items: any[] = [];
+    let nextUrl: string | null = url;
+    let finalDeltaLink: string | null = null;
+    let pageCount = 0;
+
+    while (nextUrl && pageCount < 30) {
+      pageCount++;
+      const response: any = await fetch(nextUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Prefer: 'odata.maxpagesize=50',
+        },
+      });
+
+      // Si el delta token falló o expiró (ej: 410 Gone / 400 Bad Request), reintentar una sincronización fresca
+      if (!response.ok) {
+        if (!needsFreshWindow) {
+          this.logger.warn(`Delta token de Outlook inválido (${response.status}). Reiniciando con ventana fresca...`);
+          return this.getSyncChanges(integration, integrationRepo, true);
+        }
+        const err = await response.text();
+        this.logger.error(`Error en delta query de Outlook: ${err}`);
+        throw new Error('No se pudieron descargar los cambios de Outlook.');
+      }
+
+      const data: any = await response.json();
+      if (Array.isArray(data.value)) {
+        items.push(...data.value);
+      }
+
+      // Manejar paginación (@odata.nextLink) hasta obtener el @odata.deltaLink en la última página
+      if (data['@odata.nextLink']) {
+        nextUrl = data['@odata.nextLink'];
+      } else {
+        finalDeltaLink = data['@odata.deltaLink'] || null;
+        nextUrl = null;
+      }
+    }
+
+    // Codificar el nuevo estado compacto en nextSyncToken
+    let nextSyncToken: string | null = null;
+    if (finalDeltaLink) {
+      nextSyncToken = JSON.stringify({
+        d: finalDeltaLink,
+        t: Date.now(),
+        wStart: windowStartStr || new Date(Date.now() - 30 * 86400000).toISOString(),
+        wEnd: windowEndStr || new Date(Date.now() + 60 * 86400000).toISOString(),
+      });
+    }
+
+    this.logger.log(`Descargados ${items.length} eventos de Outlook (páginas procesadas: ${pageCount}) para usuario ${integration.userId}`);
     return {
-      items: data.value || [],
-      nextSyncToken: data['@odata.deltaLink'] || null,
+      items,
+      nextSyncToken,
     };
   }
 }

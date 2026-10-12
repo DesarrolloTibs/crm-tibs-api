@@ -48,7 +48,7 @@ export class UserCalendarIntegration {
   @Column({ type: 'timestamptz', nullable: true })
   webhookExpiration: Date | null;
 
-  @Column({ type: 'varchar', length: 500, nullable: true })
+  @Column({ type: 'text', nullable: true })
   syncToken: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })

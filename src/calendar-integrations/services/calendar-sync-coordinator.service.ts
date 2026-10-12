@@ -1,8 +1,10 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { DataSource, Repository } from 'typeorm';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { UserCalendarIntegration } from '../entities/user-calendar-integration.entity';
+import { CalendarWebhookMapping } from '../entities/calendar-webhook-mapping.entity';
 import { GoogleCalendarService } from './google-calendar.service';
 import { OutlookCalendarService } from './outlook-calendar.service';
 import { Activity } from '../../activities/entities/activity.entity';
@@ -210,12 +212,41 @@ export class CalendarSyncCoordinatorService {
   }
 
   /**
+   * Parsea la fecha de un evento externo garantizando integridad de zona horaria UTC.
+   */
+  private parseExternalEventDate(startObj: any): Date | null {
+    if (!startObj) return null;
+    if (startObj instanceof Date) {
+      return isNaN(startObj.getTime()) ? null : startObj;
+    }
+    if (typeof startObj === 'string') {
+      const d = new Date(startObj);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    if (startObj.dateTime) {
+      let str = String(startObj.dateTime).trim();
+      const tz = String(startObj.timeZone || '').toUpperCase();
+      // Si Graph entrega '2026-10-12T16:00:00.0000000' con timeZone: 'UTC', concatenar 'Z'
+      if ((tz === 'UTC' || tz === 'GMT') && !str.endsWith('Z') && !str.includes('+') && !str.match(/-\d{2}:\d{2}$/)) {
+        str += 'Z';
+      }
+      const d = new Date(str);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    if (startObj.date) {
+      // Evento de todo el día (ej: '2026-10-12')
+      const d = new Date(`${startObj.date}T00:00:00Z`);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    return null;
+  }
+
+  /**
    * Sincroniza cambios desde proveedores externos hacia el CRM (Google/Outlook).
    */
   async syncExternalChangesToCRM(tenantSchema: string, userId: string, force = false): Promise<void> {
     const lockKey = `${tenantSchema}:${userId}`;
     if (this.isSyncing.has(lockKey)) return;
-
 
     this.isSyncing.add(lockKey);
 
@@ -228,25 +259,49 @@ export class CalendarSyncCoordinatorService {
         const integration = await integrationRepo.findOne({ where: { userId } });
         if (!integration) return;
 
+        // Auto-reparación preventiva: Si el webhook de Outlook está expirado o por expirar en menos de 12 horas, renovarlo
+        if (
+          integration.provider === 'outlook' &&
+          integration.webhookExpiration &&
+          new Date(integration.webhookExpiration).getTime() - Date.now() < 12 * 60 * 60 * 1000
+        ) {
+          try {
+            const renewed = await this.outlookService.renewWebhookSubscription(integration, integrationRepo);
+            const mappingRepo = this.dataSource.getRepository(CalendarWebhookMapping);
+            await mappingRepo.upsert(
+              {
+                subscriptionId: renewed.subscriptionId,
+                tenantSchema,
+                userId,
+                provider: 'outlook',
+                expiresAt: renewed.expiration,
+              },
+              ['subscriptionId'],
+            );
+          } catch (renewErr) {
+            this.logger.warn(`No se pudo auto-renovar webhook para usuario ${userId}: ${renewErr.message}`);
+          }
+        }
+
         this.logger.log(`Iniciando sync de cambios desde ${integration.provider} hacia CRM para usuario: ${userId}`);
 
         let items: any[] = [];
         let nextSyncToken: string | null = null;
 
         if (integration.provider === 'google') {
-          const res = await this.googleService.getSyncChanges(integration, integrationRepo);
+          const res = await this.googleService.getSyncChanges(integration, integrationRepo, force);
           items = res.items;
           nextSyncToken = res.nextSyncToken;
         } else if (integration.provider === 'outlook') {
-          const res = await this.outlookService.getSyncChanges(integration, integrationRepo);
+          const res = await this.outlookService.getSyncChanges(integration, integrationRepo, force);
           items = res.items;
           nextSyncToken = res.nextSyncToken;
         }
 
         for (const item of items) {
           const extId = item.id || item.uid;
-          const status = item.status || item.showAs; // 'cancelled' o similar indica borrado
-          const isDeleted = status === 'cancelled' || item.isCancelled === true;
+          const status = String(item.status || item.showAs || '').toLowerCase();
+          const isDeleted = status === 'cancelled' || item.isCancelled === true || !!item['@removed'];
 
           // Buscar si la actividad ya está mapeada
           const existingActivity = await activityRepo.findOne({ where: { externalEventId: extId } });
@@ -288,11 +343,7 @@ export class CalendarSyncCoordinatorService {
           const summary = rawSummary;
           const description = item.description || (item.body ? item.body.content : '') || '';
           
-          let eventDate: Date | null = null;
-          if (item.start) {
-            const rawStart = item.start.dateTime || item.start;
-            eventDate = rawStart ? new Date(rawStart) : null;
-          }
+          const eventDate = this.parseExternalEventDate(item.start);
 
           if (!eventDate || isNaN(eventDate.getTime())) {
             continue;
@@ -366,5 +417,52 @@ export class CalendarSyncCoordinatorService {
         this.isSyncing.delete(lockKey);
       }
     });
+  }
+
+  /**
+   * Cron periódico cada 12 horas para renovar proactivamente webhooks de Microsoft Graph
+   * antes de que expire su vigencia límite de 2.9 días.
+   */
+  @Cron(CronExpression.EVERY_12_HOURS)
+  async autoRenewExpiringWebhooks() {
+    this.logger.log('Ejecutando cron de renovación proactiva de webhooks de calendarios...');
+    try {
+      const mappingRepo = this.dataSource.getRepository(CalendarWebhookMapping);
+      const mappings = await mappingRepo.find();
+
+      for (const m of mappings) {
+        if (m.provider !== 'outlook') continue;
+        const now = Date.now();
+        // Si expira en menos de 24 horas o ya expiró
+        if (m.expiresAt && new Date(m.expiresAt).getTime() - now < 24 * 60 * 60 * 1000) {
+          try {
+            await TenantContextService.run({ tenantSchema: m.tenantSchema, userId: m.userId }, async () => {
+              const integrationRepo = this.dataSource.getRepository(UserCalendarIntegration);
+              const integration = await integrationRepo.findOne({ where: { userId: m.userId } });
+              if (!integration) return;
+
+              const res = await this.outlookService.renewWebhookSubscription(integration, integrationRepo);
+              if (res.subscriptionId !== m.subscriptionId) {
+                await mappingRepo.delete({ subscriptionId: m.subscriptionId });
+              }
+              await mappingRepo.upsert(
+                {
+                  subscriptionId: res.subscriptionId,
+                  tenantSchema: m.tenantSchema,
+                  userId: m.userId,
+                  provider: 'outlook',
+                  expiresAt: res.expiration,
+                },
+                ['subscriptionId'],
+              );
+            });
+          } catch (itemErr) {
+            this.logger.warn(`Error al renovar webhook para user ${m.userId} en ${m.tenantSchema}: ${itemErr.message}`);
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.error(`Error en cron autoRenewExpiringWebhooks: ${err.message}`);
+    }
   }
 }
