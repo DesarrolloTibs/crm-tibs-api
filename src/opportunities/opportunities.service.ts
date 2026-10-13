@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, InternalServerErrorException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindManyOptions, Repository, FindOptionsWhere, Brackets } from 'typeorm';
 import { Opportunity } from './entities/opportunity.entity';
@@ -29,7 +29,7 @@ import { PipelinesGateway } from '../pipelines/pipelines.gateway';
 import { TenantContextService } from 'src/tenancy/tenant-context.service';
 
 @Injectable()
-export class OpportunitiesService {
+export class OpportunitiesService implements OnModuleInit {
   private readonly logger = new Logger('OpportunitiesService');
   constructor(
     @InjectRepository(Opportunity)
@@ -54,6 +54,29 @@ export class OpportunitiesService {
     private readonly notificationsService: NotificationsService,
     private readonly pipelinesGateway: PipelinesGateway,
   ) {}
+
+  async onModuleInit() {
+    try {
+      const schemas = await this.opportunityRepository.query(`
+        SELECT schema_name FROM information_schema.schemata 
+        WHERE schema_name NOT IN ('pg_catalog', 'information_schema')
+      `);
+      for (const row of schemas) {
+        const sName = row.schema_name;
+        try {
+          await this.opportunityRepository.query(`
+            ALTER TABLE "${sName}".opportunities 
+            ADD COLUMN IF NOT EXISTS canal_origen varchar(50) DEFAULT 'manual';
+          `);
+        } catch (e) {
+          // Ignorar si la tabla opportunities no existe en el esquema
+        }
+      }
+      this.logger.log('Auto-migración de oportunidades: columna canal_origen verificada en todos los esquemas.');
+    } catch (err: any) {
+      this.logger.error(`Error en auto-migración de columna canal_origen en oportunidades: ${err.message}`);
+    }
+  }
 
   async create(createOpportunityDto: CreateOpportunityDto, user?: User): Promise<Opportunity> {
     const { contactIds, productIds, productItems, ...dtoWithoutContacts } = createOpportunityDto;
@@ -97,7 +120,11 @@ export class OpportunitiesService {
         (dtoWithoutContacts as any).monto_servicios = total;
       }
     }
-    const opportunityData = { ...dtoWithoutContacts, monto_total: total } as any;
+    const opportunityData = {
+      ...dtoWithoutContacts,
+      monto_total: total,
+      canal_origen: dtoWithoutContacts.canal_origen || 'manual',
+    } as any;
 
     // Si la moneda no es USD, nos aseguramos de que tipoCambio sea nulo.
     if (opportunityData.moneda !== 'USD') {

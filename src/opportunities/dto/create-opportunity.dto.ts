@@ -142,5 +142,10 @@ export class CreateOpportunityDto {
   @Max(3)
   @IsOptional()
   priority?: number;
+
+  @ApiPropertyOptional({ description: 'Canal de origen de la oportunidad (whatsapp, facebook, instagram, webchat, manual)', example: 'manual' })
+  @IsString()
+  @IsOptional()
+  canal_origen?: string;
 }
 

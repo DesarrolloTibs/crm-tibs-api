@@ -340,6 +340,20 @@ export class AiAgentToolsHandlerService {
             }
           }
 
+          let sourceChannel = 'webchat';
+          if (conversation?.channel) {
+            const ch = conversation.channel.toLowerCase().trim();
+            if (ch === 'messenger' || ch === 'facebook') {
+              sourceChannel = 'facebook';
+            } else if (ch === 'whatsapp') {
+              sourceChannel = 'whatsapp';
+            } else if (ch === 'instagram') {
+              sourceChannel = 'instagram';
+            } else {
+              sourceChannel = ch;
+            }
+          }
+
           const opp = await this.opportunitiesService.create({
             nombre_proyecto: input.nombreProyecto,
             description: input.descripcion || 'Creado por Agente IA',
@@ -352,6 +366,7 @@ export class AiAgentToolsHandlerService {
             licenciamiento_id: licensingId,
             productItems: productItems.length > 0 ? productItems : undefined,
             productIds: finalProductIds,
+            canal_origen: sourceChannel,
           } as any, userEntity);
 
           this.eventEmitter.emit(QUOTATION_EVENTS.SEND_TO_CHANNEL, {

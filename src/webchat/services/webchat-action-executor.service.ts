@@ -510,6 +510,7 @@ export class WebchatActionExecutorService {
       productItems: resolvedProducts.items.length > 0 ? resolvedProducts.items : undefined,
       productIds: resolvedProducts.items.length > 0 ? resolvedProducts.items.map(i => i.productId) : undefined,
       priority: params.priority !== undefined ? Number(params.priority) : 1,
+      canal_origen: 'webchat',
     } as any, { id: user.id } as User);
 
     const clientDisplay = clientEntity ? `${clientEntity.nombre} ${clientEntity.apellido || ''}`.trim() : (companyEntity ? companyEntity.nombre : 'Sin asignar');
