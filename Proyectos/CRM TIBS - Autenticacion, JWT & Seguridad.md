@@ -114,4 +114,4 @@ Para mitigar ataques de denegación de servicio (DoS) y fuerza bruta en credenci
 ## 5. Medidas Adicionales de Seguridad y Compatibilidad PWA
 * **Manejo Centralizado de Excepciones:** `GlobalExceptionFilter` intercepta `TokenExpiredError` y `JsonWebTokenError` retornando `401 Unauthorized` estandarizado.
 * **Multi-tenancy Blindado:** `TenantMiddleware` valida y aísla esquemas PostgreSQL mediante `TenantContextService` (`AsyncLocalStorage`) y arroja `403 Forbidden` si la organización está inactiva.
-* **Helmet & CORS:** Protección contra clickjacking, MIME sniffing y CORS configurado con `credentials: true`.
+* **Helmet & CORS:** Protección contra clickjacking, MIME sniffing y CORS configurado con `credentials: true`, permitiendo orígenes seguros de la plataforma y resolución dinámica de orígenes externos para landing pages de tenants que incrustan el WebChat Widget (`widget.js`).

@@ -6,7 +6,7 @@ export class ChannelConfig {
   id: string;
 
   @Column({ type: 'varchar', length: 50 })
-  channel: string; // 'whatsapp' | 'facebook' | 'instagram'
+  channel: string; // 'whatsapp' | 'facebook' | 'instagram' | 'webchat'
 
   @Column({ type: 'varchar', length: 255 })
   name: string; // Friendly name for the account

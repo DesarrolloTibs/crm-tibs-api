@@ -1,5 +1,6 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
-
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Brackets, In } from 'typeorm';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
@@ -59,6 +60,8 @@ export class ConversationsService {
     private readonly aiAgentService: AiAgentService,
     private readonly eventEmitter: EventEmitter2,
     private readonly clientsService: ClientsService,
+    @Inject(CACHE_MANAGER)
+    private readonly cacheManager: Cache,
   ) {}
 
   /**
@@ -212,7 +215,7 @@ export class ConversationsService {
   }
 
   /**
-   * Registra y procesa un mensaje entrante (simulado o webhook real de Meta).
+   * Registra y procesa un mensaje entrante (simulado, webhook real de Meta o webchat externo).
    */
   async receiveIncomingMessage(
     channel: string,
@@ -221,6 +224,7 @@ export class ConversationsService {
     text: string,
     channelConfigId?: string,
     externalMessageId?: string,
+    contactInfo?: { email?: string; phone?: string },
   ): Promise<Message> {
     // 1. Buscar o crear la conversación
     let conversation = await this.conversationRepository.findOne({
@@ -244,6 +248,36 @@ export class ConversationsService {
             apellido: '',
             correo: null,
             telefono: externalId,
+            ejecutivo_id: config.defaultUserId || undefined,
+          });
+          const savedClient: Client = await this.clientRepository.save(newClient) as unknown as Client;
+          linkedClientId = savedClient.id;
+        }
+      } else if (channel === 'webchat') {
+        // Para Webchat: intentar resolver cliente existente por correo o teléfono si fue suministrado
+        if (contactInfo?.email) {
+          const existingByEmail = await this.clientRepository.findOne({
+            where: { correo: contactInfo.email },
+          });
+          if (existingByEmail) {
+            linkedClientId = existingByEmail.id;
+            clientNickname = `${existingByEmail.nombre} ${existingByEmail.apellido || ''}`.trim() || clientNickname;
+          }
+        }
+        if (!linkedClientId && contactInfo?.phone) {
+          const existingByPhone = await this.clientsService.findByPhone(contactInfo.phone);
+          if (existingByPhone) {
+            linkedClientId = existingByPhone.id;
+            clientNickname = `${existingByPhone.nombre} ${existingByPhone.apellido || ''}`.trim() || clientNickname;
+          }
+        }
+
+        if (!linkedClientId) {
+          const newClient = this.clientRepository.create({
+            nombre: clientNickname,
+            apellido: '',
+            correo: contactInfo?.email || null,
+            telefono: contactInfo?.phone || null,
             ejecutivo_id: config.defaultUserId || undefined,
           });
           const savedClient: Client = await this.clientRepository.save(newClient) as unknown as Client;
@@ -273,16 +307,48 @@ export class ConversationsService {
         lastCustomerMessageAt: new Date(),
       });
       conversation = await this.conversationRepository.save(conversation);
-    } else if (
-      (conversation.clientName === 'Usuario de Facebook' || conversation.clientName === 'Usuario de Instagram' || !conversation.clientName) &&
-      clientNickname &&
-      clientNickname !== 'Usuario de Facebook' &&
-      clientNickname !== 'Usuario de Instagram'
-    ) {
-      conversation.clientName = clientNickname;
-      await this.conversationRepository.save(conversation);
-      if (conversation.clientId) {
-        await this.clientRepository.update(conversation.clientId, { nombre: clientNickname });
+    } else {
+      if (
+        (conversation.clientName === 'Usuario de Facebook' || conversation.clientName === 'Usuario de Instagram' || !conversation.clientName) &&
+        clientNickname &&
+        clientNickname !== 'Usuario de Facebook' &&
+        clientNickname !== 'Usuario de Instagram'
+      ) {
+        conversation.clientName = clientNickname;
+        await this.conversationRepository.save(conversation);
+        if (conversation.clientId) {
+          await this.clientRepository.update(conversation.clientId, { nombre: clientNickname });
+        }
+      }
+
+      // Si es webchat y recibimos datos de contacto del visitante, enriquecer el cliente y la conversación
+      if (channel === 'webchat') {
+        let needsSave = false;
+        if (channelConfigId && !conversation.channelConfigId) {
+          conversation.channelConfigId = channelConfigId;
+          needsSave = true;
+        }
+
+        if (clientNickname && !clientNickname.toLowerCase().includes('visitante') && conversation.clientName !== clientNickname) {
+          conversation.clientName = clientNickname;
+          needsSave = true;
+        }
+
+        if (conversation.clientId && contactInfo) {
+          const updates: Partial<Client> = {};
+          if (contactInfo.email) updates.correo = contactInfo.email;
+          if (contactInfo.phone) updates.telefono = contactInfo.phone;
+          if (clientNickname && !clientNickname.toLowerCase().includes('visitante')) {
+            updates.nombre = clientNickname;
+          }
+          if (Object.keys(updates).length > 0) {
+            await this.clientRepository.update(conversation.clientId, updates).catch(() => null);
+          }
+        }
+
+        if (needsSave) {
+          await this.conversationRepository.save(conversation);
+        }
       }
     }
 
@@ -1937,6 +2003,67 @@ export class ConversationsService {
     return null;
   }
 
+  /**
+   * Resuelve el esquema del inquilino y el channelConfigId a partir de un widgetKey (UUID de canal o verifyToken).
+   * Utiliza caché en memoria (TTL: 300s) para evitar consultas a BD en cada mensaje entrante del webchat.
+   */
+  async findTenantSchemaByWidgetKey(
+    widgetKey: string,
+  ): Promise<{ tenantSchema: string; channelConfigId: string } | null> {
+    if (!widgetKey || typeof widgetKey !== 'string') return null;
+    const cleanKey = widgetKey.trim();
+    if (!cleanKey) return null;
+
+    const cacheKey = `webchat_tenant:${cleanKey}`;
+    const cached = await this.cacheManager.get<{ tenantSchema: string; channelConfigId: string }>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const tenants = await this.channelConfigRepository.manager.query(
+      `SELECT schema_name FROM public.tenants WHERE is_active = true`
+    );
+
+    for (const t of tenants) {
+      const schema = t.schema_name;
+      try {
+        const query = `
+          SELECT id FROM "${schema}".channel_configs 
+          WHERE channel = 'webchat' AND "isActive" = true AND (id::text = $1 OR "verifyToken" = $1)
+          LIMIT 1
+        `;
+        const res = await this.channelConfigRepository.manager.query(query, [cleanKey]);
+        if (res && res.length > 0) {
+          const result = { tenantSchema: schema, channelConfigId: res[0].id };
+          await this.cacheManager.set(cacheKey, result, 300000);
+          return result;
+        }
+      } catch (err) {
+        // En caso de que el esquema no tenga la tabla channel_configs
+      }
+    }
+
+    // Fallback: Si cleanKey coincide exactamente con un schema_name activo que tiene webchat
+    const matchingTenant = tenants.find((t: any) => t.schema_name === cleanKey);
+    if (matchingTenant) {
+      try {
+        const fallbackQuery = `
+          SELECT id FROM "${cleanKey}".channel_configs 
+          WHERE channel = 'webchat' AND "isActive" = true
+          LIMIT 1
+        `;
+        const res = await this.channelConfigRepository.manager.query(fallbackQuery);
+        if (res && res.length > 0) {
+          const result = { tenantSchema: cleanKey, channelConfigId: res[0].id };
+          await this.cacheManager.set(cacheKey, result, 300000);
+          return result;
+        }
+      } catch (err) {}
+    }
+
+    return null;
+  }
+
   async verifyMetaWebhook(channel: string, mode: string, token: string, challenge: string): Promise<string> {
     this.logger.log(`[Webhook ${channel.toUpperCase()}] Petición de verificación recibida. mode=${mode}, token=${token}, challenge=${challenge}`);
     
@@ -2199,6 +2326,15 @@ export class ConversationsService {
       channelConfig = await this.channelConfigRepository.findOne({
         where: { channel: In(conversation.channel === 'messenger' || conversation.channel === 'facebook' ? ['facebook', 'messenger'] : [conversation.channel]), isActive: true },
       });
+    }
+
+    if (conversation.channel === 'webchat') {
+      this.logger.log(`[WEBCHAT OUTBOUND] Para: ${conversation.externalId} | Mensaje: "${content}"`);
+      if (messageEntity) {
+        messageEntity.status = 'delivered';
+        await this.messageRepository.save(messageEntity).catch(() => null);
+      }
+      return { success: true };
     }
 
     if (!channelConfig || !channelConfig.accessToken) {

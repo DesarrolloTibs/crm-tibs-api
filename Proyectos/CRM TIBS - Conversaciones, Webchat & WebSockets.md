@@ -73,15 +73,19 @@ graph TD
 
 ## 3. Módulo de Webchat Público (`src/webchat`)
 
-### 3.1. Widget Incrustable
-El módulo de webchat permite a los clientes de CRM TIBS integrar un widget de chat en vivo en sus sitios web corporativos mediante un fragmento de JavaScript ligero:
-* `POST /api/webchat/init`: Inicializa una sesión anónima o identificada para el visitante. Crea o recupera un registro en `conversations` vinculado al canal `'webchat'`.
-* `POST /api/webchat/message`: Ingesta el mensaje del visitante sin requerir token JWT, aplicando el rate limiter específico para webhooks (`1000 req/min`).
+### 3.1. Widget Incrustable & Aislamiento Multi-Tenant
+El módulo de webchat permite a los clientes de CRM TIBS integrar un widget de chat en vivo en sus sitios web y landing pages corporativas mediante un fragmento de JavaScript ligero (`widget.js`), manteniendo el aislamiento estricto por esquemas (*Database-Per-Schema*):
+* **Identificación del Tenant (`tenantKey`):** El widget de la landing page envía en cada solicitud el UUID público del canal (`channel_configs.id`) o token verificado, evitando exponer el nombre del esquema PostgreSQL (`tenant_<slug>`).
+* **Resolución con Caché LRU:** `ConversationsService.findTenantSchemaByWidgetKey(tenantKey)` localiza el inquilino en memoria (TTL de 300s con `@nestjs/cache-manager`) iterando `public.tenants` activos si no está en caché, con fallback directo por `schema_name`.
+* `GET /api/webchat/public/init`: Valida el `tenantKey` recibido como query parameter o header `x-tenant-key`, comprobando la vigencia del canal para inicializar el widget externo.
+* `POST /api/webchat/public/message`: Ingesta el mensaje del visitante (`SendPublicWebchatMessageDto`) ejecutado dentro de `TenantContextService.run({ tenantSchema }, ...)`. Si el visitante envía `email` o `phone`, enriquece o vincula automáticamente el prospecto en la tabla `clients` del tenant. Aplica el rate limiter de webhooks (`200 req/min`) y emite en vivo a los asesores comerciales vía WebSocket (`ConversationsGateway`).
+* `GET /api/webchat/public/messages/:visitorId?tenantKey=...`: Devuelve el historial de mensajes de la conversación, datos del contacto y estado del bot (`botActive`).
+* **Soporte de Landing Pages Externas y CORS Dinámico:** El backend autoriza dinámicamente orígenes web cruzados en `src/main.ts` para que los sitios web externos de los clientes puedan consumir la API sin bloqueos de navegador.
 
 ### 3.2. Handoff Humano-IA (Alternancia de Control)
-* Por defecto, las conversaciones entrantes son atendidas por el Agente de IA (`bot_active = true`).
-* Un operador humano puede tomar el control de la conversación en cualquier momento mediante `PATCH /api/conversations/:id/toggle-bot`.
-* Al apagarse el bot, el sistema silencia las respuestas del LLM y permite que el ejecutivo responda manualmente. Si el ejecutivo se desconecta o libera el chat, puede reactivar el bot con un solo clic.
+* Por defecto, las conversaciones entrantes son atendidas por el Agente de IA (`bot_active = true`) con un debounce de 7 segundos (`scheduleAiReplyDebounce`), procesando con el prompt, subagentes y RAG vectorial exclusivo del esquema del inquilino.
+* Un operador humano puede tomar el control de la conversación en cualquier momento mediante `PATCH /api/conversations/:id/bot-status` o respondiendo directamente desde la bandeja omnicanal del CRM (`POST /api/conversations/:id/messages`).
+* Al apagarse el bot, el sistema silencia las respuestas del LLM y permite que el ejecutivo responda manualmente (`sender = 'user'`). Al responder, el mensaje se marca como entregado (`delivered`) y se visualiza de inmediato en el widget externo del visitante.
 
 ## 4. Asistente de Webchat Interno & Ejecución de Acciones (`WebchatActionExecutorService`)
 El Webchat Interno asiste a ejecutivos y administradores para consultar métricas y ejecutar acciones operativas en lenguaje natural:

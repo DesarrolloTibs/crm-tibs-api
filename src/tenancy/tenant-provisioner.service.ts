@@ -700,6 +700,12 @@ export class TenantProvisionerService {
           ('7d90d810-74d3-4613-882d-8e814a029db5', 'Tipo de Entrega', 'tipo_entrega', true),
           ('c6d3df39-53e7-40b9-8e2b-f1de16b5394f', 'Licenciamiento', 'licenciamiento', true)
         ON CONFLICT (id) DO NOTHING;
+
+        INSERT INTO "${schemaName}".channel_configs (channel, name, "isActive")
+        SELECT 'webchat', 'Webchat Sitio Web', true
+        WHERE NOT EXISTS (
+          SELECT 1 FROM "${schemaName}".channel_configs WHERE channel = 'webchat'
+        );
       `);
 
       const defaultRouterPrompt = `# Prompt del Agente Principal (Enrutador) — Asistente del CRM
