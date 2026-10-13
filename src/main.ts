@@ -41,11 +41,18 @@ async function bootstrap() {
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   }));
 
-  // --- CORS: Habilitar ANTES de archivos estáticos para permitir descarga de logos/archivos ---
+  // --- CORS: Habilitar ANTES de archivos estáticos para permitir descarga de logos/archivos y widget público ---
   const rawOrigins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173,http://localhost:3000';
   const allowedOrigins = rawOrigins.split(',').map((o) => o.trim());
   app.enableCors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      // Permitir peticiones sin origen (mobile, server-to-server) o si está en orígenes permitidos
+      if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      // Permitir dinámicamente cualquier origen para que los tenants puedan incrustar el widget en sus landing pages
+      return callback(null, true);
+    },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,
   });
