@@ -93,3 +93,16 @@ Para evitar discrepancias entre lo confirmado por el agente conversacional en el
 * **Depuración de Middleware Global:** Se removió la ejecución redundante de `DELETE FROM users` en `TenantMiddleware` por cada request HTTP.
 
 * **Nota de Reversión en Productos:** A petición explícita, la consulta de productos en la actualización de oportunidades re-ejecuta `productRepository.find()` directamente a la base de datos sin almacenamiento temporal en variable.
+
+
+---
+
+## 10. Trazabilidad de Origen Omnicanal (`canal_origen`)
+Las cotizaciones y oportunidades registran el canal exacto desde el cual fueron generadas en el campo `canal_origen` (`varchar(50)`):
+* `whatsapp`: Creada de forma autónoma por el Agente de IA a través del webhook de WhatsApp Cloud API.
+* `instagram`: Generada vía IA a través del webhook de mensajería de Instagram.
+* `facebook`: Generada vía IA desde Messenger / Facebook.
+* `webchat`: Creada mediante el widget público de WebChat o la interfaz conversacional interna.
+* `manual`: Creada manualmente por un ejecutivo comercial desde el botón "Nueva Oportunidad" en el tablero de Pipelines del CRM.
+
+Este atributo alimenta los filtros de canal en el Tablero Kanban y se expone como dimensión semántica en Cube (`canalOrigen`).

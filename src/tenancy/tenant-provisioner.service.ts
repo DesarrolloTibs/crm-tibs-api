@@ -190,8 +190,11 @@ export class TenantProvisionerService {
           "createdAt" timestamptz NOT NULL DEFAULT now(),
           stage_entered_at timestamptz NULL,
           priority varchar(20) NULL DEFAULT 'Media',
+          canal_origen varchar(50) NOT NULL DEFAULT 'manual',
           CONSTRAINT pk_opportunities PRIMARY KEY (id)
         );
+
+        ALTER TABLE "${schemaName}".opportunities ADD COLUMN IF NOT EXISTS canal_origen varchar(50) DEFAULT 'manual';
 
         CREATE TABLE IF NOT EXISTS "${schemaName}".activities (
           id uuid NOT NULL DEFAULT gen_random_uuid(),

@@ -145,6 +145,9 @@ export class Opportunity {
   @Column({ type: 'integer', default: 1 })
   priority: number;
 
+  @Column({ type: 'varchar', length: 50, default: 'manual', name: 'canal_origen' })
+  canal_origen: string;
+
   @OneToMany(() => OpportunityTracking, (tracking) => tracking.opportunity)
   tracking: OpportunityTracking[];
 }
