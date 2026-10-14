@@ -3,13 +3,15 @@ import { z } from 'zod';
 export const RegisterContactSchema = z.object({
   nombre: z.string().min(2, 'El nombre debe tener al menos 2 caracteres.'),
   correo: z.string().email('Correo electrónico no válido.').nullable().optional(),
-  telefono: z.string().min(8, 'El teléfono debe tener al menos 8 dígitos.').nullable().optional(),
+  telefono: z.string().min(7, 'El teléfono debe tener al menos 7 dígitos.').nullable().optional(),
+  empresa: z.string().optional(),
 });
 
 export const UpdateContactSchema = z.object({
   nombre: z.string().min(2).optional(),
-  correo: z.string().email().nullable().optional(),
-  telefono: z.string().min(8).nullable().optional(),
+  correo: z.string().email('Correo electrónico no válido.').nullable().optional(),
+  telefono: z.string().min(7, 'El teléfono debe tener al menos 7 dígitos.').nullable().optional(),
+  empresa: z.string().optional(),
 });
 
 export const OpportunityItemSchema = z.object({
@@ -34,6 +36,10 @@ export const CreateOpportunitySchema = z.object({
   lineaNegocio: z.string().optional(), // 'Datos', 'Desarrollo', 'RH', etc.
   tipoEntrega: z.string().optional(), // 'Proyecto', 'Licencia', 'Asignacion', 'Bolsa de Horas', etc.
   licenciamiento: z.string().optional(), // 'Microsoft', 'IBM', 'Qlik', 'Alteryx', 'KNIME', etc.
+  correo: z.string().email('Correo electrónico no válido.').optional(),
+  email: z.string().email('Correo electrónico no válido.').optional(),
+  telefono: z.string().optional(),
+  empresa: z.string().optional(),
 });
 
 export const ModifyOpportunitySchema = z.object({

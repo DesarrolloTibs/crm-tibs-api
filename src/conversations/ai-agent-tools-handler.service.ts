@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -28,7 +28,7 @@ import { QUOTATION_EVENTS } from '../common/events/quotation.events';
  * Separated from AiAgentOrchestratorService by the Single Responsibility Principle.
  */
 @Injectable()
-export class AiAgentToolsHandlerService {
+export class AiAgentToolsHandlerService implements OnModuleInit {
   private readonly logger = new Logger('AiAgentToolsHandlerService');
 
   constructor(
@@ -47,6 +47,15 @@ export class AiAgentToolsHandlerService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  async onModuleInit() {
+    // Sincronizar en segundo plano fichas técnicas PDF y catálogo al vector store pgvector
+    setTimeout(() => {
+      this.syncAllTenantsProductFilesToRag().catch((err: any) => {
+        this.logger.warn(`Error en auto-sincronización inicial de RAG: ${err.message}`);
+      });
+    }, 6000);
+  }
+
   /**
    * Dispatches a tool call to the corresponding CRM service.
    */
@@ -55,20 +64,86 @@ export class AiAgentToolsHandlerService {
       switch (name) {
         case 'consult_product_catalog':
         case 'consultProductCatalog': {
-          const queryText = input.query || input.search || input.productName || '';
+          let queryCandidates: string[] = [];
+          if (Array.isArray(input.products)) queryCandidates.push(...input.products.map(String));
+          if (Array.isArray(input.items)) {
+            queryCandidates.push(...input.items.map((it: any) => typeof it === 'string' ? it : it.nombre || it.productName || ''));
+          }
+          const baseQuery = input.query || input.search || input.productName || '';
+          if (baseQuery) queryCandidates.push(baseQuery);
+          const queryText = queryCandidates.filter(Boolean).join(', ');
+
           this.logger.log(`[executeTool] Ejecutando búsqueda RAG y catálogo de productos para: '${queryText}'`);
-          const ragResults = await this.ragService.searchSimilar(queryText, 3).catch(() => []);
-          
-          // Segmentar posibles múltiples productos si el query viene separado por comas, saltos de línea o conjunciones
+
+          const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
+          const activeProducts: Product[] = await productRepo.find({
+            where: { status: true },
+          }).catch(() => []);
+
+          const queryLower = queryText.toLowerCase();
           const subQueries = queryText
-            .split(/,|\n|\sy\s|\se\s/i)
+            .split(/,|\n|\sy\s|\se\s|\svs\s|\so\s|\sy\/o\s/i)
             .map((s: string) => s.trim())
             .filter((s: string) => s.length >= 2);
 
+          // Detectar qué productos del catálogo coinciden con el query o subqueries
+          const matchedCatalogProducts: Product[] = [];
+          for (const prod of activeProducts) {
+            const pNameLower = prod.nombre.toLowerCase();
+            const pWords = pNameLower.split(/\s+/).filter(w => w.length >= 3);
+            const directMatch = queryLower.includes(pNameLower) || subQueries.some(sq => sq.toLowerCase().includes(pNameLower));
+            const allWordsMatch = pWords.length > 0 && (
+              pWords.every(w => queryLower.includes(w)) ||
+              subQueries.some(sq => pWords.every(w => sq.toLowerCase().includes(w)))
+            );
+            // Coincidencia por palabra clave de familia o raíz (ej. "nylon", "vicryl", "seda", "prolene", "botanas")
+            const familyMatch = pWords.some(w => {
+              if (w.length < 4) return false;
+              const genericStopwords = new Set(['para', 'sutura', 'suturas', 'pieza', 'piezas', 'caja', 'cajas', 'producto', 'productos', 'servicio', 'servicios']);
+              if (genericStopwords.has(w)) return false;
+              return queryLower.includes(w) || subQueries.some(sq => sq.toLowerCase().includes(w));
+            });
+
+            if (directMatch || allWordsMatch || familyMatch) {
+              if (!matchedCatalogProducts.some(mp => mp.id === prod.id)) {
+                matchedCatalogProducts.push(prod);
+              }
+            }
+          }
+
           let cubeResults: any[] = [];
           const seenProductIds = new Set<string>();
+          const allRagResults: any[] = [];
+          const seenRagSnippets = new Set<string>();
 
-          if (subQueries.length > 1) {
+          // Si identificamos productos específicos del catálogo, consultar sus fichas técnicas y datos directos
+          if (matchedCatalogProducts.length > 0) {
+            for (const prod of matchedCatalogProducts) {
+              seenProductIds.add(prod.id);
+              cubeResults.push({
+                content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nID del Producto (UUID): ${prod.id}\nNombre del Producto: ${prod.nombre}\nPrecio Base: $${prod.precioBase ?? 0} MXN por ${prod.unidadMedida || 'Pieza'}\nUnidad de Medida: ${prod.unidadMedida || 'Pieza'}\n${prod.observaciones?.trim() ? `Observaciones de Cotización (comunicar al cotizar o presentar el precio; evitar repetir en aclaraciones subsecuentes): ${prod.observaciones.trim()}` : 'Observaciones: Ninguna'}\nDescripción del Producto: ${prod.descripcion || 'Sin descripción'}\nEstado: ${prod.status ? 'Activo' : 'Inactivo'}`,
+                metadata: { source: 'database-catalog', productId: prod.id, productName: prod.nombre, precioBase: prod.precioBase },
+              });
+
+              // Búsqueda RAG orientada a este producto por su productKey
+              const pKey = prod.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+              const targetedDocs = await this.ragService.searchSimilar(queryText, 3, pKey).catch(() => []);
+              const overviewDocs = matchedCatalogProducts.length > 1
+                ? await this.ragService.searchSimilar(prod.nombre, 2, pKey).catch(() => [])
+                : [];
+
+              for (const doc of [...targetedDocs, ...overviewDocs]) {
+                const snippet = (doc.pageContent || '').trim();
+                if (snippet && !seenRagSnippets.has(snippet)) {
+                  seenRagSnippets.add(snippet);
+                  allRagResults.push(doc);
+                }
+              }
+            }
+          }
+
+          // Si el query contiene subqueries o términos generales no resueltos
+          if (subQueries.length > 0 && matchedCatalogProducts.length === 0) {
             for (const sq of subQueries) {
               const res = await this.queryCubeProducts(sq).catch(() => []);
               for (const r of res) {
@@ -78,45 +153,140 @@ export class AiAgentToolsHandlerService {
                   cubeResults.push(r);
                 }
               }
-              // Si para este término en particular Cube.dev no devolvió coincidencias, fallback a BD
               if (res.length === 0) {
                 const dbProd = await this.findProductsByKeywords(sq);
                 for (const p of dbProd) {
                   if (!seenProductIds.has(p.id)) {
                     seenProductIds.add(p.id);
                     cubeResults.push({
-                      content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nID del Producto (UUID): ${p.id}\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p.observaciones?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
+                      content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nID del Producto (UUID): ${p.id}\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\n${p.observaciones?.trim() ? `Observaciones de Cotización (comunicar al cotizar o presentar el precio; evitar repetir en aclaraciones subsecuentes): ${p.observaciones.trim()}` : 'Observaciones: Ninguna'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
                       metadata: { source: 'database-fallback', productId: p.id, productName: p.nombre, precioBase: p.precioBase },
                     });
                   }
                 }
               }
             }
-          } else {
-            cubeResults = await this.queryCubeProducts(queryText).catch(() => []);
           }
 
-          // Fallback global directo a base de datos PostgreSQL si Cube.dev o RAG están vacíos
-          if (!cubeResults || cubeResults.length === 0) {
+          // Búsqueda general RAG si no hubo fragmentos específicos recuperados
+          if (allRagResults.length === 0) {
+            const generalRag = await this.ragService.searchSimilar(queryText, 5).catch(() => []);
+            for (const doc of generalRag) {
+              const snippet = (doc.pageContent || '').trim();
+              if (snippet && !seenRagSnippets.has(snippet)) {
+                seenRagSnippets.add(snippet);
+                allRagResults.push(doc);
+              }
+            }
+          }
+
+          // Fallback global a base de datos si no hubo coincidencias
+          if (cubeResults.length === 0) {
             let dbProducts = await this.findProductsByKeywords(queryText);
             if (dbProducts.length === 0) {
-              const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
-              dbProducts = await productRepo.find({ where: { status: true }, take: 15 });
+              dbProducts = activeProducts.slice(0, 10);
             }
             if (dbProducts.length > 0) {
               cubeResults = dbProducts.map(p => ({
-                content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nID del Producto (UUID): ${p.id}\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p.observaciones?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
+                content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nID del Producto (UUID): ${p.id}\nNombre del Producto: ${p.nombre}\nPrecio Base: $${p.precioBase ?? 0} MXN por ${p.unidadMedida || 'Pieza'}\nUnidad de Medida: ${p.unidadMedida || 'Pieza'}\n${p.observaciones?.trim() ? `Observaciones de Cotización (comunicar al cotizar o presentar el precio; evitar repetir en aclaraciones subsecuentes): ${p.observaciones.trim()}` : 'Observaciones: Ninguna'}\nDescripción del Producto: ${p.descripcion || 'Sin descripción'}\nEstado: ${p.status ? 'Activo' : 'Inactivo'}`,
                 metadata: { source: 'database-fallback', productId: p.id, productName: p.nombre, precioBase: p.precioBase },
               }));
-              this.logger.log(`[consult_product_catalog] Recuperados ${dbProducts.length} productos desde fallback de BD.`);
             }
           }
 
-          return { status: 'SUCCESS', query: queryText, ragDocs: ragResults, catalogProducts: cubeResults };
+          // Empaquetar datos combinados tanto en catalogProducts/ragDocs como en data para retrocompatibilidad
+          const combinedData = [
+            ...cubeResults,
+            ...allRagResults.map(r => ({
+              content: `[FICHA TÉCNICA PDF - ${r.metadata?.product || 'Producto'} (${r.metadata?.source || 'documento'})]\n${r.pageContent || ''}`,
+              metadata: r.metadata,
+            })),
+          ];
+
+          return {
+            status: 'SUCCESS',
+            query: queryText,
+            matchedProductCount: matchedCatalogProducts.length,
+            catalogProducts: cubeResults,
+            ragDocs: allRagResults,
+            data: combinedData,
+          };
         }
 
         case 'createOpportunity': {
           const userEntity = conversation.assignedUserId ? { id: conversation.assignedUserId } as User : undefined;
+
+          // 0. VALIDACIÓN Y RECONCILIACIÓN ESTRICTA DE CONTACTO PARA COTIZACIÓN Y SEGUIMIENTO COMERCIAL
+          const clientId = conversation.clientId;
+          let client: Client | null = null;
+          if (clientId) {
+            client = await this.clientRepository.findOne({ where: { id: clientId } });
+          }
+
+          // Si se proporcionó correo, teléfono o empresa en input, actualizar el cliente en el CRM
+          const providedEmail = (input.correo || input.email || '').toString().trim().toLowerCase();
+          const providedPhone = (input.telefono || input.phone || '').toString().trim();
+          const providedEmpresa = (input.empresa || '').toString().trim();
+
+          if (client) {
+            let changed = false;
+            if (providedEmail && (!client.correo || !client.correo.trim())) {
+              const existingWithEmail = await this.clientRepository.findOne({ where: { correo: providedEmail } });
+              if (existingWithEmail && existingWithEmail.id !== client.id) {
+                const oldId = client.id;
+                client = existingWithEmail;
+                conversation.clientId = client.id;
+                conversation.client = client;
+                await this.clientRepository.manager.getRepository(Conversation)
+                  .update({ id: conversation.id }, { clientId: client.id });
+                await this.deleteTemporaryClientIfUnused(oldId, client.id);
+              } else {
+                client.correo = providedEmail;
+                changed = true;
+              }
+            }
+            if (providedPhone && (!client.telefono || !client.telefono.trim())) {
+              client.telefono = providedPhone;
+              changed = true;
+            }
+            if (providedEmpresa && (!client.empresa || !client.empresa.trim())) {
+              client.empresa = providedEmpresa;
+              changed = true;
+            }
+            if (changed) {
+              client = await this.clientRepository.save(client);
+              conversation.client = client;
+            }
+          } else if (providedEmail || providedPhone) {
+            if (providedPhone) client = await this.clientsService.findByPhone(providedPhone);
+            if (!client && providedEmail) client = await this.clientRepository.findOne({ where: { correo: providedEmail } });
+            if (!client) {
+              const names = this.splitFullName(conversation.clientName || 'Visitante');
+              client = await this.clientsService.create({
+                nombre: names.nombre,
+                apellido: names.apellido,
+                correo: providedEmail || null,
+                telefono: providedPhone || null,
+                empresa: providedEmpresa || null,
+                ejecutivo_id: conversation.assignedUserId || undefined,
+              } as any);
+            }
+            conversation.client = client;
+            conversation.clientId = client.id;
+            await this.clientRepository.manager.getRepository(Conversation)
+              .update({ id: conversation.id }, { clientId: client.id });
+          }
+
+          // GUARDRAIL DE CONTACTO PARA COTIZACIÓN: Como mínimo debe existir al menos uno de los datos requeridos (correo O teléfono)
+          const hasEmail = Boolean(client && client.correo && client.correo.trim());
+          const hasPhone = Boolean(client && client.telefono && client.telefono.trim());
+
+          if (!hasEmail && !hasPhone) {
+            return {
+              status: 'ERROR',
+              message: 'El contacto no cuenta con correo electrónico ni número de teléfono registrados en el CRM. Para emitir y enviar la cotización formal como mínimo se requiere al menos uno de estos datos de contacto. Solicita amablemente al cliente sus datos de contacto (correo y/o teléfono) mediante la herramienta final_answer para poder generarla.',
+            };
+          }
 
           let cleanMonto = 0;
           if (input.montoTotal !== undefined && input.montoTotal !== null) {
@@ -265,6 +435,42 @@ export class AiAgentToolsHandlerService {
               if (!productItems.some(pi => pi.productId === bestMatch.id)) {
                 productItems.push({ productId: bestMatch.id, cantidad: cleanQuantities[0] || 1 });
               }
+            }
+          }
+
+          // 2.6 Reconciliación semántica AI-First con productos del catálogo en el historial reciente
+          // Si hasta este punto aún no se han identificado productos (ej. la confirmación fue en prosa fluida como "El plan básico de Billy IDP cuesta..."),
+          // escaneamos el historial conversacional reciente contra los productos activos en el catálogo.
+          if (finalProductIds.length === 0 && conversation?.id) {
+            try {
+              const messageRepo = this.aiAgentConfigRepository.manager.getRepository(Message);
+              const recentMsgs = await messageRepo.find({
+                where: { conversation: { id: conversation.id } },
+                order: { createdAt: 'DESC' },
+                take: 8,
+              });
+              const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
+              const activeProds = await productRepo.find({ where: { status: true } });
+
+              for (const prod of activeProds) {
+                const prodName = prod.nombre.trim();
+                if (prodName.length < 3) continue;
+                const appearsInHistory = recentMsgs.some(m =>
+                  m.content && m.content.toLowerCase().includes(prodName.toLowerCase())
+                );
+                if (appearsInHistory) {
+                  if (!finalProductIds.includes(prod.id)) finalProductIds.push(prod.id);
+                  if (!productItems.some(pi => pi.productId === prod.id)) {
+                    productItems.push({ productId: prod.id, cantidad: 1 });
+                  }
+                  this.logger.log(`[createOpportunity] [AI-First Context] Producto reconciliado desde el historial de conversación: '${prod.nombre}' (ID: ${prod.id})`);
+                  if (!input.nombreProyecto || input.nombreProyecto === 'Cotización Formal') {
+                    input.nombreProyecto = `Cotización ${prod.nombre}`;
+                  }
+                }
+              }
+            } catch (err: any) {
+              this.logger.warn(`Error en reconciliación semántica AI-First de productos: ${err.message}`);
             }
           }
 
@@ -504,12 +710,16 @@ export class AiAgentToolsHandlerService {
 
         case 'registerContact':
         case 'updateContact': {
-          const email = input.correo || null;
+          const email = input.correo ? input.correo.trim().toLowerCase() : null;
           const phone = input.telefono ? String(input.telefono).trim() : null;
+          const empresa = input.empresa ? String(input.empresa).trim() : null;
           const oldClientId = conversation.clientId;
           let client: Client | null = null;
 
           if (phone) client = await this.clientsService.findByPhone(phone);
+          if (!client && email) {
+            client = await this.clientRepository.findOne({ where: { correo: email } });
+          }
 
           if (client) {
             if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
@@ -518,12 +728,15 @@ export class AiAgentToolsHandlerService {
               if (names.apellido) client.apellido = names.apellido;
             }
             if (email) client.correo = email;
+            if (phone) client.telefono = phone;
+            if (empresa) client.empresa = empresa;
             await this.clientRepository.save(client);
           } else if (conversation.clientId) {
             client = await this.clientRepository.findOne({ where: { id: conversation.clientId } });
             if (client) {
               if (phone) client.telefono = phone;
               if (email) client.correo = email;
+              if (empresa) client.empresa = empresa;
               if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
                 const names = this.splitFullName(input.nombre);
                 client.nombre = names.nombre;
@@ -540,6 +753,7 @@ export class AiAgentToolsHandlerService {
               apellido: names.apellido,
               correo: email,
               telefono: phone,
+              empresa: empresa || undefined,
               ejecutivo_id: conversation.assignedUserId || undefined,
             } as any);
           }
@@ -564,7 +778,7 @@ export class AiAgentToolsHandlerService {
             message: 'Contacto identificado y actualizado correctamente en el CRM',
             clientId: client.id,
             clientName: conversation.clientName,
-            client: { id: client.id, nombre: client.nombre, apellido: client.apellido, correo: client.correo, telefono: client.telefono },
+            client: { id: client.id, nombre: client.nombre, apellido: client.apellido, correo: client.correo, telefono: client.telefono, empresa: client.empresa },
           };
         }
 
@@ -647,7 +861,7 @@ export class AiAgentToolsHandlerService {
             priority: input.priority || 1,
             cliente_id: conversation.clientId || undefined,
             contactName: conversation.clientName || undefined,
-            contactPhone: conversation.externalId || undefined,
+            contactPhone: (conversation.channel?.toLowerCase() === 'whatsapp' ? conversation.externalId : conversation.client?.telefono) || undefined,
             responsable_id: conversation.assignedUserId || undefined,
           } as any, userEntity);
           return { status: 'SUCCESS', message: 'Ticket de soporte técnico creado con éxito', ticketId: ticket.id, ticketNumber: ticket.ticket_number };
@@ -776,7 +990,7 @@ export class AiAgentToolsHandlerService {
       const data: any = await response.json();
       if (data && data.data) {
         const mapped = data.data.map((p: any) => ({
-          content: `[PRODUCTO EN EL CATALOGO - CAPA SEMÁNTICA CUBE.DEV]\nID del Producto (UUID): ${p['Productos.id']}\nNombre del Producto: ${p['Productos.nombre']}\nPrecio Base: $${p['Productos.precioBase'] ?? 0} MXN por ${p['Productos.unidadMedida'] || 'Pieza'}\nUnidad de Medida: ${p['Productos.unidadMedida'] || 'Pieza'}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${p['Productos.observaciones']?.trim() || 'Sin observaciones'}\nDescripción del Producto: ${p['Productos.descripcion'] || 'Sin descripción'}\nEstado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? 'Activo' : 'Inactivo'}`,
+          content: `[PRODUCTO EN EL CATALOGO - CAPA SEMÁNTICA CUBE.DEV]\nID del Producto (UUID): ${p['Productos.id']}\nNombre del Producto: ${p['Productos.nombre']}\nPrecio Base: $${p['Productos.precioBase'] ?? 0} MXN por ${p['Productos.unidadMedida'] || 'Pieza'}\nUnidad de Medida: ${p['Productos.unidadMedida'] || 'Pieza'}\n${p['Productos.observaciones']?.trim() ? `Observaciones de Cotización (comunicar al cotizar o presentar el precio; evitar repetir en aclaraciones subsecuentes): ${p['Productos.observaciones'].trim()}` : 'Observaciones: Ninguna'}\nDescripción del Producto: ${p['Productos.descripcion'] || 'Sin descripción'}\nEstado: ${p['Productos.status'] === 'true' || p['Productos.status'] === true ? 'Activo' : 'Inactivo'}`,
           metadata: { source: 'cube-semantic-layer', productId: p['Productos.id'], productName: p['Productos.nombre'], precioBase: p['Productos.precioBase'] },
         }));
         return this.rankProductsByRelevance(mapped, queryText, (item) => item.metadata?.productName || '');
@@ -827,45 +1041,124 @@ export class AiAgentToolsHandlerService {
     return [];
   }
 
-  /** Synchronises existing PDF product files to RAG vector store. */
+  /** Synchronises existing PDF product files to RAG vector store incrementally. */
   async syncExistingProductFilesToRag(): Promise<void> {
     try {
-      this.logger.log('Iniciando sincronización retrospectiva de fichas técnicas PDF al RAG vectorial...');
       const files = await this.productFileRepository.find({ relations: ['product'] });
+      if (!files || files.length === 0) return;
+
+      // Consultar qué archivos ya están indexados en pgvector para no recalcular embeddings innecesariamente
+      const indexedPdfRows: any[] = await this.aiAgentConfigRepository.manager.query(
+        "SELECT DISTINCT metadata->>'source' as src FROM product_knowledge_base WHERE metadata->>'source' IS NOT NULL AND metadata->>'source' != 'database-catalog'"
+      ).catch(() => []);
+      const indexedFilesSet = new Set(indexedPdfRows.map(r => r.src).filter(Boolean));
+
       const fs = require('fs');
+      const path = require('path');
+      let syncedCount = 0;
+
       for (const pf of files) {
+        if (!pf.product || !pf.product.nombre) continue;
+        if (indexedFilesSet.has(pf.fileName)) {
+          // Ya indexado en pgvector, omitir cálculo redundante
+          continue;
+        }
+
         if (pf.filePath && (pf.filePath.toLowerCase().endsWith('.pdf') || pf.fileName.toLowerCase().endsWith('.pdf'))) {
           try {
-            const productKey = pf.product.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
-            const pathCandidates = [pf.filePath, `./${pf.filePath}`];
+            const productKey = pf.product.nombre
+              .toLowerCase()
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .replace(/[^a-z0-9]+/g, '-')
+              .replace(/(^-|-$)+/g, '');
+
+            const cleanRel = pf.filePath.replace(/^[\/\\]+/, '');
+            const pathCandidates = [
+              pf.filePath,
+              `./${pf.filePath}`,
+              path.join(process.cwd(), pf.filePath),
+              path.join(process.cwd(), cleanRel),
+              path.join(process.cwd(), 'uploads', cleanRel),
+              path.join(process.cwd(), 'uploads', 'files', cleanRel),
+            ];
             let fileBuffer: Buffer | null = null;
             for (const p of pathCandidates) {
-              if (fs.existsSync(p)) { fileBuffer = fs.readFileSync(p); break; }
+              if (fs.existsSync(p)) {
+                fileBuffer = fs.readFileSync(p);
+                break;
+              }
             }
-            if (fileBuffer) await this.ragService.ingestPdf(fileBuffer, pf.fileName, productKey);
+            if (fileBuffer) {
+              await this.ragService.ingestPdf(fileBuffer, pf.fileName, productKey);
+              syncedCount++;
+              this.logger.log(`Ficha técnica sincronizada a RAG: '${pf.fileName}' (${productKey})`);
+            } else {
+              this.logger.warn(`No se encontró el archivo físico para '${pf.fileName}' en ninguna ruta candidata.`);
+            }
           } catch (e: any) {
             this.logger.warn(`No se pudo sincronizar el archivo PDF '${pf.fileName}': ${e.message}`);
           }
         }
+      }
+      if (syncedCount > 0) {
+        this.logger.log(`Sincronización incremental de PDFs finalizada: ${syncedCount} archivos nuevos indexados.`);
       }
     } catch (err: any) {
       this.logger.error(`Error en la sincronización retrospectiva de PDFs a RAG: ${err.message}`);
     }
   }
 
-  /** Synchronises all active catalogue products to RAG vector store. */
+  /** Sincroniza fichas técnicas y productos para todos los esquemas (public y tenants activos). */
+  async syncAllTenantsProductFilesToRag(): Promise<void> {
+    try {
+      const tenants: any[] = await this.aiAgentConfigRepository.manager.query(
+        `SELECT schema_name FROM public.tenants WHERE is_active = true`
+      ).catch(() => []);
+
+      const schemas = ['public', ...tenants.map(t => t.schema_name)];
+      for (const sName of schemas) {
+        try {
+          await TenantContextService.run({ tenantSchema: sName }, async () => {
+            await this.syncExistingProductFilesToRag();
+            await this.syncCatalogProductsToRag();
+          });
+        } catch (e: any) {
+          this.logger.warn(`No se pudo sincronizar RAG en esquema '${sName}': ${e.message}`);
+        }
+      }
+    } catch (err: any) {
+      this.logger.error(`Error en syncAllTenantsProductFilesToRag: ${err.message}`);
+    }
+  }
+
+  /** Synchronises all active catalogue products to RAG vector store incrementally. */
   async syncCatalogProductsToRag(): Promise<void> {
     try {
-      this.logger.log('Iniciando sincronización retrospectiva de productos del catálogo SQL a pgvector...');
       const products = await this.productFileRepository.manager.find(Product, { where: { status: true } });
+      if (!products || products.length === 0) return;
+
+      // Consultar qué productos ya cuentan con embedding de catálogo en pgvector
+      const indexedRows: any[] = await this.aiAgentConfigRepository.manager.query(
+        "SELECT DISTINCT metadata->>'productId' as pid FROM product_knowledge_base WHERE metadata->>'source' = 'database-catalog'"
+      ).catch(() => []);
+      const indexedSet = new Set(indexedRows.map(r => r.pid).filter(Boolean));
+
+      const pendingProducts = products.filter(p => !indexedSet.has(p.id));
+      if (pendingProducts.length === 0) {
+        // Todo el catálogo ya se encuentra indexado en pgvector, omitir llamadas HTTP externas redundantes
+        return;
+      }
+
+      this.logger.log(`Sincronizando ${pendingProducts.length} productos nuevos/pendientes del catálogo a pgvector...`);
       let syncedCount = 0;
-      for (const product of products) {
+      for (const product of pendingProducts) {
         await this.ragService.ingestProduct(product.id, product.nombre, product.descripcion, product.precioBase as number | null, product.unidadMedida, product.observaciones);
         syncedCount++;
       }
-      this.logger.log(`Sincronización de catálogo finalizada. Se indexaron ${syncedCount} productos en pgvector.`);
+      this.logger.log(`Sincronización incremental de catálogo finalizada. Se indexaron ${syncedCount} productos.`);
     } catch (err: any) {
-      this.logger.error(`Error en la sincronización retrospectiva del catálogo a RAG: ${err.message}`);
+      this.logger.error(`Error en la sincronización del catálogo a RAG: ${err.message}`);
     }
   }
 
