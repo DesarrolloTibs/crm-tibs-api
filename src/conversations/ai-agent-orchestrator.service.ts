@@ -8,6 +8,7 @@ import { AiSubAgent } from './entities/ai-sub-agent.entity';
 import { Message } from './entities/message.entity';
 import { Client } from '../clients/entities/client.entity';
 import { Conversation } from './entities/conversation.entity';
+import { Product } from '../products/entities/product.entity';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { PhoneUtils } from '../common/utils/phone.utils';
 import { ActivitiesService } from '../activities/activities.service';
@@ -46,6 +47,10 @@ export const AgentStateAnnotation = Annotation.Root({
   isHandedOff: Annotation<boolean>({
     reducer: (x: boolean, y: boolean) => (y !== undefined ? (x || y) : x),
     default: () => false,
+  }),
+  executedTools: Annotation<string[]>({
+    reducer: (x: string[], y: string[]) => Array.from(new Set([...(x || []), ...(y || [])])),
+    default: () => [],
   }),
 });
 
@@ -642,6 +647,30 @@ NUEVO RESUMEN ACUMULADO:`;
 
     let finalState: any = null;
     try {
+      // 0. Detección automática en el mensaje del cliente si comparte su correo o teléfono para actualizar el CRM de inmediato
+      const emailMatch = incomingContent.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      const isWhatsAppChannel = conversation.channel?.toLowerCase() === 'whatsapp';
+      const phoneMatch = !isWhatsAppChannel ? PhoneUtils.extractPhoneFromText(incomingContent) : null;
+      if (conversation.clientId && (emailMatch || phoneMatch)) {
+        const client = await this.clientRepository.findOne({ where: { id: conversation.clientId } });
+        if (client) {
+          let clientUpdated = false;
+          if (emailMatch && (!client.correo || !client.correo.trim())) {
+            client.correo = emailMatch[0].toLowerCase();
+            clientUpdated = true;
+            this.logger.log(`[processIncomingMessage] Correo auto-detectado y guardado en CRM: ${client.correo}`);
+          }
+          if (phoneMatch && (!client.telefono || !client.telefono.trim())) {
+            client.telefono = phoneMatch;
+            clientUpdated = true;
+            this.logger.log(`[processIncomingMessage] Teléfono auto-detectado y guardado en CRM: ${client.telefono}`);
+          }
+          if (clientUpdated) {
+            await this.clientRepository.save(client);
+            conversation.client = client;
+          }
+        }
+      }
 
       // 1. Build omni-channel history
       const historyLimit = config.historyMessageLimit && config.historyMessageLimit > 0 ? config.historyMessageLimit : 10;
@@ -684,6 +713,11 @@ NUEVO RESUMEN ACUMULADO:`;
       const routerNode = async (state: AgentState): Promise<Partial<AgentState>> => {
         const subAgents = await this.aiSubAgentRepository.find({ where: { isActive: true } });
         const subAgentsDescriptionText = subAgents.map(sa => `- Clave: "${sa.key}" - Descripción: "${sa.description}"`).join('\n');
+        const lastAgentMsgObj = [...messages].reverse().find(m => m.sender === 'agent');
+        const activeAssistantContext = lastAgentMsgObj
+          ? `\n[ÚLTIMO MENSAJE EMITIDO POR EL ASISTENTE]\n"${lastAgentMsgObj.content}"\n(Evalúa si el cliente está respondiendo directamente a esta pregunta o solicitud del asistente para mantener la coherencia conversacional)`
+          : '';
+
         const routerPrompt = `
 ${config.context || 'Eres el Agente Principal (Enrutador) de la Empresa.'}
 
@@ -692,10 +726,23 @@ ${subAgentsDescriptionText}
 - Clave: "general" - Descripción: "Úsala si el mensaje del cliente es un saludo, despedida, agradecimiento, charla informal (small talk), preguntas generales cortas que no requieran herramientas, o si ninguna de las otras claves es aplicable."
 
 [REGLAS DE CONTINUIDAD Y CONTEXTO GENERAL]
-- PREGUNTAS SOBRE PRODUCTOS, CATÁLOGO O COTIZACIONES: Si el mensaje del cliente contiene cualquier consulta sobre productos, servicios, catálogo, modelos, existencias o precios, DEBES clasificarlo INMEDIATAMENTE en la ruta "comercial".
-- Analiza la conversación histórica en [HISTORIAL DE CONVERSACIÓN RECIENTE] y el [RESUMEN DE LAS CONVERSACIONES PASADAS] como el hilo conductor de la conversación.
-- Si el cliente está dando una respuesta breve o continuación, mantén el diálogo en la ruta del sub-agente activo.
+- CONTINUIDAD MULTI-TURNO: Analiza el [HISTORIAL DE CONVERSACIÓN RECIENTE] y el [ÚLTIMO MENSAJE EMITIDO POR EL ASISTENTE]. Si el asistente le hizo una pregunta al cliente (por ejemplo, solicitando confirmación de cotización o datos de contacto como correo/teléfono) y el cliente responde a esa pregunta, la conversación DEBE continuar en la misma ruta ("comercial").
+- PREGUNTAS SOBRE PRODUCTOS, CATÁLOGO O COTIZACIONES: Si el mensaje del cliente contiene cualquier consulta sobre productos, servicios, catálogo, modelos, existencias, precios o cotizaciones, DEBES clasificarlo en la ruta "comercial".
+- SEGUIMIENTO EXCLUSIVAMENTE PARA AGENDAMIENTO REAL: Clasifica en "seguimiento" ÚNICA Y EXCLUSIVAMENTE cuando el cliente pida explícitamente agendar una cita/reunión/demo o confirme un día y hora de disponibilidad (ej. "mañana a las 4 pm", "el lunes"). No clasifiques en seguimiento si el cliente solo está dando sus datos de contacto para una cotización.
 - Solo usa la ruta 'general' si el cliente únicamente saluda, se despide, da las gracias o plática libre sin preguntar por productos, agendamientos ni soporte técnico.
+
+[EJEMPLOS DE RAZONAMIENTO COGNITIVO MULTI-TURNO]
+- Último mensaje asistente: "¿podrías compartirme tu correo electrónico y un número de teléfono de contacto para tu cotización?"
+  Cliente: "amadorjonny60@gmail.com, no tengo telefono"
+  {"thought": "El cliente está proporcionando su correo en respuesta directa a la solicitud del asistente para emitir su cotización formal. La intención continúa en el flujo comercial.", "route": "comercial"}
+- Último mensaje asistente: "El plan de Billy IDP cuesta $14,370 MXN. ¿Deseas cotizarlo?"
+  Cliente: "Sí, adelante por favor"
+  {"thought": "El cliente confirma su deseo de proceder con la cotización formal.", "route": "comercial"}
+- Último mensaje asistente: "¿Cuál es tu horario preferido para la llamada?"
+  Cliente: "Mañana a las 4 pm"
+  {"thought": "El cliente confirma una fecha y hora para agendar una cita o llamada con un ejecutivo.", "route": "seguimiento"}
+- Cliente: "Hola, buenos días"
+  {"thought": "Saludo inicial de cortesía sin intención comercial, de agenda ni técnica.", "route": "general"}
 
 [REGLA DE RESPUESTA OBLIGATORIA]
 Responde ÚNICAMENTE con un objeto JSON por turno. Sin texto antes o después.
@@ -706,6 +753,7 @@ ${conversation.summary || 'No hay historial previo registrado.'}
 
 [HISTORIAL DE CONVERSACIÓN RECIENTE]
 ${historyText}
+${activeAssistantContext}
 
 [ÚLTIMO MENSAJE DEL CLIENTE]
 Cliente: ${incomingContent}
@@ -719,71 +767,53 @@ Genera la clasificación en formato JSON (iniciando con { y terminando con }):`;
         try {
           const parsedRouter = JSON.parse(routerResponse);
           selectedRoute = parsedRouter.route || 'general';
-          this.logger.log(`[LangGraph - Router] Ruta: '${selectedRoute}' | Pensamiento: ${parsedRouter.thought}`);
+          this.logger.log(`[LangGraph - Router] [AI-FIRST] Ruta: '${selectedRoute}' | Pensamiento: ${parsedRouter.thought}`);
         } catch (_) {
           const routeMatch = routerResponse.match(/"route"\s*:\s*"([^"]+)"/i);
           selectedRoute = routeMatch?.[1] || 'general';
           this.logger.log(`[LangGraph - Router Rescue] Ruta rescatada: '${selectedRoute}'`);
         }
+
+        // Safety Net (Cinturón de seguridad / Fallback secundario):
+        // Si el modelo por alguna anomalía desvió la ruta mientras hay un flujo activo de cotización y el cliente solo aportó contacto/confirmación,
+        // reorientamos preventivamente como fallback heurístico, garantizando la resiliencia en producción sin suplantar la cognición primaria.
+        const lastAgentMsg = (lastAgentMsgObj?.content || '').toLowerCase();
+        const isQuotingFlowActive =
+          lastAgentMsg.includes('cotiz') ||
+          lastAgentMsg.includes('compartirme tu correo') ||
+          lastAgentMsg.includes('número de teléfono') ||
+          lastAgentMsg.includes('numero de telefono') ||
+          lastAgentMsg.includes('proceder con la cotización') ||
+          lastAgentMsg.includes('confirmar si las cantidades y productos son correctos');
+
+        const incomingLower = incomingContent.toLowerCase();
+        const containsContactInfoOrQuoteResponse =
+          Boolean(emailMatch) ||
+          Boolean(phoneMatch) ||
+          incomingLower.includes('@') ||
+          incomingLower.includes('no tengo') ||
+          incomingLower.includes('no cuento') ||
+          incomingLower.includes('solo por') ||
+          incomingLower.includes('cotiz') ||
+          /^(s[ií]|correcto|adelante|est[aá]\s*bien|procede|ok|de\s*acuerdo|perfecto|confirmo)/i.test(incomingContent.trim());
+
+        const explicitSchedulingIntent =
+          incomingLower.includes('agenda') ||
+          incomingLower.includes('cita') ||
+          incomingLower.includes('reunión') ||
+          incomingLower.includes('reunion') ||
+          incomingLower.includes('llamada') ||
+          incomingLower.includes('demo') ||
+          /\b(mañana|hoy|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|\d{1,2}\s*(?:am|pm|:\d{2}|hrs?))\b/i.test(incomingLower);
+
+        if (isQuotingFlowActive && containsContactInfoOrQuoteResponse && !explicitSchedulingIntent) {
+          if (selectedRoute !== 'comercial') {
+            this.logger.warn(`[LangGraph - Router Safety Net] [FALLBACK HEURISTICO] Reorientando a 'comercial' porque el cliente está respondiendo a una solicitud de cotización activa (Ruta IA original: '${selectedRoute}').`);
+            selectedRoute = 'comercial';
+          }
+        }
+
         return { route: selectedRoute };
-      };
-
-      const identificationNode = async (state: AgentState): Promise<Partial<AgentState>> => {
-        this.logger.log('[LangGraph - Identificación] Cliente sin teléfono registrado. Verificando o solicitando número telefónico.');
-        const extractedPhone = PhoneUtils.extractPhoneFromText(incomingContent) || PhoneUtils.extractPhoneFromText(conversation.externalId);
-        if (extractedPhone) {
-          const existingClient = await this.clientsService.findByPhone(extractedPhone);
-          if (existingClient) {
-            this.logger.log(`[LangGraph - Identificación] Cliente existente identificado por teléfono en DB (${extractedPhone}): ${existingClient.nombre}`);
-            conversation.client = existingClient;
-            conversation.clientId = existingClient.id;
-            conversation.clientName = `${existingClient.nombre} ${existingClient.apellido || ''}`.trim();
-            await this.clientRepository.manager.getRepository(Conversation)
-              .createQueryBuilder()
-              .update(Conversation)
-              .set({ clientId: existingClient.id, clientName: conversation.clientName })
-              .where('id = :id', { id: conversation.id })
-              .execute();
-            return { clientId: existingClient.id, nextAction: 'call_tool', toolCallName: 'updateContact', toolCallInput: { nombre: conversation.clientName, telefono: extractedPhone } };
-          }
-          this.logger.log(`[LangGraph - Identificación] Teléfono detectado determinísticamente: ${extractedPhone}`);
-          return { nextAction: 'call_tool', toolCallName: 'registerContact', toolCallInput: { nombre: conversation.clientName || 'Visitante', telefono: extractedPhone } };
-        }
-        const identPrompt = `Eres el Sub-Agente de Registro del CRM. Tu objetivo único u obligatorio es obtener el NÚMERO DE TELÉFONO del cliente como identificador principal en el CRM de la empresa antes de procesar cotizaciones, agendamientos o consultas del catálogo.
-
-[REGLA DE IDENTIFICACIÓN OBLIGATORIA POR TELÉFONO]
-- El número de teléfono es el identificador único obligatorio del cliente en el CRM.
-- Si en el historial o último mensaje el cliente ya te proporcionó su número telefónico, llama a la herramienta registerContact enviando el teléfono.
-- Si el cliente aún NO te ha proporcionado su número de teléfono, NO llames a la herramienta. Escríbele un mensaje cordial solicitándole forzosamente su número de teléfono.
-
-[HERRAMIENTA DISPONIBLE]
-1. registerContact — Registra e identifica el contacto en el CRM con su número de teléfono.
-{"thought": "...", "tool_name": "registerContact", "tool_input": {"nombre": "Nombre si lo dio o Visitante", "telefono": "5512345678"}}
-2. final_answer — Responde al cliente de forma natural para pedirle obligatoriamente su teléfono.
-{"thought": "...", "tool_name": "final_answer", "tool_input": {"answer": "Para darte atención personalizada y cotizar, ¿me podrías proporcionar tu número de teléfono?"}}
-
-Responde SIEMPRE con un único JSON.
-
-[HISTORIAL DE CONVERSACIÓN]
-${historyText}
-
-[ÚLTIMO MENSAJE DEL CLIENTE]
-Cliente: ${incomingContent}
-
-Genera el JSON de salida:
-{"thought": "`;
-        let identResponse = await this.callLLM(config, identPrompt, undefined, { ...baseAuditContext, metadata: { step: 'identification' } });
-        identResponse = this.cleanJsonOutput(identResponse);
-        try {
-          const action = JSON.parse(identResponse);
-          if (action.tool_name === 'registerContact' || action.tool_name === 'updateContact') {
-            return { nextAction: 'call_tool', toolCallName: action.tool_name, toolCallInput: action.tool_input };
-          } else {
-            return { nextAction: 'respond', response: action.tool_input?.answer || 'Para darte atención personalizada y continuar con tu solicitud, ¿me podrías proporcionar tu número de teléfono?' };
-          }
-        } catch (_) {
-          return { nextAction: 'respond', response: 'Para poder atenderte y dar seguimiento a tu consulta, ¿me podrías indicar tu número de teléfono?' };
-        }
       };
 
       const subAgentNode = async (state: AgentState): Promise<Partial<AgentState>> => {
@@ -791,39 +821,203 @@ Genera el JSON de salida:
         let subAgent = subAgents.find(sa => sa.key === state.route) || subAgents.find(sa => sa.key === 'general');
         let preFetchCatalogText = '';
         const isAffirmativeConfirmation = /^(s[ií]|correcto|adelante|est[aá]\s*bien|procede|genera(?:r)?(?:\s+la)?\s+cotizaci[oó]n|ok|de\s*acuerdo|perfecto|confirmo|si\s+por\s*fa(?:vor)?)/i.test(incomingContent.trim());
-        if (state.route === 'comercial' && !state.toolCallResult && !isAffirmativeConfirmation) {
+        if (!state.toolCallResult && !isAffirmativeConfirmation) {
           try {
-            const preRagResults = await this.toolsHandler.ragService.searchSimilar(incomingContent, 3);
-            const preDetectedKeys = [...new Set(preRagResults.map(r => r.metadata?.product).filter(Boolean))];
+            // 1. Obtener productos activos del catálogo para contextualizar la conversación
+            const productRepo = this.aiAgentConfigRepository.manager.getRepository(Product);
+            const activeCatalogProducts: Product[] = await productRepo.find({
+              select: ['id', 'nombre'],
+              where: { status: true },
+            }).catch(() => []);
+
+            // 2. Detectar productos mencionados en el mensaje actual o en el historial reciente
+            const incomingLower = incomingContent.toLowerCase();
+            const recentHistoryText = (messages.slice(-4).map(m => m.content).join(' ') + ' ' + (conversation.summary || '')).toLowerCase();
+
+            const detectedProducts: Product[] = [];
+            for (const p of activeCatalogProducts) {
+              const pNameLower = p.nombre.toLowerCase();
+              const pWords = pNameLower.split(/\s+/).filter(w => w.length >= 3);
+              const mentionedInCurrent = incomingLower.includes(pNameLower) || (pWords.length > 0 && pWords.every(w => incomingLower.includes(w)));
+              const mentionedInHistory = recentHistoryText.includes(pNameLower) || (pWords.length > 0 && pWords.every(w => recentHistoryText.includes(w)));
+              
+              // Detección por palabra clave distintiva o familia (ej. "nylon", "vicryl", "seda", "prolene", "botanas")
+              const familyMatch = pWords.some(w => {
+                if (w.length < 4) return false;
+                const genericStopwords = new Set(['para', 'sutura', 'suturas', 'pieza', 'piezas', 'caja', 'cajas', 'producto', 'productos', 'servicio', 'servicios']);
+                if (genericStopwords.has(w)) return false;
+                return incomingLower.includes(w) || recentHistoryText.includes(w);
+              });
+
+              if (mentionedInCurrent || mentionedInHistory || familyMatch) {
+                if (!detectedProducts.some(dp => dp.id === p.id)) {
+                  detectedProducts.push(p);
+                }
+              }
+            }
+
+            // 3. Ejecutar búsqueda RAG combinada (mensaje actual + contexto de productos activos)
+            let ragQueries = [incomingContent];
+            if (detectedProducts.length > 0) {
+              for (const dp of detectedProducts) {
+                if (!incomingLower.includes(dp.nombre.toLowerCase())) {
+                  ragQueries.push(`${dp.nombre} ${incomingContent}`);
+                }
+                if (detectedProducts.length > 1) {
+                  ragQueries.push(dp.nombre);
+                }
+              }
+            }
+
+            const rawRagResults: any[] = [];
+            const seenChunks = new Set<string>();
+            for (const q of ragQueries) {
+              const res = await this.toolsHandler.ragService.searchSimilar(q, 4).catch(() => []);
+              for (const r of res) {
+                const textSnippet = (r.pageContent || '').trim();
+                if (textSnippet && !seenChunks.has(textSnippet)) {
+                  seenChunks.add(textSnippet);
+                  rawRagResults.push(r);
+                }
+              }
+            }
+
+            // Buscar específicamente con productKey en los PDFs de CADA producto detectado
+            if (detectedProducts.length > 0) {
+              for (const dp of detectedProducts) {
+                const pKey = dp.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+                const specificRes = await this.toolsHandler.ragService.searchSimilar(incomingContent, 3, pKey).catch(() => []);
+                for (const r of specificRes) {
+                  const textSnippet = (r.pageContent || '').trim();
+                  if (textSnippet && !seenChunks.has(textSnippet)) {
+                    seenChunks.add(textSnippet);
+                    rawRagResults.push(r);
+                  }
+                }
+                if (detectedProducts.length > 1 || specificRes.length === 0) {
+                  const overviewRes = await this.toolsHandler.ragService.searchSimilar(dp.nombre, 2, pKey).catch(() => []);
+                  for (const r of overviewRes) {
+                    const textSnippet = (r.pageContent || '').trim();
+                    if (textSnippet && !seenChunks.has(textSnippet)) {
+                      seenChunks.add(textSnippet);
+                      rawRagResults.push(r);
+                    }
+                  }
+                }
+              }
+            }
+
+            const preDetectedKeys = [...new Set([
+              ...rawRagResults.map(r => r.metadata?.product).filter(Boolean),
+              ...detectedProducts.map(dp => dp.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, ''))
+            ])];
+
             const preCubeResults: any[] = [];
             if (preDetectedKeys.length > 0) {
-              for (const key of preDetectedKeys) preCubeResults.push(...await this.toolsHandler.queryCubeProductsByKey(key));
-            } else {
+              for (const key of preDetectedKeys) {
+                preCubeResults.push(...await this.toolsHandler.queryCubeProductsByKey(key));
+              }
+            } else if (state.route === 'comercial') {
               preCubeResults.push(...await this.toolsHandler.queryCubeProducts(incomingContent));
             }
-            const preMerged = [...preCubeResults, ...preRagResults.map(r => ({ content: (r.pageContent || '').substring(0, 400) }))].slice(0, 5);
+
+            // Fallback a base de datos directa si Cube no devolvió los productos detectados
+            if (preCubeResults.length === 0 && detectedProducts.length > 0) {
+              for (const dp of detectedProducts) {
+                const fullProd = await productRepo.findOne({ where: { id: dp.id } });
+                if (fullProd) {
+                  preCubeResults.push({
+                    content: `[PRODUCTO EN EL CATALOGO - BASE DE DATOS]\nID del Producto (UUID): ${fullProd.id}\nNombre del Producto: ${fullProd.nombre}\nPrecio Base: $${fullProd.precioBase ?? 0} MXN por ${fullProd.unidadMedida || 'Pieza'}\nUnidad de Medida: ${fullProd.unidadMedida || 'Pieza'}\n${fullProd.observaciones?.trim() ? `Observaciones de Cotización (comunicar al cotizar o presentar el precio; evitar repetir en aclaraciones subsecuentes): ${fullProd.observaciones.trim()}` : 'Observaciones: Ninguna'}\nDescripción del Producto: ${fullProd.descripcion || 'Sin descripción'}\nEstado: ${fullProd.status ? 'Activo' : 'Inactivo'}`,
+                    metadata: { source: 'database-fallback', productId: fullProd.id, productName: fullProd.nombre, precioBase: fullProd.precioBase },
+                  });
+                }
+              }
+            }
+
+            // Para múltiples productos detectados, asegurar que cada producto tenga representación equilibrada
+            let balancedRagChunks: any[] = [];
+            if (detectedProducts.length > 1) {
+              const chunksByProduct = new Map<string, any[]>();
+              for (const r of rawRagResults) {
+                const pKey = r.metadata?.product || 'general';
+                if (!chunksByProduct.has(pKey)) chunksByProduct.set(pKey, []);
+                chunksByProduct.get(pKey)!.push(r);
+              }
+              for (const [, chunks] of chunksByProduct.entries()) {
+                balancedRagChunks.push(...chunks.slice(0, 3));
+              }
+            } else {
+              balancedRagChunks = rawRagResults.slice(0, 5);
+            }
+
+            // Mantener hasta 1200 caracteres por fragmento RAG para no cortar límites ni tablas técnicas de PDFs
+            const preMerged = [
+              ...preCubeResults,
+              ...balancedRagChunks.map(r => ({
+                content: (r.pageContent || '').length > 1200
+                  ? (r.pageContent || '').substring(0, 1200) + '... (continúa ficha técnica)'
+                  : (r.pageContent || ''),
+              })),
+            ].slice(0, detectedProducts.length > 1 ? 12 : 6);
+
             preFetchCatalogText = preMerged.length > 0
-              ? `\n[CATÁLOGO RELEVANTE — DATOS REALES DE LA BASE DE DATOS]\n${preMerged.map(r => `- ${r.content}`).join('\n\n')}\n\n[REGLA ANTI-ALUCINACIÓN OBLIGATORIA] Responde ÚNICAMENTE con la información del bloque [CATÁLOGO RELEVANTE] de arriba.`
-              : `\n[CATÁLOGO RELEVANTE — DATOS REALES DE LA BASE DE DATOS]\nNo se encontraron productos coincidentes en el catálogo.\n\n[REGLA ANTI-ALUCINACIÓN OBLIGATORIA] No se encontró ningún producto que coincida con la consulta del cliente. Responde estrictamente: "Lo lamento, en este momento no contamos con ese producto en nuestro catálogo."`;
-          } catch (err: any) { this.logger.error(`Error en pre-fetch de catálogo: ${err.message}`); }
+              ? `\n[DOCUMENTACIÓN TÉCNICA, MANUALES, FAQS Y CATÁLOGO DE PRODUCTOS — FUENTE DE VERDAD]\n${preMerged.map(r => `- ${r.content}`).join('\n\n')}\n\n[REGLAS ESTRICTAS DE RESOLUCIÓN RAG-FIRST Y CONVERSACIÓN]
+1. PRIORIDAD ABSOLUTA DE RESOLUCIÓN CON DOCUMENTACIÓN (RAG-FIRST):
+   - Si la duda, problema, procedimiento, límite de plan, consumo de recursos, configuración o incidencia del cliente se encuentra explicada o resuelta en los documentos anteriores (manuales técnicos, fichas, FAQs o catálogo), DEBES RESOLVERLA Y EXPLICARLA DIRECTAMENTE AL CLIENTE usando 'final_answer'.
+   - Está TERMINANTEMENTE PROHIBIDO levantar tickets con 'createTicket' o derivar con 'requestHumanHandoff' si la respuesta, solución o procedimiento ya viene explicado en la documentación adjunta. Los tickets y transferencias humanas son ÚNICAMENTE para fallas críticas del sistema no documentadas o peticiones expresas del cliente de hablar con un humano.
+2. CONCISIÓN DE CHAT (MÁXIMO 2 A 4 ORACIONES): Responde de forma breve, ágil y conversacional (formato chat de WhatsApp / Facebook Messenger). Está TERMINANTEMENTE PROHIBIDO enviar folletos o párrafos largos que abrumen al cliente.
+3. PROHIBIDO RE-INTRODUCIR EL PRODUCTO: Si el producto ya se mencionó o definió en el historial del chat, está ESTRICTAMENTE PROHIBIDO volver a iniciar con "X es una plataforma que utiliza Inteligencia Artificial para...". Responde directo a la duda del cliente sin rodeos.
+4. PROHIBICIÓN DE EMPUJAR DEMOS O LLAMADAS PROACTIVAMENTE: Cuando el cliente consulte cómo funciona un producto, características técnicas, capacidades o dudas del catálogo/soporte, limítate a explicar y resolver sus dudas de forma directa, concisa y amigable. Está ESTRICTAMENTE PROHIBIDO empujar o incitar proactivamente al cliente a agendar demos, reuniones o llamadas (ej. NO preguntes "¿Te gustaría agendar una demo para ver cómo funciona?"). El cliente decidirá libremente cuándo solicitar una cotización o agendar una cita. Si el cliente solicita cotizar, atiende su cotización de inmediato.
+5. CONFIRMACIÓN NATURAL: Si el cliente comenta o valida un dato (ej. "Veo en el sitio web que son 15 mil documentos"), confirma amigablemente ("¡Exacto! El plan incluye alrededor de 15,000 documentos al mes...") y continúa la conversación de forma ligera sin volcar toda la ficha técnica.
+6. SOPORTE DE MÚLTIPLES PRODUCTOS:
+   - Si el cliente pregunta por dos o más productos a la vez (comparación o consulta combinada), responde de forma organizada y estructurada (ej. una viñeta concisa de 1 a 2 líneas por cada producto).
+   - Atribuye con exactitud quirúrgica las especificaciones técnicas, precios y capacidades a cada producto correspondiente sin mezclar datos entre ellos.
+   - Si la conversación venía tratando sobre el Producto A y el cliente ahora consulta sobre el Producto B, enfócate en el Producto B de forma concisa sin volver a recitar la información del Producto A.
+7. PRODUCTOS CON NOMBRES SIMILARES, VARIANTES O CALIBRES (EJ. NYLON 10-0, NYLON 6-0, VICRYL 6-0, VICRYL 5-0):
+   - Si el cliente pregunta de forma genérica por una familia o palabra clave (ej. "¿Tienen suturas Nylon?", "¿Cuánto cuesta el Vicryl?") sin especificar calibre o medida, confirma amablemente la disponibilidad y presenta los calibres disponibles con su precio unitario en viñetas breves, preguntándole cuál necesita.
+   - PROHIBIDO ASUMIR CALIBRES/VARIANTES EN COTIZACIONES: Si el cliente solicita cotizar pero no especificó el calibre (ej. "cotízame 5 de Nylon"), está TERMINANTEMENTE PROHIBIDO adivinar o asumir un calibre al azar. Debes preguntarle qué calibre requiere antes de proceder.
+8. Si el cliente pregunta aspectos específicos o técnicos detallados no resueltos en el bloque anterior, llama a 'consult_product_catalog'.`
+              : (state.route === 'comercial'
+                  ? `\n[CATÁLOGO RELEVANTE — DATOS REALES DE LA BASE DE DATOS]\nNo se encontraron productos coincidentes en el catálogo.\n\n[REGLA ANTI-ALUCINACIÓN OBLIGATORIA] No se encontró ningún producto que coincida con la consulta del cliente. Si no se trata de un saludo o charla general, responde amablemente indicando que no cuentas con ese producto específico en el catálogo.`
+                  : '');
+          } catch (err: any) { this.logger.error(`Error en pre-fetch de catálogo y RAG: ${err.message}`); }
         }
 
         const ALL_TOOL_PROMPTS: Record<string, string> = {
           createOpportunity: `1. createOpportunity: Registra oportunidad comercial o cotización formal.
-Campos: items(array de {productId: UUID, nombre: str, cantidad: num}), nombreProyecto(str), descripcion(str), montoTotal(num|null), moneda("MXN"|"USD"), lineaNegocio(str, opc), tipoEntrega(str, opc), licenciamiento(str, opc).
+Campos: items(array de {productId: UUID, nombre: str, cantidad: num}), nombreProyecto(str), descripcion(str), montoTotal(num|null), moneda("MXN"|"USD"), correo(str,opc), telefono(str,opc), empresa(str,opc), lineaNegocio(str, opc), tipoEntrega(str, opc), licenciamiento(str, opc).
 REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa SIEMPRE la propiedad 'items' estructurada incluyendo ABSOLUTAMENTE TODOS los productos confirmados con sus cantidades exactas (ej: [{"productId": "uuid-1", "nombre": "Nylon 10-0", "cantidad": 5}, {"productId": "uuid-2", "nombre": "Vicryl 6-0", "cantidad": 2}, {"productId": "uuid-3", "nombre": "Prolene 6-0", "cantidad": 1}]). NUNCA omitas ningún producto confirmado.
+REGLA MANDATORIA DE VALIDACIÓN DE CONTACTO: Para emitir la cotización, como mínimo debe existir al menos UN dato de contacto (correo O teléfono) registrado en el CRM (bloque [CONTACTO CRM]). Si el contacto carece de ambos datos, haz la labor de solicitarlos amablemente al cliente mediante 'final_answer'. Pero si el cliente ya proporcionó al menos uno (o ya contaba con uno), ¡ESTÁ ESTRICTAMENTE PROHIBIDO FRENAR LA COTIZACIÓN!: no insistas por el dato faltante ni ofrezcas llamadas, llama INMEDIATAMENTE a 'createOpportunity' para generar y transmitir la cotización formal en PDF al chat.
 {"thought": "...", "tool_name": "createOpportunity", "tool_input": {"nombreProyecto": "Cotización Formal", "items": [{"productId": "uuid-1", "nombre": "Nylon 10-0", "cantidad": 5}, {"productId": "uuid-2", "nombre": "Vicryl 6-0", "cantidad": 2}], "moneda": "MXN"}}`,
           modifyOpportunity: `2. modifyOpportunity: Edita oportunidad existente.\nCampos: id(UUID), nombreProyecto, descripcion, montoTotal, cantidad, moneda.\n{"thought": "...", "tool_name": "modifyOpportunity", "tool_input": {"id": "uuid-real", "cantidad": 4}}`,
-          updateContact: `3. updateContact: Actualiza contacto vinculado.\nCampos opcionales: nombre(str), correo(str), telefono(str).\n{"thought": "...", "tool_name": "updateContact", "tool_input": {"correo": "cliente@correo.com"}}`,
+          updateContact: `3. updateContact: Actualiza contacto vinculado en el CRM con su información de contacto (correo, teléfono, empresa).\nCampos opcionales: nombre(str), correo(str), telefono(str), empresa(str).\n{"thought": "...", "tool_name": "updateContact", "tool_input": {"correo": "cliente@correo.com", "telefono": "+525512345678"}}`,
           checkAvailability: `4. checkAvailability: Valida disponibilidad de ejecutivo especializado únicamente para el día y hora indicados explícitamente por el cliente.\nCampos: proposedDate(ISO 8601 UTC en Ciudad de México UTC-6, suma 6 horas a la hora local). Ejemplo: 15:00 hora local = 21:00 UTC.\n{"thought": "...", "tool_name": "checkAvailability", "tool_input": {"proposedDate": "2026-07-30T21:00:00.000Z"}}`,
           createActivity: `5. createActivity: Crea la actividad únicamente si el cliente especificó su día/hora, checkAvailability dio AVAILABLE y el contacto cuenta con correo electrónico registrado (campo 'correo' en [CONTACTO CRM]). Si el contacto no tiene correo registrado, es OBLIGATORIO solicitarle su correo amablemente mediante 'final_answer' y guardarlo con 'updateContact' antes de llamar a 'createActivity'.\nCampos: activityText(str), date(ISO 8601 UTC, suma 6 horas a hora local), typeActivityId(num), opportunityId(UUID,opc), reminderTitle(opc), reminderDate(ISO 8601,opc), correo(str,opc).\nREGLA ESTRICTA DE RECORDATORIOS: El recordatorio es exclusivamente interno para el ejecutivo en el CRM. El cliente NO recibe ningún recordatorio antes de la cita. Está ESTRICTAMENTE PROHIBIDO decirle o prometerle al cliente que se le enviará un recordatorio 1 hora antes o previo a la cita.\n{"thought": "...", "tool_name": "createActivity", "tool_input": {"activityText": "Llamada comercial", "date": "2026-07-30T21:00:00.000Z", "typeActivityId": 1}}`,
-          createTicket: `6. createTicket: Registra ticket soporte.\nCampos: title(str), description(str), priority(1=Bajo,2=Medio,3=Alto), category(str).\n{"thought": "...", "tool_name": "createTicket", "tool_input": {"title": "Error login", "description": "Falla acceso", "priority": 2, "category": "Soporte"}}`,
-          consult_product_catalog: `7. consult_product_catalog: Consulta información de productos en el catálogo.\nCampos: query(str).\n{"thought": "...", "tool_name": "consult_product_catalog", "tool_input": {"query": "término a buscar"}}`,
+          createTicket: `6. createTicket: Registra ticket de soporte en el CRM cuando exista una falla técnica del sistema, bug o incidencia que requiera seguimiento.
+REGLA MANDATORIA RAG-FIRST: Antes de crear un ticket, verifica si la respuesta o solución a la duda del cliente se encuentra en la documentación adjunta, fichas técnicas o FAQs del contexto (o búscala con 'consult_product_catalog'). Si la solución o explicación está documentada (ej. habilitar consumo adicional en el módulo Mi Empresa, guías de uso, límites de plan, compatibilidad), responde DIRECTAMENTE con 'final_answer' explicando el procedimiento y NO crees un ticket innecesario. ÚNICAMENTE crea ticket si la incidencia no está documentada, es una falla técnica del sistema o requiere intervención operativa.
+Campos: title(str), description(str), priority(1=Bajo,2=Medio,3=Alto), category(str).
+{"thought": "...", "tool_name": "createTicket", "tool_input": {"title": "Error en sincronización", "description": "Falla al sincronizar datos", "priority": 2, "category": "Soporte"}}`,
+          consult_product_catalog: `7. consult_product_catalog: Consulta la base de conocimientos RAG, documentos adjuntos (manuales de usuario, FAQs, guías de configuración, fichas técnicas) y catálogo de productos. Admite términos técnicos, preguntas de configuración o nombres de productos (ej. "Billy IDP consumo adicional", "Preguntas Frecuentes", "límites de plan").
+Campos: query(str).
+{"thought": "...", "tool_name": "consult_product_catalog", "tool_input": {"query": "Billy IDP habilitar consumo adicional"}}`,
           sendQuotationPdf: `8. sendQuotationPdf: Genera y transmite el PDF de la cotización al chat.\nCampos opcionales: opportunityId(UUID).\n{"thought": "...", "tool_name": "sendQuotationPdf", "tool_input": {}}`,
-          requestHumanHandoff: `9. requestHumanHandoff: Redirecciona la conversación a un ejecutivo especializado y desactiva el bot.\nCampos: reason(str).\n{"thought": "...", "tool_name": "requestHumanHandoff", "tool_input": {"reason": "Cliente solicitó atención humana"}}`,
+          requestHumanHandoff: `9. requestHumanHandoff: Redirecciona la conversación a un ejecutivo especializado (humano) y desactiva el bot.
+REGLA MANDATORIA RAG-FIRST: Si el cliente tiene una duda técnica, funcional, sobre límites o uso del producto que esté resuelta en la documentación técnica, manuales o FAQs, resuélvela tú mismo con 'final_answer'. ÚNICAMENTE llama a 'requestHumanHandoff' si:
+1. El cliente solicita explícitamente ser atendido por un humano o persona real.
+2. El cliente está molesto, agresivo o irritado.
+3. Tras varios intentos la incidencia no tiene solución en la documentación.
+Está TERMINANTEMENTE PROHIBIDO derivar a un ejecutivo de forma anticipada si la documentación ya contiene la respuesta.
+Campos: reason(str).
+{"thought": "...", "tool_name": "requestHumanHandoff", "tool_input": {"reason": "Cliente solicitó atención humana"}}`,
         };
 
-        const allowedTools = subAgent?.tools || [];
+        const alreadyConsultedRag = (state.executedTools || []).includes('consult_product_catalog') || state.toolCallName === 'consult_product_catalog';
+        let allowedTools = subAgent?.tools ? [...subAgent.tools] : [];
+        if (alreadyConsultedRag) {
+          allowedTools = allowedTools.filter(t => t !== 'consult_product_catalog');
+        } else if (!allowedTools.includes('consult_product_catalog')) {
+          allowedTools.push('consult_product_catalog');
+        }
         const toolsText = allowedTools.map(k => ALL_TOOL_PROMPTS[k]).filter(Boolean).join('\n\n');
         const finalAnswerPrompt = `${allowedTools.length + 1}. final_answer — Envía una respuesta en lenguaje natural al cliente.\n{"thought": "...", "tool_name": "final_answer", "tool_input": {"answer": "Hola, bienvenido. ¿En qué te puedo ayudar hoy?"}}`;
         const toolsSectionText = toolsText ? `${toolsText}\n\n${finalAnswerPrompt}` : finalAnswerPrompt;
@@ -839,7 +1033,7 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
           }
         }
 
-        const systemPrompt = `[SUB-AGENTE: ${subAgent?.name || 'General'}]\n${subAgent?.context || ''}\n\n[HOY] ${fechaContexto}\n\n[RESUMEN PREVIO]\n${conversation.summary || 'Sin historial.'}\n\n[CONTACTO CRM] ${JSON.stringify(clientInfo)}\n${activitySection}[HERRAMIENTAS] Responde SIEMPRE con un único JSON. Sin texto fuera del JSON.\n${toolsSectionText}\n\nREGLAS: Un JSON por turno | Usa IDs reales del contexto | checkAvailability antes de createActivity | El contacto debe tener correo registrado antes de createActivity | El cliente NO recibe recordatorios previos (son solo internos del CRM), jamás le digas que recibirá un recordatorio`;
+        const systemPrompt = `[SUB-AGENTE: ${subAgent?.name || 'General'}]\n${subAgent?.context || ''}\n\n[HOY] ${fechaContexto}\n\n[RESUMEN PREVIO]\n${conversation.summary || 'Sin historial.'}\n\n[CONTACTO CRM] ${JSON.stringify(clientInfo)}\n${activitySection}[HERRAMIENTAS] Responde SIEMPRE con un único JSON. Sin texto fuera del JSON.\n${toolsSectionText}\n\nREGLAS: Un JSON por turno | Usa IDs reales del contexto | RAG-FIRST: si la duda o problema viene resuelta en la documentación adjunta responde con final_answer y NO crees tickets ni derives a humano | checkAvailability antes de createActivity | El contacto debe tener al menos un dato (correo O teléfono) antes de createOpportunity | El cliente NO recibe recordatorios previos (son solo internos del CRM), jamás le digas que recibirá un recordatorio`;
 
         let toolExecutionText = '';
         if (state.toolCallName && state.toolCallResult) {
@@ -849,7 +1043,14 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
             compactResult = { status: res.status, available: res.available };
             if (res.suggestedSlots) compactResult.suggestedSlots = res.suggestedSlots;
           } else if (state.toolCallName === 'consult_product_catalog') {
-            compactResult = { status: res.status, productos: res.data?.map((i: any) => i.content) || [], mensaje: res.data?.length === 0 ? 'No se encontraron productos.' : undefined };
+            const catalogList = (res.catalogProducts || []).map((i: any) => i.content || i);
+            const pdfList = (res.ragDocs || []).map((i: any) => `[DOCUMENTACIÓN / FICHA TÉCNICA / FAQ ${i.metadata?.product || i.metadata?.source || ''}]: ${(i.pageContent || '').substring(0, 1000)}`);
+            const allItems = [...catalogList, ...pdfList];
+            compactResult = {
+              status: res.status,
+              documentacionYCatalogo: allItems.length > 0 ? allItems : (res.data?.map((i: any) => i.content) || []),
+              mensaje: allItems.length === 0 && (!res.data || res.data.length === 0) ? 'No se encontró información en la documentación ni catálogo.' : undefined,
+            };
           } else if (state.toolCallName === 'updateContact' || state.toolCallName === 'registerContact') {
             compactResult = { status: res.status };
             if (res.message) compactResult.message = res.message;
@@ -861,16 +1062,53 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
             if (res.id) compactResult.id = res.id;
           }
           toolExecutionText = `\n[TOOL: ${state.toolCallName}] ${JSON.stringify(compactResult)}`;
-          if (state.toolCallName === 'createActivity' && res.status === 'SUCCESS') {
+          if (state.toolCallName === 'createOpportunity' && res.status === 'SUCCESS') {
+            toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] La oportunidad ha sido creada con éxito en el CRM y la cotización formal en PDF ha sido generada y transmitida DIRECTAMENTE A ESTE CHAT para que el cliente la descargue. Tu ÚNICA acción ahora es usar la herramienta 'final_answer' para confirmar amablemente al cliente que le has enviado su cotización en PDF adjunta aquí en el chat.
+REGLA ESTRICTA: El documento PDF se envió aquí en el chat. Está TERMINANTEMENTE PROHIBIDO decirle al cliente que revise su correo electrónico o que se le envió a su correo. Confírmale que el documento PDF está disponible aquí mismo en la conversación para su visualización o descarga.`;
+          } else if (state.toolCallName === 'createActivity' && res.status === 'SUCCESS') {
             toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] La actividad ha sido agendada y creada exitosamente en el CRM. Tu ÚNICA acción ahora es usar la herramienta 'final_answer' para confirmar la cita de forma clara y amigable al cliente indicándole únicamente el día y la hora agendada. REGLA ESTRICTA DE RECORDATORIOS: El recordatorio configurado en el CRM es ÚNICA Y EXCLUSIVAMENTE INTERNO para el ejecutivo asignado; el cliente NO recibe recordatorios una hora antes ni previos a la cita. Por lo tanto, está TERMINANTEMENTE PROHIBIDO decirle o prometerle al cliente que se le enviará o que recibirá un recordatorio una hora antes o previo a la cita. Queda ESTRICTAMENTE PROHIBIDO volver a llamar a 'checkAvailability' o 'createActivity'.`;
           } else if (state.toolCallName === 'updateContact' || state.toolCallName === 'registerContact') {
-            toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] El contacto ha sido actualizado/registrado exitosamente en el CRM con su correo y datos. Si el cliente en mensajes anteriores o en el contexto actual solicitó agendar una cita, llamada o reunión y ya cuentas con el día y hora deseada (ej. "mañana a las 10 am"), NO uses 'final_answer'; continúa INMEDIATAMENTE en este mismo turno llamando a 'checkAvailability' o 'createActivity' para agendar la cita. Solo debes usar 'final_answer' si aún NO conoces el día/hora deseada por el cliente o si no hay ninguna acción pendiente.`;
+            if (state.route === 'comercial') {
+              const targetCId = state.clientId || conversation.clientId; 
+              const updatedClient = targetCId ? await this.clientRepository.findOne({ where: { id: targetCId } }) : null;
+              const hasEmail = Boolean(updatedClient?.correo?.trim());
+              const hasPhone = Boolean(updatedClient?.telefono?.trim());
+
+              if (hasEmail || hasPhone) {
+                toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA MANDATORIA - GENERACIÓN INMEDIATA DE COTIZACIÓN]
+El contacto ya cuenta con datos de contacto registrados en el CRM (${hasEmail ? `Correo: ${updatedClient?.correo}` : ''} ${hasPhone ? `Teléfono: ${updatedClient?.telefono}` : ''}).
+REGLAS ESTRICTAS PARA ESTE TURNO:
+1. Como mínimo se requiere al menos uno de los datos de contacto (correo O teléfono) y ya se encuentra registrado. ESTÁ ESTRICTAMENTE PROHIBIDO FRENAR LA COTIZACIÓN ni insistir por el dato faltante si el cliente no lo proporcionó o si prefirió dar solo uno.
+2. EL SISTEMA NO ENVÍA CORREOS AL CLIENTE. La cotización se entrega ÚNICAMENTE como archivo PDF adjunto directamente aquí en el chat.
+3. Está TERMINANTEMENTE PROHIBIDO responder con 'final_answer'.
+4. Está TERMINANTEMENTE PROHIBIDO decir que la cotización se está preparando, que se envió a su correo o pedirle que revise su bandeja de entrada.
+5. Está TERMINANTEMENTE PROHIBIDO ofrecer llamadas, demos o reuniones antes de entregar la cotización.
+6. TU ÚNICA ACCIÓN PERMITIDA EN ESTE TURNO es invocar INMEDIATAMENTE la herramienta 'createOpportunity' estructurando la propiedad 'items' con los productos confirmados para generar y transmitir el PDF de la cotización formal al chat del cliente.`;
+              } else {
+                toolExecutionText += `\n[INSTRUCCIÓN DE CONTACTO] El contacto aún no cuenta con correo ni teléfono. Usa la herramienta 'final_answer' para solicitar amablemente al cliente sus datos de contacto (correo y/o teléfono) para emitir la cotización formal.`;
+              }
+            } else {
+              toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] El contacto ha sido actualizado/registrado exitosamente en el CRM con su información de contacto.
+- Si el cliente en mensajes anteriores o en el contexto actual solicitó agendar una cita, llamada o reunión y ya cuentas con el día y hora deseada (ej. "mañana a las 10 am"), continúa INMEDIATAMENTE en este mismo turno llamando a 'checkAvailability' o 'createActivity' para agendar la cita.
+- Solo debes usar 'final_answer' si aún NO conoces el día/hora deseada por el cliente o si no hay ninguna acción pendiente.`;
+            }
           } else if (state.toolCallName === 'checkAvailability') {
             if (res.available) {
               toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] El horario consultado está DISPONIBLE y el contacto ya cuenta con correo registrado en el CRM. Continúa INMEDIATAMENTE en este mismo turno llamando a la herramienta 'createActivity' para registrar la actividad en el CRM. NO te detengas con 'final_answer' sin haber creado la actividad.`;
             } else {
               toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA OBLIGATORIA] El horario consultado NO está disponible. Usa 'final_answer' para informar amablemente al cliente y proponerle los horarios alternativos devueltos en 'suggestedSlots'.`;
             }
+          } else if (state.toolCallName === 'consult_product_catalog') {
+            toolExecutionText += `\n[INSTRUCCIÓN CRÍTICA DE RESPUESTA A CLIENTE — RAG-FIRST]
+1. LA CONSULTA AL CATÁLOGO/RAG YA FINALIZÓ CON ÉXITO: Queda TERMINANTEMENTE PROHIBIDO volver a llamar a 'consult_product_catalog' o a cualquier otra herramienta. Ya cuentas con la información técnica y documental necesaria arriba. Tu ÚNICA acción permitida en este turno es responder al cliente usando 'final_answer'.
+2. PRIORIDAD RAG-FIRST: Utiliza la información documental (manuales, FAQs, guías, fichas técnicas) devuelta para resolver la consulta o problemática del cliente. Si la información responde a su duda o indica el procedimiento a seguir (ej. cómo habilitar consumo adicional, consultar consumo en Mi Empresa, políticas de almacenamiento o límites), explícalo con 'final_answer' de forma amigable, clara y concisa. Está TERMINANTEMENTE PROHIBIDO levantar tickets con 'createTicket' o derivar con 'requestHumanHandoff' si la duda ya viene resuelta en la documentación.
+3. CONCISIÓN DE CHAT (2 A 4 ORACIONES O VIÑETAS BREVES): Responde de forma ágil y directa. Prohibido volcar manuales enteros o párrafos kilométricos.
+4. SOPORTE MULTI-PRODUCTO: Si se consultaron o devolvieron múltiples productos, diferencia con total precisión y orden cada uno sin mezclar datos entre ellos.
+5. PROHIBIDO RE-INTRODUCIR: Si el producto ya se ha mencionado en la conversación, NO inicies con su definición comercial ni digas "X es una plataforma...". Ve directo a responder la duda del cliente.
+6. PROHIBIDO REPETIR EL MISMO CIERRE: Si ya ofreciste una demo o cotización en el turno anterior, no vuelvas a insistir con la misma pregunta.
+7. Usa la herramienta 'final_answer' para responder al cliente. JAMÁS repitas el JSON del resultado.`;
+          } else if (res.status === 'ERROR') {
+            toolExecutionText += `\n[INSTRUCCIÓN ANTE ERROR DE VALIDACIÓN] La herramienta '${state.toolCallName}' devolvió un error de validación: "${res.message}". Si el error indica falta de correo o datos de contacto, usa INMEDIATAMENTE la herramienta 'final_answer' para solicitar amablemente al cliente la información faltante (su correo electrónico y teléfono de contacto) para poder proceder con la cotización o seguimiento.`;
           } else {
             toolExecutionText += `\n[INSTRUCCIÓN OBLIGATORIA] El resultado anterior es de la herramienta '${state.toolCallName}'. Ahora DEBES generar un final_answer con una respuesta amigable en lenguaje natural para el cliente usando esa información. JAMÁS repitas el JSON del resultado como respuesta.`;
           }
@@ -884,19 +1122,17 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
         if (!agentResponse || agentResponse.trim() === '' || agentResponse.trim() === '""' || isTemplateOnly) {
           this.logger.warn(`Subagente devolvió respuesta vacía o plantilla genérica. Iniciando rescate conversacional.`);
           let ragContextText = '';
-          if (state.route === 'comercial') {
-            try {
-              const ragResults = await this.toolsHandler.ragService.searchSimilar(incomingContent, 2);
-              const cubeResults: any[] = [];
-              const detectedKeys = [...new Set(ragResults.map(r => r.metadata?.product).filter(Boolean))];
-              if (detectedKeys.length > 0) { for (const key of detectedKeys) cubeResults.push(...await this.toolsHandler.queryCubeProductsByKey(key)); }
-              else { cubeResults.push(...await this.toolsHandler.queryCubeProducts(incomingContent)); }
-              const merged = [...cubeResults, ...ragResults.map(r => ({ content: (r.pageContent || '').substring(0, 300) }))];
-              if (merged.length === 0) cubeResults.push(...(await this.toolsHandler.queryCubeProducts('')).slice(0, 5));
-              if (merged.length > 0) ragContextText = `[CONOCIMIENTO DEL CATÁLOGO DE PRODUCTOS (CAPA SEMÁNTICA CUBE Y RAG)]\n${merged.map(r => `- ${r.content}`).join('\n\n')}`;
-            } catch (err: any) { this.logger.error(`Error en RAG/Capa Semántica para rescate: ${err.message}`); }
-          }
-          const rescuePrompt = `Eres el asistente de IA del CRM. Responde de forma amigable, natural y muy breve al cliente en su mismo idioma. No utilices formato JSON.\n\n${ragContextText || 'REGLAS: Está estrictamente PROHIBIDO inventar nombres de productos, marcas, precios o servicios.'}\n\n[RESUMEN DE LAS CONVERSACIONES PASADAS]\n${conversation.summary || 'No hay historial previo registrado.'}\n\n[HISTORIAL DE CONVERSACIÓN RECIENTE]\n${historyText}\n\n[ÚLTIMO MENSAJE]\nCliente: ${incomingContent}\n\nAsistente:`;
+          try {
+            const ragResults = await this.toolsHandler.ragService.searchSimilar(incomingContent, 3);
+            const cubeResults: any[] = [];
+            const detectedKeys = [...new Set(ragResults.map(r => r.metadata?.product).filter(Boolean))];
+            if (detectedKeys.length > 0) { for (const key of detectedKeys) cubeResults.push(...await this.toolsHandler.queryCubeProductsByKey(key)); }
+            else if (state.route === 'comercial') { cubeResults.push(...await this.toolsHandler.queryCubeProducts(incomingContent)); }
+            const merged = [...cubeResults, ...ragResults.map(r => ({ content: (r.pageContent || '').substring(0, 800) }))];
+            if (merged.length > 0) ragContextText = `[CONOCIMIENTO DOCUMENTAL Y CATÁLOGO (RAG)]\n${merged.map(r => `- ${r.content}`).join('\n\n')}`;
+          } catch (err: any) { this.logger.error(`Error en RAG para rescate: ${err.message}`); }
+
+          const rescuePrompt = `Eres el asistente de IA del CRM. Responde de forma amigable, natural y muy breve al cliente en su mismo idioma. Si la duda se responde con la información documental adjunta (manuales, FAQs o catálogo), explica la solución amablemente sin formato JSON.\n\n${ragContextText || 'REGLAS: Está estrictamente PROHIBIDO inventar nombres de productos, marcas, precios o servicios.'}\n\n[RESUMEN DE LAS CONVERSACIONES PASADAS]\n${conversation.summary || 'No hay historial previo registrado.'}\n\n[HISTORIAL DE CONVERSACIÓN RECIENTE]\n${historyText}\n\n[ÚLTIMO MENSAJE]\nCliente: ${incomingContent}\n\nAsistente:`;
           const rescueResponse = await this.callLLM(config, rescuePrompt, undefined, { ...baseAuditContext, metadata: { step: 'rescue' } });
           if (rescueResponse && rescueResponse.trim() !== '') {
             this.logger.log(`[LangGraph - SubAgent Rescue] Respuesta conversacional libre generada con éxito.`);
@@ -952,13 +1188,20 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
           let toolName = obj.tool_name || obj.name || obj.tool || obj.function?.name;
           if (toolName && toolAliases[toolName]) toolName = toolAliases[toolName];
           if (toolName && toolName !== 'final_answer' && toolName !== 'undefined') {
+            // Anti-Bucle estricto: Si esta herramienta ya fue ejecutada en este ciclo, JAMÁS volver a ejecutarla
+            const isAlreadyExecuted = (state.executedTools || []).includes(toolName) || state.toolCallName === toolName;
+            if (isAlreadyExecuted) {
+              this.logger.warn(`[Anti-Bucle] Herramienta '${toolName}' ya fue ejecutada en este ciclo. Omitiendo re-ejecución repetida.`);
+              continue;
+            }
+
             let toolInput = obj.tool_input || obj.parameters || obj.arguments || obj.input || obj.function?.arguments || obj.function?.parameters || {};
             if (typeof toolInput === 'string') {
               try { toolInput = JSON.parse(toolInput); } catch (_) {}
             }
             if (!allowedTools.includes(toolName)) {
               this.logger.warn(`Sub-Agente '${state.route}' intentó usar una tool no permitida: '${toolName}'`);
-              if (toolName === 'consult_product_catalog') {
+              if (toolName === 'consult_product_catalog' && !alreadyConsultedRag) {
                 return { nextAction: 'call_tool', toolCallName: 'consult_product_catalog', toolCallInput: toolInput || { query: incomingContent } };
               }
               return { nextAction: 'respond', response: toolInput?.answer || obj.answer || 'Con gusto le doy seguimiento a tu consulta. ¿Me podrías indicar más detalles sobre lo que necesitas?' };
@@ -977,15 +1220,104 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
           if (toolName === 'final_answer' || obj.answer || toolInput?.answer || obj.response) {
             const answerText = toolInput?.answer || obj.answer || obj.response || '';
             if (answerText.trim().length > 0) {
+              // Si la herramienta de cotización ya fue ejecutada en este ciclo, JAMÁS volver a interceptar ni re-ejecutar createOpportunity
+              if (state.toolCallName === 'createOpportunity' || state.toolCallName === 'sendQuotationPdf') {
+                return { nextAction: 'respond', response: answerText };
+              }
+
+              if (state.route === 'comercial') {
+                const lower = answerText.toLowerCase();
+                const isChatDelivery = lower.includes('adjunto') || lower.includes('este chat') || lower.includes('aquí en el chat') || lower.includes('aqui en el chat') || lower.includes('aquí mismo') || lower.includes('aqui mismo') || lower.includes('en la conversación') || lower.includes('en el chat');
+
+                const claimsEmailOrPreparing =
+                  !isChatDelivery &&
+                  (lower.includes('preparada') || lower.includes('preparando') || lower.includes('enviada') || lower.includes('enviado')) &&
+                  (lower.includes('correo') || lower.includes('email') || lower.includes('bandeja') || lower.includes('inbox') || lower.includes('spam') || (lower.includes('revisa') && (lower.includes('correo') || lower.includes('bandeja') || lower.includes('inbox'))));
+
+                const hasAnyContact = Boolean(conversation.client?.correo?.trim() || conversation.client?.telefono?.trim());
+                const divertingToCall = !isChatDelivery && (lower.includes('llamada') || lower.includes('reunión') || lower.includes('reunion') || lower.includes('demo') || lower.includes('agendar')) && (lower.includes('ejecutivo') || lower.includes('preferida') || lower.includes('horario') || lower.includes('gustaría') || lower.includes('gustaria'));
+                const thanksContactWithoutQuoting = (lower.includes('gracias por') || lower.includes('recibido') || lower.includes('registrado')) && (lower.includes('correo') || lower.includes('email') || lower.includes('telefono') || lower.includes('teléfono') || lower.includes('contacto'));
+                const recentHistoryLower = (messages.slice(-4).map(m => m.content).join(' ') + ' ' + incomingContent).toLowerCase();
+                const isQuoteInProgress = recentHistoryLower.includes('cotiz') || recentHistoryLower.includes('precio') || recentHistoryLower.includes('plan');
+
+                if (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress)) {
+                  this.logger.warn(`[Anti-Alucinación Comercial] El sub-agente intentó desviar o detener con final_answer ('${answerText.substring(0, 80)}...') sin entregar la cotización. Interceptando para forzar createOpportunity.`);
+                  return {
+                    nextAction: 'call_tool',
+                    toolCallName: 'createOpportunity',
+                    toolCallInput: {
+                      nombreProyecto: 'Cotización Formal',
+                      moneda: 'MXN',
+                    },
+                  };
+                }
+              }
               return { nextAction: 'respond', response: answerText };
             }
           }
         }
 
+        // Rescate si consult_product_catalog ya fue ejecutada pero el LLM solo emitió pensamientos o re-queries
+        if (alreadyConsultedRag) {
+          const thoughtWithText = parsedObjects.find(o => o.thought && typeof o.thought === 'string' && o.thought.length > 20)?.thought;
+          this.logger.warn(`[Anti-Bucle RAG] Subagente no emitió final_answer tras consultar RAG. Sintetizando respuesta con el contexto documental disponible.`);
+          const ragDocs = (state.toolCallResult as any)?.ragDocs || [];
+          const catalogProducts = (state.toolCallResult as any)?.catalogProducts || [];
+          const contextSnippets = [
+            ...catalogProducts.map((p: any) => p.content || p),
+            ...ragDocs.map((d: any) => d.pageContent || d.content || ''),
+          ].filter(Boolean).slice(0, 5).join('\n\n');
+
+          const synthesisPrompt = `Eres el asistente de IA del CRM. Con base en la siguiente documentación técnica y de soporte, responde a la duda del cliente de forma concisa, clara y amigable en español (2 a 4 oraciones). NO uses formato JSON, responde en lenguaje natural directo.\n\n[DOCUMENTACIÓN DISPONIBLE]\n${contextSnippets || 'No hay documentación adicional disponible.'}\n\n[HISTORIAL]\n${historyText}\n\n[CLIENTE] ${incomingContent}\n\nRespuesta:`;
+          const synthesized = await this.callLLM(config, synthesisPrompt, undefined, { ...baseAuditContext, metadata: { step: 'synthesis_rescue' } });
+          if (synthesized && synthesized.trim() !== '') {
+            return { nextAction: 'respond', response: synthesized.trim() };
+          }
+          if (thoughtWithText) {
+            return { nextAction: 'respond', response: thoughtWithText };
+          }
+          return { nextAction: 'respond', response: 'Puedes verificar las opciones de consumo adicional y gestión de recursos directamente en el apartado "Mi Empresa" de tu cuenta.' };
+        }
+
         // Prioridad 3: Rescate Regex si ningún JSON fue parseable
         this.logger.warn(`Sintaxis JSON inusual en subagente. Intentando rescate Regex. Salida: ${agentResponse}`);
         const answerMatch = agentResponse.match(/"answer"\s*:\s*"([^"]+)"/i);
-        if (answerMatch?.[1]) return { nextAction: 'respond', response: answerMatch[1] };
+        if (answerMatch?.[1]) {
+          const ans = answerMatch[1];
+          // Si la herramienta de cotización ya fue ejecutada en este ciclo, JAMÁS volver a interceptar
+          if (state.toolCallName === 'createOpportunity' || state.toolCallName === 'sendQuotationPdf') {
+            return { nextAction: 'respond', response: ans };
+          }
+
+          if (state.route === 'comercial') {
+            const lower = ans.toLowerCase();
+            const isChatDelivery = lower.includes('adjunto') || lower.includes('este chat') || lower.includes('aquí en el chat') || lower.includes('aqui en el chat') || lower.includes('aquí mismo') || lower.includes('aqui mismo') || lower.includes('en la conversación') || lower.includes('en el chat');
+
+            const claimsEmailOrPreparing =
+              !isChatDelivery &&
+              (lower.includes('preparada') || lower.includes('preparando') || lower.includes('enviada') || lower.includes('enviado')) &&
+              (lower.includes('correo') || lower.includes('email') || lower.includes('bandeja') || lower.includes('inbox') || lower.includes('spam') || (lower.includes('revisa') && (lower.includes('correo') || lower.includes('bandeja') || lower.includes('inbox'))));
+
+            const hasAnyContact = Boolean(conversation.client?.correo?.trim() || conversation.client?.telefono?.trim());
+            const divertingToCall = !isChatDelivery && (lower.includes('llamada') || lower.includes('reunión') || lower.includes('reunion') || lower.includes('demo') || lower.includes('agendar')) && (lower.includes('ejecutivo') || lower.includes('preferida') || lower.includes('horario') || lower.includes('gustaría') || lower.includes('gustaria'));
+            const thanksContactWithoutQuoting = (lower.includes('gracias por') || lower.includes('recibido') || lower.includes('registrado')) && (lower.includes('correo') || lower.includes('email') || lower.includes('telefono') || lower.includes('teléfono') || lower.includes('contacto'));
+            const recentHistoryLower = (messages.slice(-4).map(m => m.content).join(' ') + ' ' + incomingContent).toLowerCase();
+            const isQuoteInProgress = recentHistoryLower.includes('cotiz') || recentHistoryLower.includes('precio') || recentHistoryLower.includes('plan');
+
+            if (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress)) {
+              this.logger.warn(`[Anti-Alucinación Comercial - Regex] Interceptando para forzar createOpportunity.`);
+              return {
+                nextAction: 'call_tool',
+                toolCallName: 'createOpportunity',
+                toolCallInput: {
+                  nombreProyecto: 'Cotización Formal',
+                  moneda: 'MXN',
+                },
+              };
+            }
+          }
+          return { nextAction: 'respond', response: ans };
+        }
         return { nextAction: 'respond', response: 'Con gusto le doy seguimiento a tu solicitud. ¿Te puedo ayudar en algo más?' };
       };
 
@@ -1015,10 +1347,18 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
               content: r.pageContent && r.pageContent.length > 1000 ? r.pageContent.substring(0, 1000) + '... (texto truncado)' : (r.pageContent || r.content || ''),
               metadata: r.metadata,
             }));
-            return { toolCallResult: { status: 'SUCCESS', data: [...catalogData, ...ragData] } };
+            return {
+              toolCallResult: {
+                status: 'SUCCESS',
+                data: [...catalogData, ...ragData],
+                catalogProducts: catalogData,
+                ragDocs: executionResult.ragDocs || [],
+              },
+              executedTools: [toolName],
+            };
           }
           const executionResult = await this.toolsHandler.executeTool(toolName, validationResult.data, conversation, config);
-          let nextState: Partial<AgentState> = { toolCallResult: executionResult };
+          let nextState: Partial<AgentState> = { toolCallResult: executionResult, executedTools: [toolName] };
           if (state.toolCallName === 'requestHumanHandoff' || executionResult?.isHandedOff) nextState.isHandedOff = true;
           if ((state.toolCallName === 'registerContact' || state.toolCallName === 'updateContact') && executionResult.status === 'SUCCESS') {
             const targetClientId = executionResult.clientId || executionResult.client?.id || conversation.clientId;
@@ -1037,78 +1377,26 @@ REGLA ESTRICTA DE ITEMS MULTI-PRODUCTO: Tras la confirmación del cliente, pasa 
       };
 
       // 5. Build and run the LangGraph state graph
-      const checkPhoneExists = async (cId?: string | null): Promise<boolean> => {
-        const targetId = cId || conversation.clientId;
-        if (targetId) {
-          const c = await this.clientRepository.findOne({ where: { id: targetId } });
-          if (c && c.telefono && c.telefono.trim() !== '') {
-            conversation.client = c;
-            conversation.clientName = `${c.nombre} ${c.apellido || ''}`.trim();
-            return true;
-          }
-        }
-
-        // 1. Buscar en BD si el externalId de la conversación (ej. WhatsApp sender) coincide con un cliente existente
-        if (conversation.externalId) {
-          const matchedByExternal = await this.clientsService.findByPhone(conversation.externalId);
-          if (matchedByExternal && matchedByExternal.telefono?.trim()) {
-            this.logger.log(`[checkPhoneExists] Cliente identificado por externalId (${conversation.externalId}): ${matchedByExternal.nombre}`);
-            conversation.client = matchedByExternal;
-            conversation.clientId = matchedByExternal.id;
-            conversation.clientName = `${matchedByExternal.nombre} ${matchedByExternal.apellido || ''}`.trim();
-            await this.clientRepository.manager.getRepository(Conversation)
-              .createQueryBuilder()
-              .update(Conversation)
-              .set({ clientId: matchedByExternal.id, clientName: conversation.clientName })
-              .where('id = :id', { id: conversation.id })
-              .execute();
-            return true;
-          }
-        }
-
-        // 2. Buscar en BD si el número extraído del mensaje del cliente coincide con un cliente existente
-        const extracted = PhoneUtils.extractPhoneFromText(incomingContent);
-        if (extracted) {
-          const matchedByMessage = await this.clientsService.findByPhone(extracted);
-          if (matchedByMessage && matchedByMessage.telefono?.trim()) {
-            this.logger.log(`[checkPhoneExists] Cliente identificado por número en mensaje (${extracted}): ${matchedByMessage.nombre}`);
-            conversation.client = matchedByMessage;
-            conversation.clientId = matchedByMessage.id;
-            conversation.clientName = `${matchedByMessage.nombre} ${matchedByMessage.apellido || ''}`.trim();
-            await this.clientRepository.manager.getRepository(Conversation)
-              .createQueryBuilder()
-              .update(Conversation)
-              .set({ clientId: matchedByMessage.id, clientName: conversation.clientName })
-              .where('id = :id', { id: conversation.id })
-              .execute();
-            return true;
-          }
-        }
-
-        return !!(conversation.client?.telefono?.trim());
-      };
-
       const workflow = new StateGraph(AgentStateAnnotation)
         .addNode('routerNode', routerNode)
-        .addNode('identificationNode', identificationNode)
         .addNode('subAgentNode', subAgentNode)
         .addNode('executeToolNode', executeToolNode);
 
       workflow.addEdge(START, 'routerNode');
-      workflow.addConditionalEdges('routerNode', async (state: AgentState) => {
-        const hasPhone = await checkPhoneExists(state.clientId);
-        return (!hasPhone && state.route !== 'general') ? 'identificationNode' : 'subAgentNode';
-      }, { identificationNode: 'identificationNode', subAgentNode: 'subAgentNode' });
-      workflow.addConditionalEdges('identificationNode', async (state: AgentState) => {
-        if (await checkPhoneExists(state.clientId)) return 'subAgentNode';
-        if (state.nextAction === 'call_tool') return 'executeToolNode';
-        return END;
-      }, { subAgentNode: 'subAgentNode', executeToolNode: 'executeToolNode', [END]: END });
-      workflow.addConditionalEdges('subAgentNode', (state: AgentState) => state.nextAction === 'call_tool' ? 'executeToolNode' : END, { executeToolNode: 'executeToolNode', [END]: END });
-      workflow.addConditionalEdges('executeToolNode', () => 'subAgentNode', { subAgentNode: 'subAgentNode' });
+      workflow.addEdge('routerNode', 'subAgentNode');
+      workflow.addConditionalEdges(
+        'subAgentNode',
+        (state: AgentState) => (state.nextAction === 'call_tool' ? 'executeToolNode' : END),
+        { executeToolNode: 'executeToolNode', [END]: END },
+      );
+      workflow.addConditionalEdges(
+        'executeToolNode',
+        () => 'subAgentNode',
+        { subAgentNode: 'subAgentNode' },
+      );
 
       const app = workflow.compile();
-      finalState = await app.invoke({ clientId: conversation.clientId || null, route: 'general', nextAction: null, toolCallName: null, toolCallInput: null, toolCallResult: null, response: null } as any, { recursionLimit: 15 });
+      finalState = await app.invoke({ clientId: conversation.clientId || null, route: 'general', nextAction: null, toolCallName: null, toolCallInput: null, toolCallResult: null, response: null, executedTools: [] } as any, { recursionLimit: 15 });
 
       const agentReply = finalState.response || 'He procesado tu solicitud en el sistema. ¿Te puedo colaborar en algo más?';
       this.updateConversationSummaryAsync(conversation, messages, incomingContent, agentReply).catch(err => {

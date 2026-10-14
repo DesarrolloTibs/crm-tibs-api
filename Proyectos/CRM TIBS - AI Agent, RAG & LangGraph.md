@@ -222,3 +222,228 @@ En lugar de depender de prompts estáticos, el agente opera mediante un grafo de
      - Los slots sugeridos garantizan que **ambas partes** (asesor y cliente) estén 100% disponibles.
   5. **Protección en Reprogramación (`handleModifyActivity`):**
      - La modificación de fecha/hora de actividades existentes también valida bidireccionalmente la agenda del cliente excluyendo la actividad en edición (`excludeActivityId`).
+
+
+---
+
+### 📚 Optimización de RAG Contextual, Fichas Técnicas PDF y Fluidez Conversacional (Anti-Repetición)
+
+* **Problemas Identificados en Conversaciones de Canales (FB/WhatsApp):**
+  1. **Repetitividad Robótica de Precios y Observaciones:** En cada mensaje de aclaración técnica, el bot repetía de forma idéntica la descripción, el precio base y las observaciones del producto (ej. *"Billy IDP es un agente de IA... El precio base es de $14,370 MXN por plan"*), incluso si el cliente solo hacía preguntas puntuales de seguimiento (ej. *"¿son 15 mil documentos al mes?"* o *"¿si me excedo hay costos adicionales?"*).
+  2. **Pérdida Inadvertida de Chunks de PDFs en RAG:** En `ragService.ingestProduct`, al editar o guardar cualquier producto en el CRM, se ejecutaba `DELETE FROM product_knowledge_base WHERE metadata->>'productId' = $1 OR metadata->>'product' = $2`, lo cual eliminaba por completo los fragmentos vectoriales de las fichas técnicas en PDF asociadas a ese producto, dejando únicamente la ficha básica del catálogo.
+  3. **Amputación de Chunks y Pérdida de Contexto:** El orquestador truncaba los fragmentos de RAG a solo 400 caracteres (`substring(0, 400)`) y ejecutaba la búsqueda vectorial únicamente con el texto literal del último mensaje (`incomingContent`). Si el usuario no mencionaba explícitamente el nombre del producto en ese turno particular, el RAG no recuperaba la información del PDF.
+  4. **Instrucción Antialucinación Excesivamente Restrictiva:** La directiva *"Responde ÚNICAMENTE con la información del bloque [CATÁLOGO RELEVANTE] de arriba"* impedía que el modelo invocara la herramienta `consult_product_catalog` para profundizar en los manuales técnicos cuando la información previa estaba incompleta.
+
+* **Soluciones Implementadas:**
+  1. **Preservación Estricta de Fichas Técnicas en RAG (`rag.service.ts`):** Se corrigió la sentencia `DELETE` en `ingestProduct` para eliminar únicamente el registro de origen catálogo (`metadata->>'source' = 'database-catalog'`), garantizando que los fragmentos de los manuales y fichas técnicas PDF permanezcan intactos en PostgreSQL (`product_knowledge_base`).
+  2. **Auto-Sincronización Multitenant de Fichas Técnicas (`ai-agent-tools-handler.service.ts`):** `AiAgentToolsHandlerService` implementa `OnModuleInit` con `syncAllTenantsProductFilesToRag()` para escanear y re-indexar automáticamente cualquier PDF pendiente o previamente afectado en el esquema público y todos los esquemas de inquilinos activos.
+  3. **Búsqueda Vectorial Contextual Multi-Turno (`ai-agent-orchestrator.service.ts`):**
+     - El orquestador inspecciona el mensaje entrante y los últimos mensajes del historial para detectar productos activos discutidos en la conversación.
+     - Realiza expansión contextual de búsqueda (`${productoActivo} ${incomingContent}`) y consulta filtrada por `productKey` en pgvector.
+     - Amplía la ventana de texto inyectada de 400 a 1200 caracteres para preservar tablas de límites, planes y costos excedentes.
+  4. **Directivas de Chat en Vivo y Concisión Estricta (2 a 4 oraciones):**
+     - Se reemplazó la directiva rígida por reglas de formato WhatsApp/Messenger: máximo 2 a 4 oraciones breves y directas.
+     - **Prohibido re-introducir:** Si el producto ya se mencionó en el chat, no vuelve a decir "X es una plataforma con Inteligencia Artificial...".
+     - **Prohibido repetir llamado a la acción (CTA):** Si ya ofreció una demo o cotización en el turno previo, no vuelve a insistir con la misma pregunta.
+     - **Aprobación natural:** Si el usuario confirma un dato ("Veo que son 15 mil docs"), el bot valida amigablemente en una línea sin recitar el folleto técnico completo.
+  5. **Soporte Completo de Múltiples Productos (Consultas, Comparaciones y Cotizaciones):**
+     - **Detección Resiliente por Palabras Clave Distintivas:** Detecta menciones compuestas incluso si el usuario no escribe el nombre formal completo (ej. *"Billy y Tibs"* detecta tanto *"Billy IDP"* como *"CRM Tibs"*).
+     - **Recuperación Balanceada en RAG:** En preguntas comparativas o multi-producto, agrupa los fragmentos vectoriales por `productKey` y garantiza hasta 3 chunks de ficha técnica por cada producto detectado (evitando que un producto acapare todo el contexto y deje sin datos al otro).
+     - **Resolución Multi-Producto en la Herramienta `consult_product_catalog`:** La herramienta ahora acepta términos múltiples (`query`, `products`), detecta todos los productos catalogados, inyecta sus fichas técnicas específicas y devuelve tanto `catalogProducts` como `ragDocs` y `data`.
+     - **Corrección Crítica de Inyección de Herramientas en el Orquestador:** Se corrigió el mapeo de retorno en `toolExecutionText` para `consult_product_catalog`, asegurando que el modelo reciba los datos reales y fichas técnicas completas en lugar de un arreglo vacío.
+     - **Estructuración Quirúrgica:** Instrucción explícita de presentar comparaciones o respuestas multi-producto en viñetas ordenadas de 1 a 2 líneas por producto sin mezclar datos técnicos, precios ni condicionantes.
+  6. **Resolución de Nombres Similares, Variantes y Calibres (`familyMatch` & `rankProductsByRelevance`):**
+     - **Problema de Variantes Similares:** En catálogos médicos o comerciales con múltiples calibres de un mismo producto (ej. *"Nylon 10-0"*, *"Nylon 6-0"*, *"Nylon 3-0"*, *"Vicryl 6-0"*, *"Vicryl 5-0"*), si el cliente consulta por la palabra genérica (*"¿tienen Nylon?"* o *"cotízame Nylon"*), una búsqueda rígida descartaba las opciones o forzaba a adivinar una sola.
+     - **Coincidencia de Familia:** `ai-agent-orchestrator.service.ts` y `ai-agent-tools-handler.service.ts` implementan `familyMatch`, recuperando todas las variantes/calibres que compartan la raíz del producto para presentarlas estructuradas en el contexto del agente.
+     - **Clarificación Proactiva y Anti-Alucinación:** El sub-agente comercial tiene prohibido terminantemente adivinar o asumir un calibre al azar para cotizar. Si el cliente no indicó la medida, lista de forma concisa los calibres disponibles con sus precios unitarios y solicita que elija cuál necesita.
+     - **Puntuación de Medida Exacta:** `rankProductsByRelevance` aplica una bonificación de +3,000 pts al calibre exacto confirmado (`6-0`, `10-0`, etc.) y una penalización severa (-5,000 pts) a calibres contradictorios, garantizando que el PDF y la oportunidad formal registren el UUID exacto del catálogo.
+
+
+### 🛡️ Validación y Captura Obligatoria de Datos de Contacto en Cotizaciones (`comercial` & `createOpportunity`)
+
+* **Problema Identificado en Producción (Canales Sociales FB / Messenger / WhatsApp):**
+  - Al interactuar por canales sociales o webchat, el contacto se crea automáticamente con el apodo o nombre del perfil (ej. *"Tibs Amador"*), quedando los campos `correo` y `telefono` vacíos (`null`).
+  - Al solicitar una cotización (*"me puedes generar una cotizacion? me interesa"*), el sub-agente comercial presentaba los productos y solicitaba confirmación; al confirmar el prospecto (*"si, es correcta"*), el agente invocaba `createOpportunity` y transmitía el PDF sin haber validado ni solicitado la información de contacto (`correo` y `telefono`).
+  - Esto dejaba la oportunidad comercial y el contacto en el CRM sin datos esenciales para el seguimiento directo o envío de información formal por parte del ejecutivo comercial.
+
+* **Solución Implementada:**
+  1. **Guardrail Determinista en Backend (`ai-agent-tools-handler.service.ts`):**
+     - En `createOpportunity`, se valida estrictamente que el contacto vinculado a la conversación cuente con `correo` registrado en el CRM.
+     - Si el contacto no cuenta con correo, la herramienta rechaza la ejecución retornando `status: 'ERROR'` con un mensaje estructurado que instruye al LLM a solicitar amablemente el correo electrónico (y teléfono de contacto) mediante `final_answer` y persistirlo con `updateContact` antes de reintentar la creación de la oportunidad.
+     - Si en los argumentos de `createOpportunity` se proveen `correo`, `telefono` o `empresa`, el handler reconcilia y actualiza automáticamente el contacto en el CRM antes de validar.
+  2. **Deduplicación y Soporte de Empresa en `updateContact`:**
+     - En `updateContact` y `registerContact`, se añadió soporte para persistir el campo `empresa` y búsqueda de contacto existente por `correo` para prevenir colisiones de clave única (`unique constraint`) al enlazar canales sociales con clientes previamente registrados.
+  3. **Directiva Agéntica Mandatoria en Sub-Agente Comercial (`ai-sub-agent-migration.service.ts` & `tenant-provisioner.service.ts`):**
+     - **Regla Mandatoria:** Se prohíbe terminantemente al sub-agente comercial llamar a `createOpportunity` si el contacto no cuenta con correo en `[CONTACTO CRM]`.
+     - **Solicitud Proactiva:** Al presentar el desglose para confirmación o al confirmar el cliente la cotización, el agente debe solicitar forzosamente el correo electrónico y teléfono de contacto para el seguimiento formal.
+     - **Encadenamiento Fluido:** Al recibir los datos de contacto, el agente invoca `updateContact` y, si los productos ya estaban confirmados, continúa en ese mismo turno con `createOpportunity` emitiendo el PDF al chat sin demoras innecesarias.
+  4. **Adaptación de Schemas y Orquestador (`CreateOpportunitySchema` & `ai-agent-orchestrator.service.ts`):**
+     - Se extendió `CreateOpportunitySchema` con campos opcionales `correo`, `email`, `telefono` y `empresa`.
+     - En el prompt de herramientas del orquestador (`ALL_TOOL_PROMPTS.createOpportunity`), se especificó la regla mandatoria de validación de correo.
+     - En `toolExecutionText`, ante un retorno de `status: 'ERROR'`, se guía al agente para responder de inmediato con `final_answer` pidiendo la información faltante.
+
+### 📨 Entrega Exclusiva de Cotizaciones en Chat (PDF Nativo) y Protección Antialucinación de Despacho por Correo
+
+#### 1. Contexto y Diagnóstico del Flujo
+En el flujo comercial asistido por IA, la formalización de cotizaciones exige que el contacto cuente con correo electrónico en el CRM (`Client.correo`) para trazabilidad del equipo de ventas. Sin embargo, se detectó una vulnerabilidad de sesgo conversacional en el modelo:
+- Al recibir el correo electrónico del cliente, el LLM asumía erróneamente que la cotización debía ser enviada a la bandeja de entrada del usuario vía correo.
+- Detenía el flujo con `final_answer` afirmando que *"la cotización está siendo preparada"* y desviaba al usuario a agendar llamadas o demostraciones antes de haber emitido el documento.
+- Si el usuario declinaba la llamada, el sub-agente alucinaba que *"la cotización fue enviada a su correo electrónico"*, sin haber invocado jamás la herramienta `createOpportunity`.
+
+#### 2. Principio Arquitectónico de Entrega
+- **Canal de Entrega Exclusivo:** El CRM TIBS genera cotizaciones en formato PDF y las transmite **única y exclusivamente dentro del canal de chat en vivo** (Facebook Messenger, WhatsApp, Webchat) mediante el evento interno `QUOTATION_EVENTS.SEND_TO_CHANNEL`.
+- **Propósito del Correo Electrónico:** El correo se solicita única y exclusivamente para poblar la entidad de contacto en el CRM, permitiendo que los ejecutivos comerciales consulten la oportunidad y den seguimiento desde la plataforma web. El sistema **nunca** envía correos al cliente final con la cotización.
+
+#### 3. Salvaguardas en Dos Capas
+
+##### Capa 1: Directivas de Sistema y Prompts de Sub-Agente (`comercial`)
+Se actualizaron `AiSubAgentMigrationService` y `TenantProvisionerService` con directivas estrictas distribuidas a todos los esquemas de tenants (`tenant_teter`, etc.):
+1. **Entrega Exclusiva en Chat:** Las cotizaciones se entregan únicamente como archivo PDF adjunto en el chat en vivo.
+2. **Prohibición de Alucinación de Correo:** Prohibido afirmar que la cotización se envió por correo o pedir al cliente que revise su bandeja de entrada.
+3. **Flujo Ininterrumpido:** Prohibido detener el flujo diciendo que la cotización "se está preparando". Tras registrar el correo con `updateContact`, el modelo debe llamar de inmediato a `createOpportunity`.
+4. **No Desviación Previa:** Prohibido ofrecer llamadas o demostraciones antes de que la cotización formal haya sido entregada en el chat.
+
+##### Capa 2: Interceptor Antialucinación Determinista en Backend (`AiAgentOrchestratorService`)
+En `subAgentNode`, si la ruta es `comercial` y el modelo devuelve un `final_answer` pretendiendo haber enviado la cotización al correo o que la cotización se está preparando, el orquestador:
+1. Detecta la alucinación mediante patrones regex (`cotizaci[oó]n.*(enviada|preparada|correo|revisa)`).
+2. Cancela el `final_answer`.
+3. Inyecta y ejecuta de forma forzada `createOpportunity` con los productos confirmados del cliente, transmitiendo el PDF al chat de forma determinista y corrigiendo la respuesta final.
+
+#### 4. Alineación Arquitectónica AI-First (Webchat Interno & Omnicanal)
+
+Para mantener paridad conceptual con la arquitectura **AI-First** de `WebchatActionExecutorService` (`[AI-FIRST]` vs `[FALLBACK HEURISTICO]`), el orquestador y el gestor de herramientas implementan los siguientes principios rectores:
+
+1. **Primacía Cognitiva del LLM:**
+   - En el Webchat Interno (`src/webchat/`), el Router extrae intenciones y parámetros de acción mediante razonamiento estructurado (`thought`), el cual se audita y valida contra los catálogos reales de base de datos antes de proceder.
+   - En el Agente Omnicanal (`src/conversations/`), el subagente `comercial` razona y clasifica la intención de cotizar, desglosando productos e invocando `createOpportunity` con `items` estructurados de forma nativa en su grafo de estados LangGraph.
+2. **Reconciliación Contextual Multi-Turno (Paso 2.6):**
+   - Al igual que `WebchatActionExecutorService.mergeHistoryContext` reconstruye parámetros a partir de turnos previos del usuario, `AiAgentToolsHandlerService.createOpportunity` incorpora una reconciliación contextual que escanea los últimos turnos de la conversación contra los productos activos en el catálogo. Si la confirmación del producto ocurrió en lenguaje natural fluido sin viñetas (ej. *"El plan básico de Billy IDP cuesta $14,370 MXN..."*), el sistema vincula automáticamente el producto real, precio y unidad de medida correspondientes, evitando cotizaciones huérfanas o vacías.
+3. **Guardrails de Integridad sin Alucinación:**
+   - Si faltan datos mandatorios para el negocio (ej. correo del contacto en el CRM para cotizar, o fecha/hora para agendar actividades en el Webchat), el sistema **no inventa ni alucina** datos ficticios: rechaza la ejecución y guía al usuario de forma conversacional para obtener la información faltante.
+
+#### 5. Corrección de Aislamiento de Identificador de Canal (`externalId` en WhatsApp vs Redes Sociales)
+
+- **Problema Detectado:**
+  Al recibir mensajes de clientes sin contacto previo por canales de redes sociales como Facebook Messenger o Instagram, el sistema extraía dígitos de `conversation.externalId` (Page-Scoped ID de Facebook, ej. `27348876931430142`) usando `PhoneUtils.extractPhoneFromText(conversation.externalId)` y lo registraba de forma automática en el campo `client.telefono` (`273488769314301`). Esto ocasionaba que:
+  1. El contacto apareciera en el CRM con un ID de perfil social en lugar de su número telefónico real.
+  2. El sub-agente de IA considerara que el contacto ya tenía teléfono registrado y nunca solicitara su número de teléfono real.
+- **Causa Raíz:**
+  En `ai-agent-orchestrator.service.ts` (`identificationNode` y `checkPhoneExists`), la extracción y búsqueda por `conversation.externalId` no discriminaba el canal, asumiendo que cualquier `externalId` numérico correspondía a un número telefónico (lo cual solo es verídico en WhatsApp).
+- **Solución Implementada:**
+  1. **Restricción Exclusiva a WhatsApp (`isWhatsApp`):** En `identificationNode` y `checkPhoneExists`, el uso de `conversation.externalId` para resolver o registrar el teléfono del contacto quedó estrictamente condicionado a `conversation.channel === 'whatsapp'`.
+  2. **Solicitud Mandatoria en FB/IG/Webchat:** Para Facebook, Instagram o Webchat, si el contacto no tiene teléfono registrado y no lo ha provisto en el cuerpo del mensaje entrante, el sistema activa `identPrompt` para solicitar amablemente su número telefónico en lenguaje natural antes de continuar con cotizaciones o agendamiento.
+  3. **Corrección en Tickets:** En `createTicket`, `contactPhone` solo toma `externalId` si el canal es WhatsApp; de lo contrario toma `client.telefono`.
+
+#### 6. Política Dinámica de Captura de Datos de Contacto (Libre Conversación vs Cotización Formal)
+
+- **Principio Rector:**
+  El asistente conversacional debe permitir la interacción libre del cliente (preguntas de catálogo, especificaciones técnicas, soporte y plática general) sin exigir número telefónico ni correo electrónico, manteniendo esos campos vacíos en el CRM.
+- **Momento Exclusivo de Captura (Al Cotizar):**
+  La validación y solicitud de datos de contacto se activa **única y exclusivamente cuando el cliente desea emitir o confirmar una cotización formal**:
+  1. **Si el contacto NO tiene correo electrónico registrado:**
+     Se solicita forzosamente **su correo electrónico Y un número de teléfono de contacto** mediante `final_answer`.
+  2. **Si el contacto YA tiene correo registrado pero NO tiene teléfono:**
+     Se solicita **ÚNICAMENTE su número de teléfono de contacto** mediante `final_answer`.
+  3. **Si el contacto YA tiene teléfono registrado pero NO tiene correo (ej. WhatsApp):**
+     Se solicita **ÚNICAMENTE su correo electrónico** mediante `final_answer`.
+  4. **Si el contacto YA cuenta con ambos datos registrados:**
+     No se solicita ningún dato adicional y se procede de inmediato con `createOpportunity` para transmitir el PDF formal al chat.
+- **Desacoplamiento del Flujo Inicial en LangGraph:**
+  Se eliminó el enlace condicional que interceptaba el inicio de las conversaciones hacia `identificationNode`. El nodo `routerNode` ahora se enlaza directamente con `subAgentNode`, permitiendo navegación fluida por cualquier subagente sin bloqueos artificiales.
+
+#### 7. Refactorización de Grafo LangGraph Omnicanal (Topología AI-First sin Nodos Huérfanos)
+
+- **Diagnóstico y Error Detectado:**
+  Al recibir mensajes de clientes por Messenger u otros canales, el motor conversacional arrojaba:
+  `UnreachableNodeError: Node identificationNode is not reachable.`
+- **Causa Raíz:**
+  Al transicionar la captura de teléfono de un nodo rígido interceptor (`identificationNode`) a un modelo AI-First conversacional guiado por el sub-agente y la herramienta de cotización, se retiró la arista condicional hacia `identificationNode`, pero el nodo permanecía registrado en `workflow.addNode('identificationNode', ...)`. En LangGraph, cualquier nodo registrado que no tenga al menos una arista entrante desde `START` o nodos previos provoca un fallo de validación al invocar `.compile()`.
+- **Topología Resultante:**
+  El grafo omnicanal queda compuesto de forma limpia y directa por 3 nodos funcionales:
+  - `START` $\rightarrow$ `routerNode` (clasifica la intención: comercial, seguimiento, soporte, general).
+  - `routerNode` $\rightarrow$ `subAgentNode` (razonamiento del sub-agente con contexto RAG y CRM).
+  - `subAgentNode` $\leftrightarrow$ `executeToolNode` (ejecución segura de herramientas y retorno a sub-agente).
+  - `subAgentNode` $\rightarrow$ `END` (cuando emite `final_answer`).
+  Esto erradica nodos inalcanzables y permite que el cliente converse libremente sin bloqueos iniciales, solicitando los datos de contacto únicamente cuando el flujo de cotización lo requiere.
+
+#### 8. Política No Bloqueante de Captura de Contacto en Cotizaciones (Mínimo Un Dato Requerido)
+
+- **Problema Detectado en Producción:**
+  Al solicitar cotizar formalmente productos, si el contacto no contaba con teléfono registrado pero el cliente proporcionaba su correo electrónico (o viceversa), el sistema bloqueaba la generación de la cotización retornando error o desviaba la conversación ofreciendo agendar llamadas con ejecutivos especializados (*"Gracias por proporcionarnos tu correo... ¿Te gustaría agendar una llamada con un ejecutivo especializado...?"*). El PDF nunca era emitido al chat.
+- **Principio de Negocio Implementado:**
+  1. **Labor Inicial Proactiva:** Si al cliente le falta alguno de los datos de contacto (correo o teléfono), el asistente realiza la labor inicial de solicitar el dato faltante (o ambos si no tiene ninguno) mediante `final_answer`.
+  2. **Requisito Mínimo (Mínimo Un Dato):** Como mínimo se requiere **al menos uno de los dos datos de contacto** (`hasEmail || hasPhone`) para dar trazabilidad al prospecto en el CRM.
+  3. **No Frenar la Cotización:** Si el cliente ya proporcionó al menos uno de los datos (ej. comparte su correo) o si indica que no puede/desea dar el segundo (ej. *"no puedo dártelo"*, *"solo por correo"*, *"no tengo teléfono"*), **está terminantemente prohibido frenar o detener la cotización**. El sistema debe proceder de inmediato a emitir la oportunidad formal con `createOpportunity` y entregar el archivo PDF adjunto en el chat.
+- **Implementación Técnica:**
+  - **`AiAgentToolsHandlerService.createOpportunity`:** Se retiraron los bloqueos que exigían ambos datos obligatoriamente (`hasEmail && !hasPhone` y `!hasEmail && hasPhone`). Ahora la herramienta valida `!hasEmail && !hasPhone` como única condición de rechazo. Si existe al menos uno de los dos datos, la oportunidad y el PDF se generan exitosamente.
+  - **`AiAgentOrchestratorService`:**
+    - Se incorporó detección y persistencia automática de correos y teléfonos en `processIncomingMessage` para que, en cuanto el cliente escriba su correo o teléfono, el CRM lo registre de inmediato.
+    - `toolExecutionText` para `updateContact` y `registerContact`: ante `hasEmail || hasPhone`, instruye terminantemente al sub-agente a invocar `createOpportunity` en ese mismo turno.
+    - Se fortaleció el interceptor antialucinación en `subAgentNode`: si el subagente intenta desviar la conversación ofreciendo llamadas o agradeciendo los datos de contacto con `final_answer` mientras la cotización está en curso y ya se cuenta con al menos un dato, el interceptor cancela el `final_answer` y fuerza la ejecución de `createOpportunity`.
+  - **Prompts de Sub-Agente (`comercial`):** Sincronizados en `AiSubAgentMigrationService`, `TenantProvisionerService` y actualizados en todos los esquemas activos de PostgreSQL (`tenant_teter`, etc.).
+
+
+### 🛡️ Actualización de Arquitectura: Prevención de Loops Infinitos de Cotización y Continuidad Determinista Comercial (14/10/2026)
+1. **Erradicación del Loop Infinito en Emisión de Cotizaciones:**
+   * **Invariante de Ejecución Única:** Cuando la herramienta `createOpportunity` o `sendQuotationPdf` se ejecuta en un ciclo de LangGraph, el interceptor anti-alucinación de `subAgentNode` verifica `state.toolCallName === 'createOpportunity' || state.toolCallName === 'sendQuotationPdf'` y retorna directamente `{ nextAction: 'respond', response: answerText }`.
+   * **Discriminación de Entrega en Chat:** Se refinó la heurística `claimsEmailOrPreparing` para ignorar mensajes de entrega de PDF nativo adjunto en el chat (`isChatDelivery` que detecta `adjunto`, `este chat`, `aquí mismo`, etc.) y exigir que la palabra `revisa` vaya acompañada de términos explícitos de buzón de correo (`correo`, `bandeja`, `inbox`, `spam`), impidiendo que frases válidas como "para que puedas revisarlo" sean interpretadas como alucinación de entrega por email.
+2. **Determinismo Contextual en Router Node (Continuidad Comercial vs Agendamiento):**
+   * Si el último mensaje del asistente solicitó confirmación de cotización o datos de contacto (correo/teléfono), cualquier respuesta del cliente que contenga datos de contacto (`@`, dígitos, `"no tengo teléfono"`, confirmaciones) se clasifica forzosamente en `comercial`, bloqueando desvíos hacia `seguimiento` o `general`.
+   * Solo si el cliente explicita una intención de agendar (días de la semana, horas, "agenda", "cita", "reunión") se transiciona a `seguimiento`.
+3. **Prohibición de Ofrecimiento Proactivo de Demos/Llamadas:**
+   * El sub-agente comercial tiene prohibido empujar proactivamente llamadas o demos durante consultas informativas del catálogo o explicaciones de productos. El cliente debe manifestar de forma autónoma su deseo de cotizar o agendar.
+
+
+#### 9. Enriquecimiento Cognitivo AI-First en Router Node y Fallback Heurístico Secundario
+- **Diagnóstico Arquitectónico:**
+  El uso de overrides deterministas basados en expresiones regulares o coincidencias duras de subcadenas (`.includes('cotiz')`, `regex`) para corregir desvíos en el Router no constituye una solución puramente AI-First, sino un parche heurístico que suplanta el razonamiento del LLM.
+- **Solución AI-First Implementada:**
+  1. **Capa Primaria (AI-First Cognitiva):**
+     - Se inyecta en el prompt del Router (`routerPrompt`) el bloque estructurado `[ÚLTIMO MENSAJE EMITIDO POR EL ASISTENTE]`, permitiendo que el LLM comprenda la pregunta pendiente (ej. si el asistente solicitó correo o teléfono para cotizar).
+     - Se incorporan ejemplos de razonamiento *few-shot* (`[EJEMPLOS DE RAZONAMIENTO COGNITIVO MULTI-TURNO]`), enseñando al modelo a deducir cognitivamente que compartir datos de contacto en respuesta a una solicitud de cotización mantiene la intención comercial.
+     - La decisión primaria la toma el LLM (`[LangGraph - Router] [AI-FIRST] Ruta: 'comercial'`).
+  2. **Capa Secundaria (Fallback Heurístico / Safety Net):**
+     - Se conserva la validación de código exclusivamente como una red de seguridad secundaria (`[LangGraph - Router Safety Net] [FALLBACK HEURISTICO]`), idéntica al diseño de `WebchatActionExecutorService`, previniendo bloqueos o desviaciones imprevistas en producción sin sustituir la primacía de la IA.
+
+
+---
+
+### 📖 Universalidad de RAG para Todos los Subagentes y Directivas RAG-First (14/10/2026)
+
+#### 1. Diagnóstico y Problemática
+Anteriormente, el pre-fetch semántico y documental RAG en `subAgentNode` estaba condicionado exclusivamente a `state.route === 'comercial'`.
+Como consecuencia:
+- Subagentes como `soporte_atencion`, `seguimiento` y `general` no recibían en su prompt los fragmentos de documentación técnica, manuales de usuario, preguntas frecuentes (FAQs) ni políticas de consumo.
+- Los subagentes de soporte y seguimiento carecían de la herramienta `consult_product_catalog` en su arreglo `tools`.
+- Cuando un cliente reportaba una duda operativa o técnica documentada (ej. *"¿Qué ocurre si alcanzo el límite de mi plan antes de la renovación? ¿Puedo seguir consumiendo recursos?"* en Billy IDP), el subagente de soporte no tenía acceso al Chunk 50 del PDF de Preguntas Frecuentes (que explica la habilitación de consumo adicional para administradores en *"Mi Empresa"*). En su lugar, el bot generaba respuestas evasivas, levantaba tickets innecesarios con `createTicket` o derivaba prematuramente a un ejecutivo con `requestHumanHandoff`, deshabilitándose de la conversación.
+
+#### 2. Solución Arquitectónica Implementada (RAG-First Universal)
+1. **Desacoplamiento de Ruta en Pre-Fetch RAG (`subAgentNode`):**
+   - El pre-fetch en `AiAgentOrchestratorService` ahora se ejecuta para **cualquier subagente activo** (`!state.toolCallResult && !isAffirmativeConfirmation`).
+   - Se realiza búsqueda semántica multiconsulta contra `product_knowledge_base` combinando el mensaje entrante con los productos y términos técnicos detectados.
+   - En caso de respuestas vacías del LLM, el rescate conversacional (`rescuePrompt`) ahora también consulta la base de conocimientos RAG independientemente de la ruta.
+
+2. **Inyección Universal de Herramienta `consult_product_catalog`:**
+   - Se garantiza en tiempo de ejecución (`subAgentNode`) que `consult_product_catalog` siempre forme parte de `allowedTools` para todos los subagentes (`comercial`, `seguimiento`, `soporte_atencion`, `general`).
+   - Se migraron y actualizaron las definiciones de `ai_sub_agents` en `public` y en todos los esquemas de tenants activos (`tenant_teter`, etc.) mediante `AiSubAgentMigrationService` y `TenantProvisionerService`.
+
+3. **Directivas Mandatorias RAG-First en Prompts y Herramientas:**
+   - **`soporte_atencion` Context:** Prioridad absoluta a la resolución vía documentación. Si la solución, procedimiento o respuesta está explicada en las FAQs o fichas técnicas (ej. habilitar consumo adicional, límites de plan, configuración), el agente responde directamente con `final_answer`.
+   - **`createTicket` Prompt:** Prohibido crear tickets si la incidencia o duda está resuelta en la documentación. Los tickets quedan estrictamente reservados para fallas del sistema o bugs operativos no contemplados.
+   - **`requestHumanHandoff` Prompt:** Prohibido transferir a ejecutivos humanos si la documentación provee la respuesta. Las derivaciones aplican únicamente ante solicitudes expresas de hablar con un humano, clientes agresivos o incidencias no documentadas tras varios intentos.
+
+
+### 7.6 Prevención de Bucles Recursivos en LangGraph y Anti-Loop RAG (2026-10-14)
+
+Para evitar desbordamientos de recursión (`GraphRecursionError: Recursion limit of 15 reached without hitting a stop condition`) generados por modelos que alucinan cadenas de pensamiento con múltiples llamadas a herramientas o que intentan re-consultar `consult_product_catalog` consecutivamente:
+
+1. **Estado `executedTools` en `AgentStateAnnotation`:**
+   - Se introdujo un acumulador de conjunto en el grafo (`executedTools: Annotation<string[]>`) con un reductor de unión única (`Set`), que rastrea todas las herramientas ejecutadas durante el turno conversacional activo.
+2. **Poda Dinámica de Herramientas (`allowedTools`):**
+   - Una vez que `consult_product_catalog` ha sido ejecutada, es podada automáticamente de `allowedTools` en el turno inmediato posterior del subagente para que no aparezca en el prompt de herramientas disponibles.
+3. **Guard Anti-Bucle en Prioridad 1 del Parser:**
+   - Antes de ejecutar cualquier llamada a herramienta devuelta en la salida del modelo, se valida si `(state.executedTools.includes(toolName) || state.toolCallName === toolName)`. Si ya fue ejecutada en el ciclo, se descarta y continúa la evaluación.
+4. **Priorización de `final_answer` ante Razonamientos Simulados:**
+   - Si el LLM genera múltiples bloques JSON simulando pensamiento interno (ej. `consult_product_catalog` $\rightarrow$ `consult_product_catalog` $\rightarrow$ `final_answer`), el parser descarta los duplicados ya ejecutados y toma directamente el `final_answer`.
+5. **Rescate de Síntesis Documental:**
+   - Si tras una consulta documental el subagente reitera llamadas redundantes sin emitir `final_answer`, el orquestador sintetiza una respuesta conversacional directa (2 a 4 oraciones) empleando los fragmentos ya cargados en memoria, cerrando el ciclo limpiamente sin caer en recursión infinita.

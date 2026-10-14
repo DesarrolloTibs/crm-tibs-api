@@ -456,17 +456,20 @@ export class RagService implements OnModuleInit {
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/(^-|-$)+/g, '');
 
-      // 1. Eliminar embeddings previos de este producto para evitar duplicaciones
+      // 1. Eliminar únicamente el embedding previo del catálogo para este producto para evitar duplicaciones
+      // (conservando intactos los fragmentos de PDFs y fichas técnicas indexadas para este producto)
       await this.aiAgentConfigRepository.manager.query(
-        "DELETE FROM product_knowledge_base WHERE metadata->>'productId' = $1 OR metadata->>'product' = $2",
+        "DELETE FROM product_knowledge_base WHERE (metadata->>'productId' = $1 OR metadata->>'product' = $2) AND (metadata->>'source' = 'database-catalog' OR metadata->>'source' IS NULL)",
         [productId, productKey]
       );
 
       // 2. Construir el texto del catálogo estructurado con todos los atributos clave
       const unidadText = unidadMedida || 'Pieza';
       const precioText = precioBase !== undefined && precioBase !== null ? `$${precioBase} MXN por ${unidadText}` : `Por definir por ${unidadText}`;
-      const obsText = observaciones && observaciones.trim() ? observaciones.trim() : 'Sin observaciones / notas adicionales';
-      const contentText = `Producto: ${nombre}\nPrecio Base: ${precioText}\nUnidad de Medida: ${unidadText}\nObservaciones / Notas de Cotización (MENCIONAR OBLIGATORIAMENTE AL CLIENTE): ${obsText}\nDescripción: ${descripcion || 'Sin descripción'}`;
+      const obsText = observaciones && observaciones.trim()
+        ? `Observaciones de Cotización (comunicar al cotizar o presentar precios por primera vez; evitar repetir en aclaraciones subsecuentes): ${observaciones.trim()}`
+        : 'Observaciones: Ninguna';
+      const contentText = `Producto: ${nombre}\nPrecio Base: ${precioText}\nUnidad de Medida: ${unidadText}\n${obsText}\nDescripción: ${descripcion || 'Sin descripción'}`;
 
       // 3. Crear el formato de documento de LangChain
       const document = {
