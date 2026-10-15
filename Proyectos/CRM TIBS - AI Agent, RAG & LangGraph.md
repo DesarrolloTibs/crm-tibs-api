@@ -447,3 +447,28 @@ Para evitar desbordamientos de recursión (`GraphRecursionError: Recursion limit
    - Si el LLM genera múltiples bloques JSON simulando pensamiento interno (ej. `consult_product_catalog` $\rightarrow$ `consult_product_catalog` $\rightarrow$ `final_answer`), el parser descarta los duplicados ya ejecutados y toma directamente el `final_answer`.
 5. **Rescate de Síntesis Documental:**
    - Si tras una consulta documental el subagente reitera llamadas redundantes sin emitir `final_answer`, el orquestador sintetiza una respuesta conversacional directa (2 a 4 oraciones) empleando los fragmentos ya cargados en memoria, cerrando el ciclo limpiamente sin caer en recursión infinita.
+
+
+### 📊 Consolidación Unificada de Auditoría de Tokens por Mensaje en Canales de Comunicación (14/10/2026)
+
+#### 1. Diagnóstico de Fragmentación de Transacciones
+En canales de mensajería (Messenger, WhatsApp, Instagram, Webchat), un solo mensaje del cliente generaba múltiples registros dispersos en `transaction_history` y en el desglose de "Tendencia & Historial":
+- Varios registros diminutos de 7 a 25 tokens bajo el canal `rag` y acción `rag_similarity_search` (producidos por las consultas semánticas y pre-fetch de fragmentos RAG).
+- Un registro principal de ~3,000 a 8,800 tokens bajo el subagente activo (ej. `subagent_comercial`).
+- Un registro independiente de ~800 a 1,200 tokens bajo la acción `conversation_summary` (generado por la tarea asíncrona de actualización del resumen incremental).
+
+#### 2. Requisito y Solución Arquitectónica
+Para los canales de comunicación, el consumo total auditado debe computarse **por mensaje entrante y el total de sus subprocesos combinados**, erradicando la fragmentación por petición individual a la IA:
+1. **Propagación del `TurnTokenAccumulator` en RAG (`RagService.searchSimilar`):**
+   - Se añadió el parámetro opcional `auditContext?: ConsumptionAuditContext` a `searchSimilar`.
+   - Si `auditContext.turnAccumulator` está presente, los tokens del query de búsqueda semántica se acumulan directamente en `turnAccumulator.promptTokens`, `turnAccumulator.totalTokens` y `turnAccumulator.steps.push('rag_search')`, sin persistir registros fragmentados en la base de datos.
+   - Si no existe acumulador (búsquedas externas directas vía endpoint `/api/rag/search`), se mantiene el registro individual de `rag_similarity_search`.
+2. **Propagación en Herramientas (`AiAgentToolsHandlerService.executeTool`):**
+   - El ejecutor de herramientas (`executeTool`) recibe `baseAuditContext` desde `executeToolNode` y lo reenvía a las llamadas internas de `ragService.searchSimilar` en `consult_product_catalog`.
+3. **Consolidación del Resumen Conversacional (`updateConversationSummaryAsync`):**
+   - `updateConversationSummaryAsync` ahora recibe `baseAuditContext` y vincula `turnAccumulator: auditContext?.turnAccumulator`.
+   - El orquestador espera la resolución del resumen dentro de un bloque seguro `try/catch`, integrando sus tokens de prompt y completion en el mismo acumulador del turno antes de finalizar.
+4. **Persistencia Atómica Única en `commitTurnConsumption`:**
+   - En el bloque `finally` de `processIncomingMessage`, se ejecuta una sola inserción en `transaction_history` que consolida la suma total de:
+     $$\text{Total Mensaje} = \text{Tokens Router} + \text{Tokens RAG} + \text{Tokens Subagente} + \text{Tokens Resumen}$$
+   - El registro se etiqueta con el canal del mensaje (ej. `messenger`), el nombre del subagente principal (ej. `subagent_comercial`), y almacena en `metadata.steps` la traza integral de las etapas ejecutadas (`['router', 'rag_search', 'subagent_comercial', 'conversation_summary']`).

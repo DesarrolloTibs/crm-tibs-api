@@ -336,7 +336,12 @@ export class RagService implements OnModuleInit {
   /**
    * Busca fragmentos similares a la query utilizando filtros por metadata de producto.
    */
-  async searchSimilar(query: string, limit: number = 3, productKey?: string): Promise<any[]> {
+  async searchSimilar(
+    query: string,
+    limit: number = 3,
+    productKey?: string,
+    auditContext?: ConsumptionAuditContext,
+  ): Promise<any[]> {
     if (!query || query.trim() === '') {
       return [];
     }
@@ -370,15 +375,21 @@ export class RagService implements OnModuleInit {
     // Registrar consumo de tokens del query para tenants
     if (activeSchema && activeSchema !== 'public') {
       const queryTokens = Math.max(1, Math.ceil(query.length / 4));
-      this.subscriptionValidator.recordConsumption(
-        activeSchema,
-        queryTokens,
-        0,
-        queryTokens,
-        false,
-        'rag_similarity_search',
-        { channel: 'rag', metadata: { query: query.substring(0, 100), productKey } },
-      ).catch((err: any) => this.logger.warn(`Error registrando consumo RAG Search: ${err.message}`));
+      if (auditContext?.turnAccumulator) {
+        auditContext.turnAccumulator.promptTokens += queryTokens;
+        auditContext.turnAccumulator.totalTokens += queryTokens;
+        auditContext.turnAccumulator.steps.push('rag_search');
+      } else {
+        this.subscriptionValidator.recordConsumption(
+          activeSchema,
+          queryTokens,
+          0,
+          queryTokens,
+          false,
+          'rag_similarity_search',
+          auditContext || { channel: 'rag', metadata: { query: query.substring(0, 100), productKey } },
+        ).catch((err: any) => this.logger.warn(`Error registrando consumo RAG Search: ${err.message}`));
+      }
     }
 
     return results.map(doc => ({

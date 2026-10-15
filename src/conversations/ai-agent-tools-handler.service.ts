@@ -22,6 +22,7 @@ import { LicensingOption } from '../opportunities/entities/licensing-option.enti
 import { UsersService } from '../users/users.service';
 import { User } from '../users/entities/user.entity';
 import { QUOTATION_EVENTS } from '../common/events/quotation.events';
+import { ConsumptionAuditContext } from '../subscriptions/subscription-validator.service';
 
 /**
  * Handles the execution of all AI agent tools that interact with CRM services.
@@ -59,7 +60,7 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
   /**
    * Dispatches a tool call to the corresponding CRM service.
    */
-  async executeTool(name: string, input: any, conversation: Conversation, config: AiAgentConfig): Promise<any> {
+  async executeTool(name: string, input: any, conversation: Conversation, config: AiAgentConfig, auditContext?: ConsumptionAuditContext): Promise<any> {
     try {
       switch (name) {
         case 'consult_product_catalog':
@@ -127,9 +128,9 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
 
               // Búsqueda RAG orientada a este producto por su productKey
               const pKey = prod.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
-              const targetedDocs = await this.ragService.searchSimilar(queryText, 3, pKey).catch(() => []);
+              const targetedDocs = await this.ragService.searchSimilar(queryText, 3, pKey, auditContext).catch(() => []);
               const overviewDocs = matchedCatalogProducts.length > 1
-                ? await this.ragService.searchSimilar(prod.nombre, 2, pKey).catch(() => [])
+                ? await this.ragService.searchSimilar(prod.nombre, 2, pKey, auditContext).catch(() => [])
                 : [];
 
               for (const doc of [...targetedDocs, ...overviewDocs]) {
@@ -170,7 +171,7 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
 
           // Búsqueda general RAG si no hubo fragmentos específicos recuperados
           if (allRagResults.length === 0) {
-            const generalRag = await this.ragService.searchSimilar(queryText, 5).catch(() => []);
+            const generalRag = await this.ragService.searchSimilar(queryText, 5, undefined, auditContext).catch(() => []);
             for (const doc of generalRag) {
               const snippet = (doc.pageContent || '').trim();
               if (snippet && !seenRagSnippets.has(snippet)) {

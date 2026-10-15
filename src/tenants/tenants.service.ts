@@ -385,22 +385,6 @@ export class TenantsService implements OnModuleInit {
           [periodStart, periodEnd],
         ),
 
-        // Top clientes externos (WhatsApp, etc.)
-        this.dataSource.query(
-          `SELECT 
-            client_id,
-            COALESCE(client_name, 'Cliente ' || client_id::text) AS client_name,
-            COALESCE(channel, 'whatsapp') AS channel,
-            COALESCE(SUM(total_tokens), 0)::bigint AS total_tokens,
-            COUNT(*)::int AS request_count
-           FROM "${targetSchema}".transaction_history
-           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2 AND client_id IS NOT NULL
-           GROUP BY client_id, client_name, channel
-           ORDER BY total_tokens DESC
-           LIMIT 10`,
-          [periodStart, periodEnd],
-        ),
-
         // Consumo por modelo LLM
         this.dataSource.query(
           `SELECT 
@@ -430,24 +414,30 @@ export class TenantsService implements OnModuleInit {
         // Últimas transacciones detalladas
         this.dataSource.query(
           `SELECT 
-            id,
-            fecha_procesamiento,
-            action_name AS accion,
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            is_extra,
-            user_id,
-            user_name,
-            client_id,
-            client_name,
-            conversation_id,
-            channel,
-            model_name,
-            metadata
-           FROM "${targetSchema}".transaction_history
-           WHERE fecha_procesamiento >= $1 AND fecha_procesamiento <= $2
-           ORDER BY fecha_procesamiento DESC
+            t.id,
+            t.fecha_procesamiento,
+            t.action_name AS accion,
+            t.prompt_tokens,
+            t.completion_tokens,
+            t.total_tokens,
+            t.is_extra,
+            t.user_id,
+            COALESCE(u.username, pu.username, t.user_name) AS user_name,
+            t.client_id,
+            COALESCE(
+              NULLIF(TRIM(COALESCE(c.nombre, '') || ' ' || COALESCE(c.apellido, '')), ''),
+              t.client_name
+            ) AS client_name,
+            t.conversation_id,
+            t.channel,
+            t.model_name,
+            t.metadata
+           FROM "${targetSchema}".transaction_history t
+           LEFT JOIN "${targetSchema}".users u ON u.id::text = t.user_id::text
+           LEFT JOIN public.users pu ON pu.id::text = t.user_id::text
+           LEFT JOIN "${targetSchema}".clients c ON c.id::text = t.client_id::text
+           WHERE t.fecha_procesamiento >= $1 AND t.fecha_procesamiento <= $2
+           ORDER BY t.fecha_procesamiento DESC
            LIMIT 50`,
           [periodStart, periodEnd],
         ),

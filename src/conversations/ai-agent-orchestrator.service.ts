@@ -574,7 +574,13 @@ export class AiAgentOrchestratorService {
 
   // ─── Conversation Summary ─────────────────────────────────────────────────
 
-  async updateConversationSummaryAsync(conversation: Conversation, recentMessages: Message[], lastClientMsg: string, lastAgentMsg: string): Promise<void> {
+  async updateConversationSummaryAsync(
+    conversation: Conversation,
+    recentMessages: Message[],
+    lastClientMsg: string,
+    lastAgentMsg: string,
+    auditContext?: ConsumptionAuditContext,
+  ): Promise<void> {
     try {
       const config = await this.getOrInitConfig();
       const recentTurnText = recentMessages
@@ -602,7 +608,8 @@ NUEVO RESUMEN ACUMULADO:`;
         clientName: conversation.clientName,
         channel: (conversation.channel as any) || 'whatsapp',
         userId: conversation.assignedUserId,
-        metadata: { action: 'conversation_summary' },
+        turnAccumulator: auditContext?.turnAccumulator,
+        metadata: { action: 'conversation_summary', step: 'conversation_summary' },
       };
       const newSummary = await this.callLLM(config, summaryPrompt, undefined, summaryAuditContext);
       if (newSummary && newSummary.trim() !== '') {
@@ -872,7 +879,7 @@ Genera la clasificación en formato JSON (iniciando con { y terminando con }):`;
             const rawRagResults: any[] = [];
             const seenChunks = new Set<string>();
             for (const q of ragQueries) {
-              const res = await this.toolsHandler.ragService.searchSimilar(q, 4).catch(() => []);
+              const res = await this.toolsHandler.ragService.searchSimilar(q, 4, undefined, baseAuditContext).catch(() => []);
               for (const r of res) {
                 const textSnippet = (r.pageContent || '').trim();
                 if (textSnippet && !seenChunks.has(textSnippet)) {
@@ -886,7 +893,7 @@ Genera la clasificación en formato JSON (iniciando con { y terminando con }):`;
             if (detectedProducts.length > 0) {
               for (const dp of detectedProducts) {
                 const pKey = dp.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
-                const specificRes = await this.toolsHandler.ragService.searchSimilar(incomingContent, 3, pKey).catch(() => []);
+                const specificRes = await this.toolsHandler.ragService.searchSimilar(incomingContent, 3, pKey, baseAuditContext).catch(() => []);
                 for (const r of specificRes) {
                   const textSnippet = (r.pageContent || '').trim();
                   if (textSnippet && !seenChunks.has(textSnippet)) {
@@ -895,7 +902,7 @@ Genera la clasificación en formato JSON (iniciando con { y terminando con }):`;
                   }
                 }
                 if (detectedProducts.length > 1 || specificRes.length === 0) {
-                  const overviewRes = await this.toolsHandler.ragService.searchSimilar(dp.nombre, 2, pKey).catch(() => []);
+                  const overviewRes = await this.toolsHandler.ragService.searchSimilar(dp.nombre, 2, pKey, baseAuditContext).catch(() => []);
                   for (const r of overviewRes) {
                     const textSnippet = (r.pageContent || '').trim();
                     if (textSnippet && !seenChunks.has(textSnippet)) {
@@ -1123,7 +1130,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
           this.logger.warn(`Subagente devolvió respuesta vacía o plantilla genérica. Iniciando rescate conversacional.`);
           let ragContextText = '';
           try {
-            const ragResults = await this.toolsHandler.ragService.searchSimilar(incomingContent, 3);
+            const ragResults = await this.toolsHandler.ragService.searchSimilar(incomingContent, 3, undefined, baseAuditContext);
             const cubeResults: any[] = [];
             const detectedKeys = [...new Set(ragResults.map(r => r.metadata?.product).filter(Boolean))];
             if (detectedKeys.length > 0) { for (const key of detectedKeys) cubeResults.push(...await this.toolsHandler.queryCubeProductsByKey(key)); }
@@ -1341,7 +1348,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
             return { toolCallResult: { status: 'ERROR', message: 'Esquema de datos inválido en los argumentos de la herramienta.', details: validationResult.error.format() } };
           }
           if (toolName === 'consult_product_catalog') {
-            const executionResult = await this.toolsHandler.executeTool(toolName, validationResult.data, conversation, config);
+            const executionResult = await this.toolsHandler.executeTool(toolName, validationResult.data, conversation, config, baseAuditContext);
             const catalogData = executionResult.catalogProducts || executionResult.data || [];
             const ragData = (executionResult.ragDocs || []).map((r: any) => ({
               content: r.pageContent && r.pageContent.length > 1000 ? r.pageContent.substring(0, 1000) + '... (texto truncado)' : (r.pageContent || r.content || ''),
@@ -1357,7 +1364,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
               executedTools: [toolName],
             };
           }
-          const executionResult = await this.toolsHandler.executeTool(toolName, validationResult.data, conversation, config);
+          const executionResult = await this.toolsHandler.executeTool(toolName, validationResult.data, conversation, config, baseAuditContext);
           let nextState: Partial<AgentState> = { toolCallResult: executionResult, executedTools: [toolName] };
           if (state.toolCallName === 'requestHumanHandoff' || executionResult?.isHandedOff) nextState.isHandedOff = true;
           if ((state.toolCallName === 'registerContact' || state.toolCallName === 'updateContact') && executionResult.status === 'SUCCESS') {
@@ -1366,7 +1373,12 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
               nextState.clientId = targetClientId;
               conversation.clientId = targetClientId;
               const reloadedClient = await this.clientRepository.findOne({ where: { id: targetClientId } });
-              if (reloadedClient) { conversation.client = reloadedClient; conversation.clientName = `${reloadedClient.nombre} ${reloadedClient.apellido || ''}`.trim(); }
+              if (reloadedClient) {
+                conversation.client = reloadedClient;
+                conversation.clientName = `${reloadedClient.nombre} ${reloadedClient.apellido || ''}`.trim();
+                baseAuditContext.clientId = targetClientId;
+                baseAuditContext.clientName = conversation.clientName;
+              }
             }
           }
           return nextState;
@@ -1399,9 +1411,11 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
       finalState = await app.invoke({ clientId: conversation.clientId || null, route: 'general', nextAction: null, toolCallName: null, toolCallInput: null, toolCallResult: null, response: null, executedTools: [] } as any, { recursionLimit: 15 });
 
       const agentReply = finalState.response || 'He procesado tu solicitud en el sistema. ¿Te puedo colaborar en algo más?';
-      this.updateConversationSummaryAsync(conversation, messages, incomingContent, agentReply).catch(err => {
-        this.logger.error(`Error al iniciar actualización de resumen conversacional: ${err.message}`);
-      });
+      try {
+        await this.updateConversationSummaryAsync(conversation, messages, incomingContent, agentReply, baseAuditContext);
+      } catch (err: any) {
+        this.logger.error(`Error al actualizar resumen conversacional: ${err.message}`);
+      }
 
       const selectedRoute = finalState.route || 'general';
       const replyNormalized = (agentReply || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
