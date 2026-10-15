@@ -248,3 +248,24 @@ Al procesar organizaciones con `next_renewal_date <= NOW()`:
 * `GET /api/tenants/consumption/breakdown`: Extendido con soporte de:
   * `?cycleId=`: Recupera el consumo analítico, resumen del plan y transacciones del ciclo histórico seleccionado.
   * `?startDate=` & `?endDate=`: Filtra el consumo analítico dentro de cualquier rango de fechas personalizado.
+
+
+### 8.3 Corrección en Desglose Analítico de Consumo (`getConsumptionBreakdown`) (2026-10-14)
+Se corrigió un desfase crítico en la desestructuración del array resultante de `Promise.all` en `TenantsService.getConsumptionBreakdown`:
+- **Causa:** Existía una consulta SQL duplicada y obsoleta para "Top clientes externos" en la posición 4 de `Promise.all` sin su respectiva variable en la desestructuración de 7 elementos. Esto provocaba que `byModelRaw` recibiera los clientes, `dailyTimelineRaw` recibiera los modelos, y `recentTransactionsRaw` recibiera la línea de tiempo diaria (generando una única pseudo-transacción agregada de 147k tokens con fecha `N/A`), mientras que las transacciones reales eran descartadas.
+- **Solución:** Se eliminó la consulta duplicada y se enriqueció la consulta de `recent_transactions` con `LEFT JOIN` a las tablas `users` y `clients` para garantizar la resolución fidedigna de `user_name` y `client_name`.
+
+
+### 💳 Consolidación Atómica de Transacciones por Mensaje en Canales Omnicanal (`transaction_history`)
+* **Regla de Negocio para Canales de Comunicación (WhatsApp, Messenger, Instagram, Webchat):**
+  - El cómputo y registro en `transaction_history` se realiza **por mensaje entrante completo** sumando todos sus subprocesos concurrentes, en lugar de generar filas fragmentadas por cada invocación técnica individual a la IA.
+  - **Componentes Consolidados en una Transacción:**
+    1. **Enrutador Cognitivo (`router`):** Inferencia de clasificación de intención.
+    2. **Búsqueda Vectorial (`rag_search`):** Tokens de consulta semántica y pre-fetch de documentación en `product_knowledge_base`.
+    3. **Subagente Especializado (`subagent_<route>`):** Razonamiento profundo, llamadas a herramientas del CRM y respuesta al cliente.
+    4. **Resumen Incremental (`conversation_summary`):** Actualización del contexto de la conversación.
+  - **Estructura de la Fila Resultante:**
+    - `total_tokens`: Suma aritmética acumulada de las 4 etapas.
+    - `action_name`: Etiqueta del subagente resolutivo (ej. `subagent_comercial`).
+    - `channel`: Canal de origen del mensaje (ej. `messenger`, `whatsapp`, `instagram`).
+    - `metadata.steps`: Arreglo de pasos ejecutados para trazabilidad transparente (`['router', 'rag_search', 'subagent_comercial', 'conversation_summary']`).
