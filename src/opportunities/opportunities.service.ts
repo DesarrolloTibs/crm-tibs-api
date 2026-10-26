@@ -318,7 +318,8 @@ export class OpportunitiesService implements OnModuleInit {
 
     // Cargar la relación stage completa antes de retornar
     const fullOpportunity = await this.findOne(savedOpportunity.id);
-    this.pipelinesGateway.emitOpportunityCreated(fullOpportunity);
+    const resolvedTenant = (user as any)?.tenant?.schema_name || (typeof (user as any)?.tenant === 'string' && (user as any)?.tenant !== 'public' ? (user as any).tenant : TenantContextService.getTenantSchema());
+    this.pipelinesGateway.emitOpportunityCreated(fullOpportunity, resolvedTenant);
     return fullOpportunity;
   }
 
@@ -751,7 +752,8 @@ export class OpportunitiesService implements OnModuleInit {
     }
 
     const fullOpportunity = await this.findOne(savedOpportunity.id);
-    this.pipelinesGateway.emitOpportunityUpdated(fullOpportunity);
+    const resolvedTenant = (user as any)?.tenant?.schema_name || (typeof (user as any)?.tenant === 'string' && (user as any)?.tenant !== 'public' ? (user as any).tenant : TenantContextService.getTenantSchema());
+    this.pipelinesGateway.emitOpportunityUpdated(fullOpportunity, resolvedTenant);
     return fullOpportunity;
   }
 
@@ -760,7 +762,8 @@ export class OpportunitiesService implements OnModuleInit {
     if (result.affected === 0) {
       throw new NotFoundException(`Opportunity with ID "${id}" not found`);
     }
-    this.pipelinesGateway.emitOpportunityDeleted(id);
+    const resolvedTenant = TenantContextService.getTenantSchema();
+    this.pipelinesGateway.emitOpportunityDeleted(id, resolvedTenant);
   }
 
   async addOpportunityFile(

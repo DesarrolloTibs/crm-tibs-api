@@ -635,6 +635,51 @@ describe('WebchatActionExecutorService', () => {
       );
       expect(response.answer).toContain('Prospecto ➔ Calificado');
     });
+
+    it('Solicita confirmación al usuario cuando existen múltiples oportunidades ambiguas coincidentes', async () => {
+      const opp1 = {
+        id: 'opp-amb-1',
+        nombre_proyecto: 'Cotización 4 - Sucursal Norte',
+        pipeline_id: 'pipe-1',
+        stage: { strname: 'Prospecto' },
+        monto_total: 100,
+        moneda: 'MXN',
+        ejecutivo_id: adminUser.id,
+      };
+      const opp2 = {
+        id: 'opp-amb-2',
+        nombre_proyecto: 'Cotización 4 - Sucursal Sur',
+        pipeline_id: 'pipe-1',
+        stage: { strname: 'Propuesta' },
+        monto_total: 200,
+        moneda: 'MXN',
+        ejecutivo_id: adminUser.id,
+      };
+
+      mockOpportunityRepo.createQueryBuilder.mockImplementation(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([opp1, opp2]),
+      }));
+
+      const response = await service.handleModifyOpportunity(
+        {
+          nombreProyecto: 'Cotizacion 4',
+          montoTotal: 600,
+        },
+        adminUser,
+      );
+
+      // No debe actualizar ninguna todavía
+      expect(mockOpportunitiesService.update).not.toHaveBeenCalled();
+      // Debe solicitar confirmación listando las opciones
+      expect(response.answer).toContain('Encontré varias oportunidades activas que coinciden con "Cotizacion 4". ¿A cuál de ellas te refieres?');
+      expect(response.answer).toContain('Cotización 4 - Sucursal Norte');
+      expect(response.answer).toContain('Cotización 4 - Sucursal Sur');
+      expect(response.data).toHaveLength(2);
+    });
   });
 
   describe('3. Creación de Actividades y checkAvailability', () => {
@@ -1138,6 +1183,115 @@ describe('WebchatActionExecutorService', () => {
       expect(response.answer).toContain('Ticket de Soporte Creado');
       expect(response.answer).toContain('#1045');
       expect(response.dashboardRedirect?.tab).toBe('support');
+    });
+  });
+
+  describe('6. Resolución Ortográfica y Ranking de Entidades (resolveCompany y resolveClient)', () => {
+    it('resolveCompany: debe resolver "grupo mexico" a "Grupo méxico" y priorizarlo sobre "Transportes Mexico"', async () => {
+      mockCompanyRepo.find.mockResolvedValueOnce([
+        { id: 'comp-trans', nombre: 'Transportes Mexico' },
+        { id: 'comp-grupo', nombre: 'Grupo méxico' },
+      ]);
+
+      const result = await service.resolveCompany('grupo mexico');
+      expect(result).toBeDefined();
+      expect(result?.id).toBe('comp-grupo');
+      expect(result?.nombre).toBe('Grupo méxico');
+    });
+
+    it('resolveCompany: no debe asignar un falso positivo si solo coincide una palabra común', async () => {
+      mockCompanyRepo.findOne.mockResolvedValueOnce(null);
+      mockCompanyRepo.find.mockResolvedValueOnce([
+        { id: 'comp-trans', nombre: 'Transportes Mexico' },
+      ]);
+
+      const result = await service.resolveCompany('grupo mexico');
+      // Debe ser null porque Transportes Mexico no alcanza MIN_ENTITY_MATCH_SCORE al faltarle 'grupo'
+      expect(result).toBeNull();
+    });
+
+    it('resolveClient: debe resolver "jose perez" a "José Pérez" a pesar de tildes omitidas', async () => {
+      mockClientRepo.find.mockResolvedValueOnce([
+        { id: 'client-1', nombre: 'José', apellido: 'Pérez', correo: 'jose@example.com' },
+        { id: 'client-2', nombre: 'Pedro', apellido: 'Gómez', correo: 'pedro@example.com' },
+      ]);
+
+      const result = await service.resolveClient('jose perez');
+      expect(result).toBeDefined();
+      expect(result?.id).toBe('client-1');
+      expect(result?.nombre).toBe('José');
+      expect(result?.apellido).toBe('Pérez');
+    });
+
+    it('handleCreateOpportunity: asigna correctamente la empresa con tildes cuando el usuario escribe sin tildes', async () => {
+      mockClientRepo.findOne.mockResolvedValueOnce(null);
+      mockClientRepo.find.mockResolvedValueOnce([]);
+      mockCompanyRepo.findOne.mockResolvedValueOnce(null);
+      mockCompanyRepo.find.mockResolvedValueOnce([
+        { id: 'comp-grupo-mexico', nombre: 'Grupo méxico' },
+      ]);
+      mockOpportunitiesService.create.mockResolvedValueOnce({
+        id: 'opp-123',
+        nombre_proyecto: 'Proyecto Digital',
+        companyId: 'comp-grupo-mexico',
+      });
+
+      const response = await service.handleCreateOpportunity(
+        {
+          nombreProyecto: 'Proyecto Digital',
+          cliente: 'grupo mexico',
+          monto: 50000,
+          lineaNegocio: 'Desarrollo',
+          tipoEntrega: 'Proyecto',
+          licenciamiento: 'Anual',
+        },
+        executiveUser,
+      );
+
+      expect(response.answer).toContain('Oportunidad Creada con Éxito');
+      expect(mockOpportunitiesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          companyId: 'comp-grupo-mexico',
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it('resolveClientOrCompany: debe priorizar empresa con alta coincidencia sobre contacto con coincidencia débil', async () => {
+      mockCompanyRepo.find.mockResolvedValueOnce([
+        { id: 'comp-grupo', nombre: 'Grupo méxico' },
+      ]);
+      mockClientRepo.find.mockResolvedValueOnce([
+        { id: 'client-1', nombre: 'México', apellido: 'Hernández', correo: 'mexico@example.com' },
+      ]);
+
+      const result = await service.resolveClientOrCompany('grupo mexico');
+      expect(result.company).toBeDefined();
+      expect(result.company?.id).toBe('comp-grupo');
+      expect(result.client).toBeNull();
+    });
+
+    it('resolveClientOrCompany: debe resolver contacto con tilde cuando input es "jose perez"', async () => {
+      mockCompanyRepo.find.mockResolvedValueOnce([]);
+      mockClientRepo.find.mockResolvedValueOnce([
+        { id: 'client-jose', nombre: 'José', apellido: 'Pérez', correo: 'jose@example.com' },
+      ]);
+
+      const result = await service.resolveClientOrCompany('jose perez');
+      expect(result.client).toBeDefined();
+      expect(result.client?.id).toBe('client-jose');
+      expect(result.company).toBeNull();
+    });
+
+    it('resolveClientOrCompany: debe resolver por Damerau-Levenshtein cuando hay un error tipográfico ("grupo mexco")', async () => {
+      mockCompanyRepo.find.mockResolvedValueOnce([
+        { id: 'comp-grupo', nombre: 'Grupo méxico' },
+      ]);
+      mockClientRepo.find.mockResolvedValueOnce([]);
+
+      const result = await service.resolveClientOrCompany('grupo mexco');
+      expect(result.company).toBeDefined();
+      expect(result.company?.id).toBe('comp-grupo');
     });
   });
 });

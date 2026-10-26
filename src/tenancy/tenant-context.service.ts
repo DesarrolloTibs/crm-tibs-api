@@ -149,9 +149,6 @@ export class TenantContextService {
     if (!schemaName || schemaName.length > 63) {
       return false;
     }
-    if (schemaName === 'public') {
-      return true;
-    }
     if (!/^[a-z0-9_]+$/.test(schemaName)) {
       return false;
     }

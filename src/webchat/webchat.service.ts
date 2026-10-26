@@ -51,6 +51,7 @@ export class WebchatService {
     userRole: string,
     username: string,
     conversationHistory?: ConversationHistoryMessage[],
+    fullUser?: User,
   ): Promise<WebchatResponse> {
     const turnAccumulator: TurnTokenAccumulator = {
       promptTokens: 0,
@@ -70,7 +71,7 @@ export class WebchatService {
     let classification: any = null;
 
     try {
-      const userObj = { id: userId, role: userRole as Role, username } as User;
+      const userObj = fullUser || ({ id: userId, role: userRole as Role, username } as User);
 
       // 1. Construir historial de conversación reciente para contexto
       let historyText = '';
@@ -388,7 +389,7 @@ Genera tu respuesta JSON:`;
 
           const clientOrCompMatches = fallbackMatches.filter(fm => fm.entityType === 'Cliente' || fm.entityType === 'Empresa');
           for (const match of clientOrCompMatches) {
-            const cname = match.title.split(' ')[0] || match.title;
+            const cname = match.title;
             orFilters.push({
               member: 'Oportunidades.cuentaOCliente',
               operator: 'contains',

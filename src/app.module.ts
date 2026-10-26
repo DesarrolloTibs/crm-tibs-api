@@ -256,10 +256,21 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
         );
       `);
 
-      // 5. Migrate existing tenants
+      // 5. Ensure immutable unaccent function exists in public schema
+      this.logger.log('Ensuring f_unaccent_immutable exists in public schema...');
+      await queryRunner.query(`
+        CREATE OR REPLACE FUNCTION public.f_unaccent_immutable(text)
+        RETURNS text AS $$
+          SELECT TRANSLATE(LOWER($1), 'áéíóúÁÉÍÓÚñÑüÜ', 'aeiouaeiounnuu');
+        $$ LANGUAGE sql IMMUTABLE STRICT;
+      `).catch(err => {
+        this.logger.warn('Could not create f_unaccent_immutable in public schema:', err?.message || err);
+      });
+
+      // 6. Migrate existing tenants
       const tenantsTableExists = await queryRunner.hasTable('tenants');
       if (tenantsTableExists) {
-        this.logger.log('Starting calendar integration schema migration for existing tenants...');
+        this.logger.log('Starting calendar integration and index schema migration for existing tenants...');
         const tenants = await queryRunner.query('SELECT schema_name FROM public.tenants WHERE is_active = true');
         for (const tenant of tenants) {
           const schema = tenant.schema_name;
@@ -384,9 +395,26 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             ALTER TABLE "${schema}".opportunities ALTER COLUMN "createdAt" TYPE timestamptz USING "createdAt" AT TIME ZONE 'UTC';
             ALTER TABLE "${schema}".opportunities ALTER COLUMN "stage_entered_at" TYPE timestamptz USING "stage_entered_at" AT TIME ZONE 'UTC';
           `).catch(() => null);
+
+          // Functional expression indexes for fast accent-insensitive entity resolution
+          await queryRunner.query(`
+            CREATE INDEX IF NOT EXISTS idx_companies_nombre_norm ON "${schema}".companies (public.f_unaccent_immutable(nombre));
+            CREATE INDEX IF NOT EXISTS idx_clients_nombre_norm ON "${schema}".clients (public.f_unaccent_immutable(nombre));
+            CREATE INDEX IF NOT EXISTS idx_clients_apellido_norm ON "${schema}".clients (public.f_unaccent_immutable(apellido));
+            CREATE INDEX IF NOT EXISTS idx_opportunities_nombre_norm ON "${schema}".opportunities (public.f_unaccent_immutable(nombre_proyecto));
+          `).catch(err => {
+            this.logger.warn(`Could not create unaccent indexes on schema "${schema}":`, err?.message || err);
+          });
         }
 
-        // Also ensure public schema tables have stage_type and calendar columns
+        // Also ensure public schema tables have stage_type, calendar columns, and functional indexes
+        await queryRunner.query(`
+          CREATE INDEX IF NOT EXISTS idx_companies_nombre_norm ON public.companies (public.f_unaccent_immutable(nombre));
+          CREATE INDEX IF NOT EXISTS idx_clients_nombre_norm ON public.clients (public.f_unaccent_immutable(nombre));
+          CREATE INDEX IF NOT EXISTS idx_clients_apellido_norm ON public.clients (public.f_unaccent_immutable(apellido));
+          CREATE INDEX IF NOT EXISTS idx_opportunities_nombre_norm ON public.opportunities (public.f_unaccent_immutable(nombre_proyecto));
+        `).catch(() => null);
+
         await queryRunner.query(`
           ALTER TABLE public.tblstagescatalog ADD COLUMN IF NOT EXISTS "stage_type" integer NOT NULL DEFAULT 0;
           ALTER TABLE public.ticket_stages ADD COLUMN IF NOT EXISTS "stage_type" integer NOT NULL DEFAULT 0;
@@ -423,7 +451,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           );
         `).catch(() => null);
 
-        this.logger.log('Schema migrations (calendar, conversations, messages, whatsapp_templates, timestamptz dates) completed successfully.');
+        this.logger.log('Schema migrations (calendar, conversations, messages, whatsapp_templates, timestamptz dates, unaccent functional indexes) completed successfully.');
       }
 
     } catch (err) {

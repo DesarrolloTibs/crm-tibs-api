@@ -472,3 +472,32 @@ Para los canales de comunicación, el consumo total auditado debe computarse **p
    - En el bloque `finally` de `processIncomingMessage`, se ejecuta una sola inserción en `transaction_history` que consolida la suma total de:
      $$\text{Total Mensaje} = \text{Tokens Router} + \text{Tokens RAG} + \text{Tokens Subagente} + \text{Tokens Resumen}$$
    - El registro se etiqueta con el canal del mensaje (ej. `messenger`), el nombre del subagente principal (ej. `subagent_comercial`), y almacena en `metadata.steps` la traza integral de las etapas ejecutadas (`['router', 'rag_search', 'subagent_comercial', 'conversation_summary']`).
+
+
+### 🔤 Inmunidad a Acentos, Normalización Unicode NFD y Ranking Semántico de Entidades (`WebchatActionExecutorService` & `WebchatEntityMatcherService`)
+
+* **Problema Identificado en Producción:**
+  - Al solicitar acciones como crear una oportunidad o actividad para un cliente o empresa (ej. *"Crea una oportunidad para Grupo mexico"*), si el registro en el CRM estaba guardado con tilde (*"Grupo méxico"*), el sistema asignaba un contacto o empresa completamente ajeno que contuviera la palabra *"mexico"* sin acento (ej. *"Transportes Mexico"*).
+  - **Causa Raíz 1 (Sensibilidad a Acentos en PostgreSQL):** El operador `ILIKE` de PostgreSQL es insensible a mayúsculas/minúsculas pero **sensible a acentos**. `'Grupo méxico' ILIKE '%grupo mexico%'` evalúa a `FALSE`, haciendo que las búsquedas directas fallen.
+  - **Causa Raíz 2 (Stopwords y Búsqueda Fragmentada sin Ranking):** En `resolveCompany`, al fallar la búsqueda directa, se descartaba la palabra `"grupo"` por stopword y se ejecutaba `this.companyRepo.findOne({ where: { nombre: ILike('%mexico%') } })`. PostgreSQL ejecutaba `LIMIT 1` devolviendo arbitrariamente cualquier otra empresa física con *"mexico"*.
+  - **Causa Raíz 3 (Capa Semántica Afectada):** En `WebchatEntityMatcherService.fallbackFuzzyEntitySearch`, las condiciones SQL directas con `ILIKE` tampoco normalizaban diacríticos, provocando 0 resultados o asignaciones incorrectas.
+
+* **Solución Implementada:**
+  1. **Utilidad de Normalización y Ranking Semántico (`webchat-entity-ranker.util.ts`):**
+     - Se introdujo `normalizeText(text)` con descomposición Unicode NFD (`.normalize('NFD').replace(/[\u0300-\u036f]/g, '')`) y limpieza de caracteres especiales.
+     - Se implementó `rankEntitiesByRelevance(candidates, searchText, getTextFields)` que califica candidatos con puntuación ponderada:
+       - Coincidencia exacta normalizada: +10,000 pts.
+       - Coincidencia de subcadena completa: +5,000 pts.
+       - Coincidencia de todas las palabras clave: +2,500 pts.
+       - Coincidencia de palabras individuales: +300 pts.
+       - Penalización por términos clave faltantes (-500 pts por palabra omitida).
+     - Se definió `MIN_ENTITY_MATCH_SCORE = 2000` como umbral mínimo para prevenir que coincidencias accidentales de 1 sola palabra común generen falsos positivos.
+  2. **Refactorización de `resolveCompany` y `resolveClient` (`webchat-action-executor.service.ts`):**
+     - Se eliminó el `findOne` arbitrario por una sola palabra.
+     - Se recuperan candidatos amplios utilizando `Raw` con `TRANSLATE(LOWER(alias), 'áéíóúÁÉÍÓÚñÑüÜ', 'aeiouaeiounnuu') ILIKE :term` en PostgreSQL y se ordenan rigurosamente mediante `rankEntitiesByRelevance`.
+     - Si ningún candidato supera el umbral de confianza, la función retorna `null` de forma segura en lugar de asignar una empresa o contacto al azar.
+  3. **Inmunidad a Tildes en la Capa Semántica (`webchat-entity-matcher.service.ts`):**
+     - En `fallbackFuzzyEntitySearch`, las consultas SQL concurrentes en `clients`, `companies`, `products`, `opportunities` y `tickets` aplican la función nativa `TRANSLATE` de PostgreSQL sobre las columnas textuales.
+     - Los resultados finales devueltos se ordenan aplicando `rankEntitiesByRelevance` respecto al término buscado.
+  4. **Suite de Pruebas Automatizadas:**
+     - Se crearon pruebas unitarias en `webchat-entity-ranker.spec.ts` y se extendió `webchat-action-executor.spec.ts` validando la resolución correcta de `"grupo mexico"` a `"Grupo méxico"`, el descarte de falsos positivos como `"Transportes Mexico"`, la resolución de contactos individuales con acentos (`"jose perez"` a `"José Pérez"`) y la creación segura de oportunidades.

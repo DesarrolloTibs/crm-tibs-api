@@ -111,16 +111,20 @@ export class TicketsGateway implements OnGatewayInit, OnGatewayConnection, OnGat
   }
 
   private getTargetRoom(tenantSchema?: string): string | null {
-    const target = tenantSchema || TenantContextService.getTenantSchema();
-    return target ? `tenant:${target}` : null;
+    const target = tenantSchema && tenantSchema !== 'public'
+      ? tenantSchema
+      : TenantContextService.getTenantSchema();
+    return target && target !== 'public' ? `tenant:${target}` : (target ? `tenant:${target}` : null);
   }
 
   emitTicketCreated(ticket: any, tenantSchema?: string) {
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[TicketsGateway] emitTicketCreated -> ${room} (Ticket ID: ${ticket?.id || 'N/A'}, Folio: #${ticket?.ticket_number || 'N/A'})`);
       this.server.to(room).emit('ticketCreated', ticket);
     } else {
+      this.logger.warn(`[TicketsGateway] emitTicketCreated emitido globalmente (sin sala específica)`);
       this.server.emit('ticketCreated', ticket);
     }
   }
@@ -129,6 +133,7 @@ export class TicketsGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[TicketsGateway] emitTicketUpdated -> ${room} (Ticket ID: ${ticket?.id || 'N/A'}, Folio: #${ticket?.ticket_number || 'N/A'})`);
       this.server.to(room).emit('ticketUpdated', ticket);
     } else {
       this.server.emit('ticketUpdated', ticket);
@@ -139,6 +144,7 @@ export class TicketsGateway implements OnGatewayInit, OnGatewayConnection, OnGat
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[TicketsGateway] emitTicketDeleted -> ${room} (Ticket ID: ${ticketId})`);
       this.server.to(room).emit('ticketDeleted', ticketId);
     } else {
       this.server.emit('ticketDeleted', ticketId);

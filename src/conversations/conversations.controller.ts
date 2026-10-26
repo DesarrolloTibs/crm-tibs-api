@@ -191,8 +191,18 @@ export class ConversationsController {
     @Body('externalId') externalId: string,
     @Body('clientNickname') clientNickname: string,
     @Body('text') text: string,
+    @Body('messageType') messageType?: string,
   ) {
-    return this.conversationsService.receiveIncomingMessage(channel, externalId, clientNickname, text);
+    return this.conversationsService.receiveIncomingMessage(
+      channel,
+      externalId,
+      clientNickname,
+      text,
+      undefined,
+      undefined,
+      undefined,
+      messageType || 'text',
+    );
   }
 
   @Get(':id/messages')
