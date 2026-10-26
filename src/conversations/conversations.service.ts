@@ -19,6 +19,7 @@ import { PhoneUtils } from '../common/utils/phone.utils';
 import { NOTIFICATION_EVENTS } from '../common/events/notification.events';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
 import { SendTemplateMessageDto, UpsertBaseTemplateDto, SelectExistingBaseTemplateDto } from './dto/conversations.dto';
+import { SpeechToTextService } from './speech-to-text.service';
 
 /**
  * Margen de seguridad para la ventana de atención de WhatsApp antes del corte estricto de Meta (24h).
@@ -62,6 +63,7 @@ export class ConversationsService {
     private readonly clientsService: ClientsService,
     @Inject(CACHE_MANAGER)
     private readonly cacheManager: Cache,
+    private readonly speechToTextService: SpeechToTextService,
   ) {}
 
   /**
@@ -225,6 +227,7 @@ export class ConversationsService {
     channelConfigId?: string,
     externalMessageId?: string,
     contactInfo?: { email?: string; phone?: string },
+    messageType: string = 'text',
   ): Promise<Message> {
     // 1. Buscar o crear la conversación
     let conversation = await this.conversationRepository.findOne({
@@ -358,7 +361,7 @@ export class ConversationsService {
       sender: 'contact',
       content: text,
       status: 'delivered',
-      messageType: 'text',
+      messageType: messageType || 'text',
       externalMessageId: externalMessageId || null,
     });
     const savedIncoming = await this.messageRepository.save(incomingMessage);
@@ -2092,6 +2095,96 @@ export class ConversationsService {
     throw new NotFoundException('Token de verificación inválido o canal inactivo');
   }
 
+  /**
+   * Descarga un archivo de audio de WhatsApp Cloud API utilizando el media ID y el token del canal.
+   */
+  async downloadWhatsAppAudio(
+    mediaId: string,
+    accessToken: string,
+  ): Promise<{ buffer: Buffer; mimeType: string } | null> {
+    try {
+      this.logger.log(`[WhatsApp Media] Consultando metadata para mediaId: ${mediaId}`);
+      const metaRes = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!metaRes.ok) {
+        const errText = await metaRes.text().catch(() => '');
+        this.logger.error(`[WhatsApp Media] Error al obtener URL de media ${mediaId} (${metaRes.status}): ${errText}`);
+        return null;
+      }
+
+      const metaData: any = await metaRes.json();
+      const mediaUrl = metaData?.url;
+      const mimeType = metaData?.mime_type || 'audio/ogg; codecs=opus';
+
+      if (!mediaUrl) {
+        this.logger.error(`[WhatsApp Media] No se encontró URL en la metadata de media ${mediaId}`);
+        return null;
+      }
+
+      this.logger.log(`[WhatsApp Media] Descargando binario de audio desde CDN de WhatsApp (${mimeType})...`);
+      const fileRes = await fetch(mediaUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'User-Agent': 'curl/7.68.0',
+        },
+        signal: AbortSignal.timeout(20000),
+      });
+
+      if (!fileRes.ok) {
+        this.logger.error(`[WhatsApp Media] Error al descargar binario (${fileRes.status})`);
+        return null;
+      }
+
+      const arrayBuffer = await fileRes.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      this.logger.log(`[WhatsApp Media] Descarga completada exitosamente: ${buffer.length} bytes`);
+      return { buffer, mimeType };
+    } catch (err: any) {
+      this.logger.error(`[WhatsApp Media] Excepción al descargar audio ${mediaId}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Descarga un archivo de audio desde Facebook Messenger o Instagram Direct.
+   */
+  async downloadMessengerInstagramAudio(
+    url: string,
+    accessToken?: string | null,
+  ): Promise<{ buffer: Buffer; mimeType: string } | null> {
+    try {
+      this.logger.log(`[Meta Media] Descargando audio desde URL: ${url}`);
+      const headers: Record<string, string> = {
+        'User-Agent': 'curl/7.68.0',
+      };
+      if (accessToken && url.includes('lookaside.fbsbx.com')) {
+        headers['Authorization'] = `Bearer ${accessToken}`;
+      }
+
+      const res = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(20000),
+      });
+
+      if (!res.ok) {
+        this.logger.error(`[Meta Media] Error descargando audio (${res.status})`);
+        return null;
+      }
+
+      const contentType = res.headers.get('content-type') || 'audio/mp4';
+      const arrayBuffer = await res.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      this.logger.log(`[Meta Media] Audio descargado con éxito: ${buffer.length} bytes (${contentType})`);
+      return { buffer, mimeType: contentType };
+    } catch (err: any) {
+      this.logger.error(`[Meta Media] Excepción descargando audio: ${err.message}`);
+      return null;
+    }
+  }
+
   async handleIncomingWebhook(channel: string, payload: any): Promise<any> {
     this.logger.log(`[Webhook ${channel.toUpperCase()}] Recibido body: ${JSON.stringify(payload)}`);
 
@@ -2171,9 +2264,8 @@ export class ConversationsService {
           }
 
           // 2. Procesar mensaje entrante del cliente
-          if (message && message.type === 'text') {
+          if (message && (message.type === 'text' || message.type === 'audio')) {
             const externalId = message.from;
-            const text = message.text.body;
             const clientNickname = value.contacts?.[0]?.profile?.name || 'Cliente WhatsApp';
             const phoneNumberId = value.metadata?.phone_number_id;
             const incomingWamid = message.id;
@@ -2182,34 +2274,72 @@ export class ConversationsService {
               where: { channel: 'whatsapp', phoneNumberId, isActive: true },
             });
 
-            await this.receiveIncomingMessage(
-              'whatsapp',
-              externalId,
-              clientNickname,
-              text,
-              channelConfig?.id,
-              incomingWamid,
-            );
+            let text = '';
+            let messageType = 'text';
+
+            if (message.type === 'text') {
+              text = message.text?.body || '';
+            } else if (message.type === 'audio') {
+              messageType = 'audio';
+              const audioId = message.audio?.id;
+              if (audioId && channelConfig?.accessToken) {
+                this.logger.log(`[Webhook WHATSAPP AUDIO] Recibida nota de voz/audio (id: ${audioId}) de ${externalId}`);
+                const audioMedia = await this.downloadWhatsAppAudio(audioId, channelConfig.accessToken);
+                if (audioMedia && audioMedia.buffer) {
+                  const transcript = await this.speechToTextService.transcribeAudio(
+                    audioMedia.buffer,
+                    audioMedia.mimeType,
+                  ).catch((err) => {
+                    this.logger.error(`[Webhook WHATSAPP AUDIO] Error transcribiendo con IBM: ${err.message}`);
+                    return null;
+                  });
+                  text = transcript || '[Nota de voz inaudible o vacía]';
+                } else {
+                  this.logger.error(`[Webhook WHATSAPP AUDIO] No se pudo descargar el archivo de audio ${audioId}`);
+                  text = '[Nota de voz no disponible]';
+                }
+              } else {
+                this.logger.warn(`[Webhook WHATSAPP AUDIO] Falta audioId o token de acceso para descargar audio`);
+                text = '[Nota de voz]';
+              }
+            }
+
+            if (text) {
+              await this.receiveIncomingMessage(
+                'whatsapp',
+                externalId,
+                clientNickname,
+                text,
+                channelConfig?.id,
+                incomingWamid,
+                undefined,
+                messageType,
+              );
+            }
           }
         } else if (channel === 'facebook' || channel === 'messenger') {
           const entry = payload.entry?.[0];
           const messaging = entry?.messaging?.[0];
           const pageId = entry?.id;
 
-          if (messaging && messaging.message && messaging.message.text) {
+          if (messaging && messaging.message) {
             if (messaging.message.is_echo) {
               this.logger.log(`[Webhook ${channel.toUpperCase()}] Ignorando mensaje echo (is_echo: true)`);
               return { status: 'SUCCESS' };
             }
-            const senderId = messaging.sender.id;
-            const text = messaging.message.text;
+            const senderId = messaging.sender?.id;
+            const audioAttachment = messaging.message.attachments?.find((att: any) => att.type === 'audio');
+
+            if (!messaging.message.text && !audioAttachment) {
+              return { status: 'SUCCESS' };
+            }
 
             const channelConfig = await this.channelConfigRepository.findOne({
               where: { channel: 'facebook', accountId: pageId, isActive: true },
             });
 
             let clientNickname = 'Usuario de Facebook';
-            if (channelConfig && channelConfig.accessToken) {
+            if (channelConfig && channelConfig.accessToken && senderId) {
               try {
                 const res = await fetch(
                   `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name,profile_pic&access_token=${channelConfig.accessToken}`,
@@ -2247,33 +2377,66 @@ export class ConversationsService {
               }
             }
 
-            await this.receiveIncomingMessage(
-              'messenger',
-              senderId,
-              clientNickname,
-              text,
-              channelConfig?.id,
-            );
+            let text = messaging.message.text || '';
+            let messageType = 'text';
+
+            if (audioAttachment) {
+              messageType = 'audio';
+              const audioUrl = audioAttachment.payload?.url;
+              if (audioUrl) {
+                this.logger.log(`[Webhook MESSENGER AUDIO] Recibido audio de ${senderId}: ${audioUrl}`);
+                const audioMedia = await this.downloadMessengerInstagramAudio(audioUrl, channelConfig?.accessToken);
+                if (audioMedia && audioMedia.buffer) {
+                  const transcript = await this.speechToTextService.transcribeAudio(
+                    audioMedia.buffer,
+                    audioMedia.mimeType,
+                  ).catch((err) => {
+                    this.logger.error(`[Webhook MESSENGER AUDIO] Error transcribiendo con IBM: ${err.message}`);
+                    return null;
+                  });
+                  text = transcript || '[Nota de voz inaudible o vacía]';
+                } else {
+                  text = '[Nota de voz no disponible]';
+                }
+              }
+            }
+
+            if (text && senderId) {
+              await this.receiveIncomingMessage(
+                'messenger',
+                senderId,
+                clientNickname,
+                text,
+                channelConfig?.id,
+                messaging.message.mid,
+                undefined,
+                messageType,
+              );
+            }
           }
         } else if (channel === 'instagram') {
           const entry = payload.entry?.[0];
           const messaging = entry?.messaging?.[0];
           const igAccountId = entry?.id;
 
-          if (messaging && messaging.message && messaging.message.text) {
+          if (messaging && messaging.message) {
             if (messaging.message.is_echo) {
               this.logger.log(`[Webhook ${channel.toUpperCase()}] Ignorando mensaje echo (is_echo: true)`);
               return { status: 'SUCCESS' };
             }
-            const senderId = messaging.sender.id;
-            const text = messaging.message.text;
+            const senderId = messaging.sender?.id;
+            const audioAttachment = messaging.message.attachments?.find((att: any) => att.type === 'audio');
+
+            if (!messaging.message.text && !audioAttachment) {
+              return { status: 'SUCCESS' };
+            }
 
             const channelConfig = await this.channelConfigRepository.findOne({
               where: { channel: 'instagram', accountId: igAccountId, isActive: true },
             });
 
             let clientNickname = 'Usuario de Instagram';
-            if (channelConfig && channelConfig.accessToken) {
+            if (channelConfig && channelConfig.accessToken && senderId) {
               try {
                 const res = await fetch(
                   `https://graph.facebook.com/v19.0/${senderId}?fields=username,name&access_token=${channelConfig.accessToken}`,
@@ -2293,13 +2456,42 @@ export class ConversationsService {
               }
             }
 
-            await this.receiveIncomingMessage(
-              'instagram',
-              senderId,
-              clientNickname,
-              text,
-              channelConfig?.id,
-            );
+            let text = messaging.message.text || '';
+            let messageType = 'text';
+
+            if (audioAttachment) {
+              messageType = 'audio';
+              const audioUrl = audioAttachment.payload?.url;
+              if (audioUrl) {
+                this.logger.log(`[Webhook INSTAGRAM AUDIO] Recibido audio de ${senderId}: ${audioUrl}`);
+                const audioMedia = await this.downloadMessengerInstagramAudio(audioUrl, channelConfig?.accessToken);
+                if (audioMedia && audioMedia.buffer) {
+                  const transcript = await this.speechToTextService.transcribeAudio(
+                    audioMedia.buffer,
+                    audioMedia.mimeType,
+                  ).catch((err) => {
+                    this.logger.error(`[Webhook INSTAGRAM AUDIO] Error transcribiendo con IBM: ${err.message}`);
+                    return null;
+                  });
+                  text = transcript || '[Nota de voz inaudible o vacía]';
+                } else {
+                  text = '[Nota de voz no disponible]';
+                }
+              }
+            }
+
+            if (text && senderId) {
+              await this.receiveIncomingMessage(
+                'instagram',
+                senderId,
+                clientNickname,
+                text,
+                channelConfig?.id,
+                messaging.message.mid,
+                undefined,
+                messageType,
+              );
+            }
           }
         }
 

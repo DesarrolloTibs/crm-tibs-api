@@ -190,3 +190,18 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
 * **Estrategia Resiliente en `ConversationsService`:** Si la consulta directa al PSID no entrega el nombre, el sistema ejecuta de forma automática e inmediata un fallback consultando los participantes de la conversación mediante el endpoint de la Fan Page:
   `GET /v19.0/{page_id}/conversations?user_id={senderId}&fields=participants`
 * **Auto-actualización de Entidades:** Extrae el participante coincidente de la lista (`participant.name`), asigna el nombre real a `conversation.clientName` y actualiza automáticamente el registro `client.nombre` en la base de datos del tenant, garantizando que el contacto deje de mostrarse como *"Usuario de Facebook"*.
+
+
+### 5.11. Soporte de Notas de Voz y Audios (IBM Watson Speech to Text & Respuesta IA)
+* **Arquitectura de Transcripción (`SpeechToTextService`):**
+  * Servicio desacoplado en `src/conversations/speech-to-text.service.ts` conectado a la instancia oficial de **IBM Watson Speech to Text** (`us-south`).
+  * Autenticación HTTP Basic directa (`Authorization: Basic base64('apikey:' + apiKey)`), reduciendo sobrecarga de SDKs externos.
+  * Modelo predeterminado: `es-MX_BroadbandModel` (Español de México, banda ancha) con fallback configurable por variable de entorno `IBM_SPEECH_TO_TEXT_MODEL`.
+* **Descarga Multi-Canal de Binarios de Meta:**
+  * **WhatsApp:** Procesa webhooks con `message.type === 'audio'`. Consulta metadata en Graph API `GET /v19.0/{audioId}` para obtener URL temporal de `lookaside.fbsbx.com` y descarga el búfer binario en formato `audio/ogg;codecs=opus` autenticado con Bearer Token y User-Agent de transporte.
+  * **Messenger & Instagram:** Detecta `messaging.message.attachments` con `type === 'audio'`. Descarga el búfer de audio directamente desde la URL del CDN de Meta.
+* **Persistencia Omnicanal y Flujo con Agente de IA:**
+  * El audio transcrito se envía a `receiveIncomingMessage` con `messageType: 'audio'`.
+  * Se almacena en la tabla `messages` con `messageType: 'audio'` y `content: transcriptText`.
+  * Se emite en vivo a los asesores mediante `ConversationsGateway` (`message_received`).
+  * Si la conversación tiene el bot activo (`botActive: true`), se programa el debounce de 7 segundos (`scheduleAiReplyDebounce`). Si el usuario no envía más mensajes o audios en esa ventana, `triggerAiReply` recupera el texto transcrito y lo entrega al motor agéntico (`AiAgentOrchestratorService`), que formula la respuesta automática y la remite en texto libre al cliente por el canal correspondiente.

@@ -17,6 +17,7 @@ import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
 import { AiSubAgentMigrationService } from './ai-sub-agent-migration.service';
 import { ConversationsGateway } from './conversations.gateway';
 import { MetaOauthService } from './meta-oauth.service';
+import { SpeechToTextService } from './speech-to-text.service';
 import { ConversationsController } from './conversations.controller';
 import { OpportunitiesModule } from '../opportunities/opportunities.module';
 import { ActivitiesModule } from '../activities/activities.module';
@@ -57,6 +58,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
     ConversationsService,
     ConversationsGateway,
     MetaOauthService,
+    SpeechToTextService,
     // AI Agent subsystem — 3 specialized services + 1 facade
     AiSubAgentMigrationService,
     AiAgentToolsHandlerService,
@@ -64,6 +66,6 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
     AiAgentService,
   ],
   controllers: [ConversationsController],
-  exports: [ConversationsService, AiAgentService, ConversationsGateway, MetaOauthService],
+  exports: [ConversationsService, AiAgentService, ConversationsGateway, MetaOauthService, SpeechToTextService],
 })
 export class ConversationsModule {}
