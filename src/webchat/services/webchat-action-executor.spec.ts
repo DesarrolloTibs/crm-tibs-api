@@ -635,6 +635,51 @@ describe('WebchatActionExecutorService', () => {
       );
       expect(response.answer).toContain('Prospecto ➔ Calificado');
     });
+
+    it('Solicita confirmación al usuario cuando existen múltiples oportunidades ambiguas coincidentes', async () => {
+      const opp1 = {
+        id: 'opp-amb-1',
+        nombre_proyecto: 'Cotización 4 - Sucursal Norte',
+        pipeline_id: 'pipe-1',
+        stage: { strname: 'Prospecto' },
+        monto_total: 100,
+        moneda: 'MXN',
+        ejecutivo_id: adminUser.id,
+      };
+      const opp2 = {
+        id: 'opp-amb-2',
+        nombre_proyecto: 'Cotización 4 - Sucursal Sur',
+        pipeline_id: 'pipe-1',
+        stage: { strname: 'Propuesta' },
+        monto_total: 200,
+        moneda: 'MXN',
+        ejecutivo_id: adminUser.id,
+      };
+
+      mockOpportunityRepo.createQueryBuilder.mockImplementation(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([opp1, opp2]),
+      }));
+
+      const response = await service.handleModifyOpportunity(
+        {
+          nombreProyecto: 'Cotizacion 4',
+          montoTotal: 600,
+        },
+        adminUser,
+      );
+
+      // No debe actualizar ninguna todavía
+      expect(mockOpportunitiesService.update).not.toHaveBeenCalled();
+      // Debe solicitar confirmación listando las opciones
+      expect(response.answer).toContain('Encontré varias oportunidades activas que coinciden con "Cotizacion 4". ¿A cuál de ellas te refieres?');
+      expect(response.answer).toContain('Cotización 4 - Sucursal Norte');
+      expect(response.answer).toContain('Cotización 4 - Sucursal Sur');
+      expect(response.data).toHaveLength(2);
+    });
   });
 
   describe('3. Creación de Actividades y checkAvailability', () => {

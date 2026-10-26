@@ -205,3 +205,30 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
   * Se almacena en la tabla `messages` con `messageType: 'audio'` y `content: transcriptText`.
   * Se emite en vivo a los asesores mediante `ConversationsGateway` (`message_received`).
   * Si la conversación tiene el bot activo (`botActive: true`), se programa el debounce de 7 segundos (`scheduleAiReplyDebounce`). Si el usuario no envía más mensajes o audios en esa ventana, `triggerAiReply` recupera el texto transcrito y lo entrega al motor agéntico (`AiAgentOrchestratorService`), que formula la respuesta automática y la remite en texto libre al cliente por el canal correspondiente.
+
+
+### 4.1. Sincronización en Tiempo Real de Acciones en la UI (WebSockets Multi-Tenant)
+Para garantizar que cualquier acción ejecutada desde el Webchat Interno (crear/modificar oportunidades, programar actividades o levantar tickets) se refleje instantáneamente en las pantallas activas del CRM (Tablero Kanban de Pipeline, Calendario de Actividades, Helpdesk) sin requerir recargar la página (F5):
+* **Preservación Íntegra de la Entidad `User`:**
+  * `WebchatController` recibe `@GetUser() user: User` y lo transfiere intacto a través de `WebchatService.processQuery` y `WebchatActionExecutorService.executeAction`.
+  * Los métodos de creación y actualización (`opportunitiesService.create`, `opportunitiesService.update`, `activitiesService.create`, `activitiesService.update`, `ticketsService.create`, `ticketsService.update`) reciben la entidad de usuario completa en lugar de objetos podados `{ id: user.id } as User`.
+  * Esto asegura que los historiales de interacciones, notificaciones internas y auditorías atribuyan la autoría al usuario y asesor real, en vez de registrar al usuario como `"Sistema"`.
+* **Resolución Explícita del Esquema del Tenant (`resolvedTenant`):**
+  * Para prevenir que llamadas en segundo plano o el contexto asíncrono (`AsyncLocalStorage`) se degraden o resuelvan el esquema base `'public'` (especialmente en sesiones de rol SuperAdmin o llamadas encadenadas con LLMs), los servicios de dominio computan el esquema objetivo de forma jerárquica:
+    `const resolvedTenant = (user as any)?.tenant?.schema_name || (typeof (user as any)?.tenant === 'string' && (user as any)?.tenant !== 'public' ? (user as any).tenant : TenantContextService.getTenantSchema());`
+  * Este `resolvedTenant` se envía como argumento explícito a las funciones emisoras de los gateways (`emitOpportunityCreated`, `emitOpportunityUpdated`, `emitOpportunityDeleted`, `emitActivityCreated`, `emitActivityUpdated`, `emitActivityDeleted`, `emitTicketCreated`, `emitTicketUpdated`, `emitTicketDeleted`).
+* **Enrutamiento Estricto y Auditoría de Salas en Gateways:**
+  * En `PipelinesGateway`, `ActivitiesGateway` y `TicketsGateway`, el método `getTargetRoom(tenantSchema)` prioriza el esquema explícito validado, vinculando la emisión a la sala aislada `tenant:${tenantSchema}`.
+  * Previene activamente la fuga de datos (*Cross-Tenant Data Leakage*) bloqueando emisiones involuntarias a `tenant:public`.
+  * Se integran trazas de registro estructuradas (`this.logger.log`) para auditar en tiempo real el envío de eventos hacia los clientes de Socket.IO conectados en el frontend.
+
+
+### 4.2. Resolución Ortográfica, Desempate Semántico y Clarificación de Ambigüedad
+Para evitar tanto fallos por errores ortográficos/tildes como falsos positivos destructivos al modificar datos en el CRM:
+* **Resolución Insensible a Tildes y Caracteres Diacríticos:**
+  * Las búsquedas en `WebchatActionExecutorService` utilizan la función inmutable de base de datos `public.f_unaccent_immutable(texto)`, respaldada por el índice B-tree `idx_opportunities_nombre_norm` creado en todos los esquemas (`public` y `tenant_*`).
+  * Permite que consultas de texto plano (ej. `"cotizacion 4"`) coincidan determinísticamente con registros titulados con tildes (ej. `"Cotización 4"`).
+* **Desempate Semántico con Damerau-Levenshtein y Ponderaciones:**
+  * Se implementa `rankEntitiesByRelevance` en `webchat-entity-ranker.util.ts` para evaluar similitud de cadena completa, inclusión de subcadenas, palabras clave y tolerancia a erratas tipográficas.
+* **Confirmación Interactiva ante Ambigüedad:**
+  * Si se encuentran múltiples candidatos con puntajes cercanos ($\Delta < 1500$), el Webchat no adivina ni ejecuta la modificación a ciegas. En su lugar, responde solicitando confirmación al usuario y listando las opciones encontradas con sus metadatos clave (nombre, cliente/empresa, monto y etapa).

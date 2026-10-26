@@ -111,16 +111,20 @@ export class ActivitiesGateway implements OnGatewayInit, OnGatewayConnection, On
   }
 
   private getTargetRoom(tenantSchema?: string): string | null {
-    const target = tenantSchema || TenantContextService.getTenantSchema();
-    return target ? `tenant:${target}` : null;
+    const target = tenantSchema && tenantSchema !== 'public'
+      ? tenantSchema
+      : TenantContextService.getTenantSchema();
+    return target && target !== 'public' ? `tenant:${target}` : (target ? `tenant:${target}` : null);
   }
 
   emitActivityCreated(activity: any, tenantSchema?: string) {
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[ActivitiesGateway] emitActivityCreated -> ${room} (Act ID: ${activity?.id || 'N/A'}, Detalle: "${activity?.activity?.substring(0, 40) || 'N/A'}")`);
       this.server.to(room).emit('activityCreated', activity);
     } else {
+      this.logger.warn(`[ActivitiesGateway] emitActivityCreated emitido globalmente (sin sala específica)`);
       this.server.emit('activityCreated', activity);
     }
   }
@@ -129,6 +133,7 @@ export class ActivitiesGateway implements OnGatewayInit, OnGatewayConnection, On
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[ActivitiesGateway] emitActivityUpdated -> ${room} (Act ID: ${activity?.id || 'N/A'})`);
       this.server.to(room).emit('activityUpdated', activity);
     } else {
       this.server.emit('activityUpdated', activity);
@@ -139,6 +144,7 @@ export class ActivitiesGateway implements OnGatewayInit, OnGatewayConnection, On
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[ActivitiesGateway] emitActivityDeleted -> ${room} (Act ID: ${activityId})`);
       this.server.to(room).emit('activityDeleted', activityId);
     } else {
       this.server.emit('activityDeleted', activityId);
@@ -149,6 +155,7 @@ export class ActivitiesGateway implements OnGatewayInit, OnGatewayConnection, On
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[ActivitiesGateway] emitActivityTypeCreated -> ${room} (Type ID: ${type?.id || 'N/A'})`);
       this.server.to(room).emit('activityTypeCreated', type);
     } else {
       this.server.emit('activityTypeCreated', type);
@@ -159,6 +166,7 @@ export class ActivitiesGateway implements OnGatewayInit, OnGatewayConnection, On
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[ActivitiesGateway] emitActivityTypeUpdated -> ${room} (Type ID: ${type?.id || 'N/A'})`);
       this.server.to(room).emit('activityTypeUpdated', type);
     } else {
       this.server.emit('activityTypeUpdated', type);

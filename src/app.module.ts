@@ -401,6 +401,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             CREATE INDEX IF NOT EXISTS idx_companies_nombre_norm ON "${schema}".companies (public.f_unaccent_immutable(nombre));
             CREATE INDEX IF NOT EXISTS idx_clients_nombre_norm ON "${schema}".clients (public.f_unaccent_immutable(nombre));
             CREATE INDEX IF NOT EXISTS idx_clients_apellido_norm ON "${schema}".clients (public.f_unaccent_immutable(apellido));
+            CREATE INDEX IF NOT EXISTS idx_opportunities_nombre_norm ON "${schema}".opportunities (public.f_unaccent_immutable(nombre_proyecto));
           `).catch(err => {
             this.logger.warn(`Could not create unaccent indexes on schema "${schema}":`, err?.message || err);
           });
@@ -411,6 +412,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           CREATE INDEX IF NOT EXISTS idx_companies_nombre_norm ON public.companies (public.f_unaccent_immutable(nombre));
           CREATE INDEX IF NOT EXISTS idx_clients_nombre_norm ON public.clients (public.f_unaccent_immutable(nombre));
           CREATE INDEX IF NOT EXISTS idx_clients_apellido_norm ON public.clients (public.f_unaccent_immutable(apellido));
+          CREATE INDEX IF NOT EXISTS idx_opportunities_nombre_norm ON public.opportunities (public.f_unaccent_immutable(nombre_proyecto));
         `).catch(() => null);
 
         await queryRunner.query(`

@@ -366,7 +366,8 @@ export class ActivitiesService implements OnModuleInit {
     }
     const finalActivity = this.fillDeletedType(result!);
     await this.notifyClientsAboutActivity(finalActivity);
-    this.activitiesGateway.emitActivityCreated(finalActivity);
+    const resolvedTenant = (user as any)?.tenant?.schema_name || (typeof (user as any)?.tenant === 'string' && (user as any)?.tenant !== 'public' ? (user as any).tenant : TenantContextService.getTenantSchema());
+    this.activitiesGateway.emitActivityCreated(finalActivity, resolvedTenant);
     return finalActivity;
   }
 
@@ -592,7 +593,8 @@ export class ActivitiesService implements OnModuleInit {
       this.eventEmitter.emit('activity.updated', { activity: result, tenantSchema });
     }
     const finalActivity = this.fillDeletedType(result!);
-    this.activitiesGateway.emitActivityUpdated(finalActivity);
+    const resolvedTenant = (user as any)?.tenant?.schema_name || (typeof (user as any)?.tenant === 'string' && (user as any)?.tenant !== 'public' ? (user as any).tenant : TenantContextService.getTenantSchema());
+    this.activitiesGateway.emitActivityUpdated(finalActivity, resolvedTenant);
     return finalActivity;
   }
 
@@ -645,6 +647,6 @@ export class ActivitiesService implements OnModuleInit {
     if (result.affected === 0) {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada.`);
     }
-    this.activitiesGateway.emitActivityDeleted(id);
+    this.activitiesGateway.emitActivityDeleted(id, tenantSchema);
   }
 }

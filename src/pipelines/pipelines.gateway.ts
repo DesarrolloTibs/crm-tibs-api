@@ -111,16 +111,20 @@ export class PipelinesGateway implements OnGatewayInit, OnGatewayConnection, OnG
   }
 
   private getTargetRoom(tenantSchema?: string): string | null {
-    const target = tenantSchema || TenantContextService.getTenantSchema();
-    return target ? `tenant:${target}` : null;
+    const target = tenantSchema && tenantSchema !== 'public'
+      ? tenantSchema
+      : TenantContextService.getTenantSchema();
+    return target && target !== 'public' ? `tenant:${target}` : (target ? `tenant:${target}` : null);
   }
 
   emitOpportunityCreated(opportunity: any, tenantSchema?: string) {
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[PipelinesGateway] emitOpportunityCreated -> ${room} (Opp ID: ${opportunity?.id || 'N/A'}, Proyecto: "${opportunity?.nombre_proyecto || 'N/A'}")`);
       this.server.to(room).emit('opportunityCreated', opportunity);
     } else {
+      this.logger.warn(`[PipelinesGateway] emitOpportunityCreated emitido globalmente (sin sala específica)`);
       this.server.emit('opportunityCreated', opportunity);
     }
   }
@@ -129,6 +133,7 @@ export class PipelinesGateway implements OnGatewayInit, OnGatewayConnection, OnG
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[PipelinesGateway] emitOpportunityUpdated -> ${room} (Opp ID: ${opportunity?.id || 'N/A'}, Proyecto: "${opportunity?.nombre_proyecto || 'N/A'}")`);
       this.server.to(room).emit('opportunityUpdated', opportunity);
     } else {
       this.server.emit('opportunityUpdated', opportunity);
@@ -139,6 +144,7 @@ export class PipelinesGateway implements OnGatewayInit, OnGatewayConnection, OnG
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[PipelinesGateway] emitOpportunityDeleted -> ${room} (Opp ID: ${opportunityId})`);
       this.server.to(room).emit('opportunityDeleted', opportunityId);
     } else {
       this.server.emit('opportunityDeleted', opportunityId);
@@ -149,6 +155,7 @@ export class PipelinesGateway implements OnGatewayInit, OnGatewayConnection, OnG
     if (!this.server) return;
     const room = this.getTargetRoom(tenantSchema);
     if (room) {
+      this.logger.log(`[PipelinesGateway] emitPipelineUpdated -> ${room} (Pipeline ID: ${pipeline?.id || 'N/A'})`);
       this.server.to(room).emit('pipelineUpdated', pipeline);
     } else {
       this.server.emit('pipelineUpdated', pipeline);

@@ -12,6 +12,7 @@ import { ArchiveTicketDto } from './dto/archive-ticket.dto';
 import { TicketsGateway } from './tickets.gateway';
 import { TicketInteractionsService } from '../ticket-interactions/ticket-interactions.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class TicketsService {
@@ -151,7 +152,8 @@ export class TicketsService {
       comment: logComment,
     });
 
-    this.ticketsGateway.emitTicketCreated(fullTicket);
+    const resolvedTenant = (user as any)?.tenant?.schema_name || (typeof (user as any)?.tenant === 'string' && (user as any)?.tenant !== 'public' ? (user as any).tenant : TenantContextService.getTenantSchema());
+    this.ticketsGateway.emitTicketCreated(fullTicket, resolvedTenant);
 
     if (fullTicket.responsable_id) {
       const ticketNumStr = fullTicket.ticket_number.toString().padStart(5, '0');
@@ -382,7 +384,8 @@ export class TicketsService {
       }
     }
 
-    this.ticketsGateway.emitTicketUpdated(fullTicket);
+    const resolvedTenant = (user as any)?.tenant?.schema_name || (typeof (user as any)?.tenant === 'string' && (user as any)?.tenant !== 'public' ? (user as any).tenant : TenantContextService.getTenantSchema());
+    this.ticketsGateway.emitTicketUpdated(fullTicket, resolvedTenant);
     return fullTicket;
   }
 
@@ -391,7 +394,8 @@ export class TicketsService {
     if (result.affected === 0) {
       throw new NotFoundException(`El ticket con ID "${id}" no existe.`);
     }
-    this.ticketsGateway.emitTicketDeleted(id);
+    const resolvedTenant = TenantContextService.getTenantSchema();
+    this.ticketsGateway.emitTicketDeleted(id, resolvedTenant);
   }
 
   async archive(id: string, archiveTicketDto: ArchiveTicketDto): Promise<Ticket> {
@@ -399,7 +403,8 @@ export class TicketsService {
     ticket.archived = archiveTicketDto.archived;
     const saved = await this.ticketRepository.save(ticket);
     const fullTicket = await this.findOne(saved.id);
-    this.ticketsGateway.emitTicketUpdated(fullTicket);
+    const resolvedTenant = TenantContextService.getTenantSchema();
+    this.ticketsGateway.emitTicketUpdated(fullTicket, resolvedTenant);
     return fullTicket;
   }
 

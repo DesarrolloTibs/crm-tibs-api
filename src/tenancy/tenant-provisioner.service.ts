@@ -612,6 +612,7 @@ export class TenantProvisionerService {
         CREATE INDEX IF NOT EXISTS idx_companies_nombre_norm ON "${schemaName}".companies (public.f_unaccent_immutable(nombre));
         CREATE INDEX IF NOT EXISTS idx_clients_nombre_norm ON "${schemaName}".clients (public.f_unaccent_immutable(nombre));
         CREATE INDEX IF NOT EXISTS idx_clients_apellido_norm ON "${schemaName}".clients (public.f_unaccent_immutable(apellido));
+        CREATE INDEX IF NOT EXISTS idx_opportunities_nombre_norm ON "${schemaName}".opportunities (public.f_unaccent_immutable(nombre_proyecto));
       `);
 
       // c) Sembrado de Datos Predeterminados

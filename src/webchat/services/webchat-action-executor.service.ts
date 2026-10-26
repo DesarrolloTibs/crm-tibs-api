@@ -5,6 +5,8 @@ import {
   normalizeText,
   rankEntitiesByRelevance,
   MIN_ENTITY_MATCH_SCORE,
+  AMBIGUITY_MARGIN_SCORE,
+  EntityScored,
   CRM_ENTITY_STOPWORDS,
   PG_TRANSLATE_EXPRESSION,
 } from './webchat-entity-ranker.util';
@@ -533,7 +535,7 @@ export class WebchatActionExecutorService {
       productIds: resolvedProducts.items.length > 0 ? resolvedProducts.items.map(i => i.productId) : undefined,
       priority: params.priority !== undefined ? Number(params.priority) : 1,
       canal_origen: 'webchat',
-    } as any, { id: user.id } as User);
+    } as any, user);
 
     const clientDisplay = clientEntity ? `${clientEntity.nombre} ${clientEntity.apellido || ''}`.trim() : (companyEntity ? companyEntity.nombre : 'Sin asignar');
     const montoDisplay = new Intl.NumberFormat('es-MX', { style: 'currency', currency: moneda }).format(createdOpp.monto_total || 0);
@@ -590,6 +592,8 @@ export class WebchatActionExecutorService {
 
     let opp: Opportunity | null = null;
 
+    let ambiguousOpportunities: Opportunity[] = [];
+
     if (params.id && this.isValidUuid(params.id)) {
       opp = await this.opportunityRepo.findOne({
         where: { id: params.id },
@@ -598,104 +602,44 @@ export class WebchatActionExecutorService {
     }
 
     if (!opp && searchTitle) {
-      const qb = this.opportunityRepo.createQueryBuilder('opp')
-        .leftJoinAndSelect('opp.stage', 'stage')
-        .leftJoinAndSelect('opp.cliente', 'cliente')
-        .leftJoinAndSelect('opp.company', 'company')
-        .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
-        .leftJoinAndSelect('opp.linea_negocio', 'linea_negocio')
-        .leftJoinAndSelect('opp.tipo_entrega', 'tipo_entrega')
-        .leftJoinAndSelect('opp.licenciamiento', 'licenciamiento')
-        .where('opp.archived = :archived', { archived: false })
-        .andWhere('opp.nombre_proyecto ILIKE :title', { title: `%${searchTitle}%` });
+      const oppResolution = await this.resolveOpportunityResolution(searchTitle, user, isExec, companyHint, clientHint);
+      opp = oppResolution.item;
+      ambiguousOpportunities = oppResolution.ambiguousCandidates;
+    }
 
-      if (isExec) {
-        qb.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
-      }
+    // Si hubo múltiples coincidencias ambiguas, solicitar confirmación al usuario
+    if (!opp && ambiguousOpportunities.length > 1) {
+      const optionsList = ambiguousOpportunities.map((o, idx) => {
+        const clienteNom = o.cliente ? `${o.cliente.nombre || ''} ${o.cliente.apellido || ''}`.trim() : (o.empresa || 'Sin cliente');
+        const etapaNom = o.stage?.strname || 'Activa';
+        const montoStr = new Intl.NumberFormat('es-MX', { style: 'currency', currency: o.moneda || 'MXN' }).format(Number(o.monto_total) || 0);
+        return `${idx + 1}. **${o.nombre_proyecto}** (${clienteNom} — ${montoStr} [${etapaNom}])`;
+      }).join('\n');
 
-      if (companyHint || clientHint) {
-        const hint = companyHint || clientHint;
-        qb.andWhere(
-          '(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint OR CONCAT(cliente.nombre, \' \', COALESCE(cliente.apellido, \'\')) ILIKE :hint)',
-          { hint: `%${hint}%` }
-        );
-      }
-
-      opp = await qb.orderBy('opp.createdAt', 'DESC').getOne();
-
-      // Si no encontró con el filtro combinado de empresa, intentar solo por título
-      if (!opp && (companyHint || clientHint)) {
-        const qbFallback = this.opportunityRepo.createQueryBuilder('opp')
-          .leftJoinAndSelect('opp.stage', 'stage')
-          .leftJoinAndSelect('opp.cliente', 'cliente')
-          .leftJoinAndSelect('opp.company', 'company')
-          .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
-          .where('opp.archived = :archived', { archived: false })
-          .andWhere('opp.nombre_proyecto ILIKE :title', { title: `%${searchTitle}%` });
-
-        if (isExec) {
-          qbFallback.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
-        }
-        opp = await qbFallback.orderBy('opp.createdAt', 'DESC').getOne();
-      }
-
-      // Si aún no encontró, buscar ignorando espacios intermedios (ej. "redmagic" -> "Red Magic")
-      if (!opp) {
-        const compactSearch = searchTitle.replace(/\s+/g, '').toLowerCase();
-        if (compactSearch.length >= 3) {
-          const qbCompact = this.opportunityRepo.createQueryBuilder('opp')
-            .leftJoinAndSelect('opp.stage', 'stage')
-            .leftJoinAndSelect('opp.cliente', 'cliente')
-            .leftJoinAndSelect('opp.company', 'company')
-            .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
-            .where('opp.archived = :archived', { archived: false })
-            .andWhere("REPLACE(LOWER(opp.nombre_proyecto), ' ', '') ILIKE :compact", { compact: `%${compactSearch}%` });
-
-          if (isExec) {
-            qbCompact.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
-          }
-          opp = await qbCompact.orderBy('opp.createdAt', 'DESC').getOne();
-        }
-      }
-
-      // Si aún no encontró, buscar por palabras clave significativas (ej. "Magic", "Red")
-      if (!opp) {
-        const stopWords = new Set(['la', 'el', 'los', 'las', 'de', 'del', 'para', 'en', 'con', 'oportunidad', 'cotizacion', 'cotización', 'proyecto']);
-        const tokens: string[] = searchTitle.split(/\s+/).map((t: string) => t.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]/g, '').trim()).filter((t: string) => t.length >= 3 && !stopWords.has(t.toLowerCase()));
-        if (tokens.length > 0) {
-          const qbTokens = this.opportunityRepo.createQueryBuilder('opp')
-            .leftJoinAndSelect('opp.stage', 'stage')
-            .leftJoinAndSelect('opp.cliente', 'cliente')
-            .leftJoinAndSelect('opp.company', 'company')
-            .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
-            .where('opp.archived = :archived', { archived: false });
-
-          if (isExec) {
-            qbTokens.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
-          }
-          const conditions = tokens.map((_: string, i: number) => `opp.nombre_proyecto ILIKE :tok${i}`).join(' OR ');
-          const paramsObj: Record<string, string> = {};
-          tokens.forEach((tok: string, i: number) => { paramsObj[`tok${i}`] = `%${tok}%`; });
-          qbTokens.andWhere(`(${conditions})`, paramsObj);
-
-          if (companyHint || clientHint) {
-            const hint = companyHint || clientHint;
-            qbTokens.andWhere('(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint OR CONCAT(cliente.nombre, \' \', COALESCE(cliente.apellido, \'\')) ILIKE :hint)', { hint: `%${hint}%` });
-          }
-          opp = await qbTokens.orderBy('opp.createdAt', 'DESC').getOne();
-        }
-      }
+      return {
+        answer: `Encontré varias oportunidades activas que coinciden con "${searchTitle}". ¿A cuál de ellas te refieres?\n\n${optionsList}\n\nPor favor, indícame el nombre exacto o número de la oportunidad para aplicar los cambios con seguridad.`,
+        data: ambiguousOpportunities.map(o => ({
+          'ID': o.id,
+          'Proyecto': o.nombre_proyecto,
+          'Cliente/Empresa': o.empresa || (o.cliente ? `${o.cliente.nombre || ''} ${o.cliente.apellido || ''}`.trim() : 'N/A'),
+          'Monto': new Intl.NumberFormat('es-MX', { style: 'currency', currency: o.moneda || 'MXN' }).format(Number(o.monto_total) || 0),
+          'Etapa': o.stage?.strname || 'Activa',
+        })),
+      };
     }
 
     // Si aún no encuentra y se especificó empresa/cliente, buscar la más reciente para esa cuenta
     if (!opp && (companyHint || clientHint)) {
-      const hint = companyHint || clientHint;
+      const hint = (companyHint || clientHint).trim();
       const qbAccount = this.opportunityRepo.createQueryBuilder('opp')
         .leftJoinAndSelect('opp.stage', 'stage')
         .leftJoinAndSelect('opp.cliente', 'cliente')
         .leftJoinAndSelect('opp.company', 'company')
         .where('opp.archived = :archived', { archived: false })
-        .andWhere('(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint OR CONCAT(cliente.nombre, \' \', COALESCE(cliente.apellido, \'\')) ILIKE :hint)', { hint: `%${hint}%` });
+        .andWhere(
+          '(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint OR CONCAT(cliente.nombre, \' \', COALESCE(cliente.apellido, \'\')) ILIKE :hint OR public.f_unaccent_immutable(opp.empresa) ILIKE public.f_unaccent_immutable(:hint) OR public.f_unaccent_immutable(company.nombre) ILIKE public.f_unaccent_immutable(:hint))',
+          { hint: `%${hint}%` }
+        );
 
       if (isExec) {
         qbAccount.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
@@ -884,7 +828,7 @@ export class WebchatActionExecutorService {
       };
     }
 
-    const updatedOpp = await this.opportunitiesService.update(opp.id, updateData, { id: user.id } as User);
+    const updatedOpp = await this.opportunitiesService.update(opp.id, updateData, user);
     const montoDisplay = new Intl.NumberFormat('es-MX', { style: 'currency', currency: updatedOpp.moneda || 'MXN' }).format(updatedOpp.monto_total || 0);
     const montoLicDisplay = updatedOpp.monto_licenciamiento ? `\n- Monto ${customLabels.licenciamiento}: ` + new Intl.NumberFormat('es-MX', { style: 'currency', currency: updatedOpp.moneda || 'MXN' }).format(updatedOpp.monto_licenciamiento) : '';
     const montoServDisplay = updatedOpp.monto_servicios ? `\n- Monto ${customLabels.tipoEntrega}: ` + new Intl.NumberFormat('es-MX', { style: 'currency', currency: updatedOpp.moneda || 'MXN' }).format(updatedOpp.monto_servicios) : '';
@@ -1095,7 +1039,7 @@ export class WebchatActionExecutorService {
     if (params.opportunityId && this.isValidUuid(params.opportunityId)) {
       opportunityId = params.opportunityId;
     } else if (params.oportunidad) {
-      const foundOpp = await this.opportunityRepo.findOne({ where: { nombre_proyecto: ILike(`%${params.oportunidad}%`) } });
+      const foundOpp = await this.resolveOpportunityByTitle(String(params.oportunidad), user, false, rawCompanyHint, rawClientHint);
       if (foundOpp) {
         opportunityId = foundOpp.id;
         if (!clientId && foundOpp.cliente_id) clientId = foundOpp.cliente_id;
@@ -1243,7 +1187,7 @@ export class WebchatActionExecutorService {
       opportunityId: opportunityId || null,
       contactIds: params.contactIds || undefined,
       reminder,
-    } as any, { id: targetUserId } as User);
+    } as any, targetUserId === user.id ? user : ({ ...user, id: targetUserId } as User));
 
     const typeName = createdActivity?.typeActivity?.strname || resolvedType?.name || 'Actividad';
     const dateFormatted = createdActivity?.date
@@ -1502,7 +1446,7 @@ export class WebchatActionExecutorService {
       };
     }
 
-    const updated = await this.activitiesService.update(activity.id, updateDto, { id: user.id } as User);
+    const updated = await this.activitiesService.update(activity.id, updateDto, user);
     const dateFormatted = new Date(updated.date).toLocaleString('es-MX', {
       timeZone: this.getTimezone(),
       dateStyle: 'full',
@@ -1614,7 +1558,7 @@ export class WebchatActionExecutorService {
       contactName: clientEntity ? `${clientEntity.nombre} ${clientEntity.apellido || ''}`.trim() : (params.contacto || undefined),
       contactEmail: clientEntity?.correo || params.correo || undefined,
       contactPhone: clientEntity?.telefono || params.telefono || undefined,
-    } as any, { id: user.id } as User);
+    } as any, user);
 
     const priorityNames = ['Baja', 'Normal', 'Media', 'Alta'];
     const priorityDisplay = priorityNames[createdTicket.priority ?? 1] || 'Normal';
@@ -1865,6 +1809,219 @@ export class WebchatActionExecutorService {
   async resolveTypeActivityId(hint?: string | number, fallbackText?: string): Promise<number> {
     const resolved = await this.resolveTypeActivity(hint, fallbackText);
     return resolved ? resolved.id : 1;
+  }
+
+  /**
+   * Resuelve una oportunidad por título retornando tanto el resultado unívoco como
+   * posibles candidatos ambiguos para solicitar confirmación si la coincidencia no es contundente.
+   */
+  async resolveOpportunityResolution(
+    searchTitle: string,
+    user: User,
+    isExec: boolean,
+    companyHint?: string,
+    clientHint?: string,
+  ): Promise<{
+    item: Opportunity | null;
+    ambiguousCandidates: Opportunity[];
+  }> {
+    if (!searchTitle || !searchTitle.trim()) {
+      return { item: null, ambiguousCandidates: [] };
+    }
+
+    const trimmed = searchTitle.replace(/^["']|["']$/g, '').trim();
+
+    const fetchCandidates = async (builder: any): Promise<Opportunity[]> => {
+      builder.orderBy('opp.createdAt', 'DESC');
+      let res: Opportunity[] = [];
+      if (typeof builder.getMany === 'function') {
+        res = await builder.getMany();
+      }
+      if ((!res || res.length === 0) && typeof builder.getOne === 'function') {
+        const single = await builder.getOne();
+        if (single) res = [single];
+      }
+      return res || [];
+    };
+
+    const evaluateScoredCandidates = (candidates: Opportunity[]): { item: Opportunity | null; ambiguousCandidates: Opportunity[] } => {
+      if (!candidates || candidates.length === 0) return { item: null, ambiguousCandidates: [] };
+      if (candidates.length === 1) return { item: candidates[0], ambiguousCandidates: [] };
+
+      const ranked = rankEntitiesByRelevance(candidates, trimmed, (o: Opportunity) => [
+        o.nombre_proyecto,
+        o.empresa,
+        o.cliente ? `${o.cliente.nombre || ''} ${o.cliente.apellido || ''}`.trim() : null,
+      ]);
+
+      if (ranked.length === 0) {
+        return { item: candidates[0], ambiguousCandidates: [] };
+      }
+
+      const best = ranked[0];
+      const second = ranked[1];
+
+      // Si el primer candidato tiene un match contundente y supera claramente al segundo
+      if (best && second) {
+        const diff = best.score - second.score;
+        // Si ambos están muy parejos en relevancia (diferencia menor al umbral de ambigüedad)
+        if (diff < AMBIGUITY_MARGIN_SCORE && second.score >= 500) {
+          return {
+            item: null,
+            ambiguousCandidates: ranked.slice(0, 4).map(r => r.item),
+          };
+        }
+      }
+
+      return { item: best.item, ambiguousCandidates: [] };
+    };
+
+    // 1. Buscar en BD usando coincidencia insensible a acentos y mayúsculas
+    const qb = this.opportunityRepo.createQueryBuilder('opp')
+      .leftJoinAndSelect('opp.stage', 'stage')
+      .leftJoinAndSelect('opp.cliente', 'cliente')
+      .leftJoinAndSelect('opp.company', 'company')
+      .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
+      .leftJoinAndSelect('opp.linea_negocio', 'linea_negocio')
+      .leftJoinAndSelect('opp.tipo_entrega', 'tipo_entrega')
+      .leftJoinAndSelect('opp.licenciamiento', 'licenciamiento')
+      .where('opp.archived = :archived', { archived: false })
+      .andWhere(
+        '(opp.nombre_proyecto ILIKE :title OR public.f_unaccent_immutable(opp.nombre_proyecto) ILIKE public.f_unaccent_immutable(:title))',
+        { title: `%${trimmed}%` }
+      );
+
+    if (isExec) {
+      qb.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
+    }
+
+    if (companyHint || clientHint) {
+      const hint = (companyHint || clientHint)!.trim();
+      qb.andWhere(
+        '(opp.empresa ILIKE :hint OR company.nombre ILIKE :hint OR cliente.nombre ILIKE :hint OR CONCAT(cliente.nombre, \' \', COALESCE(cliente.apellido, \'\')) ILIKE :hint OR public.f_unaccent_immutable(opp.empresa) ILIKE public.f_unaccent_immutable(:hint) OR public.f_unaccent_immutable(company.nombre) ILIKE public.f_unaccent_immutable(:hint))',
+        { hint: `%${hint}%` }
+      );
+    }
+
+    const candidates = await fetchCandidates(qb);
+    if (candidates.length > 0) {
+      const evalRes = evaluateScoredCandidates(candidates);
+      if (evalRes.item || evalRes.ambiguousCandidates.length > 0) {
+        return evalRes;
+      }
+    }
+
+    // 2. Si no encontró con el filtro combinado de empresa/cliente, reintentar solo por título
+    if (companyHint || clientHint) {
+      const qbFallback = this.opportunityRepo.createQueryBuilder('opp')
+        .leftJoinAndSelect('opp.stage', 'stage')
+        .leftJoinAndSelect('opp.cliente', 'cliente')
+        .leftJoinAndSelect('opp.company', 'company')
+        .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
+        .leftJoinAndSelect('opp.linea_negocio', 'linea_negocio')
+        .leftJoinAndSelect('opp.tipo_entrega', 'tipo_entrega')
+        .leftJoinAndSelect('opp.licenciamiento', 'licenciamiento')
+        .where('opp.archived = :archived', { archived: false })
+        .andWhere(
+          '(opp.nombre_proyecto ILIKE :title OR public.f_unaccent_immutable(opp.nombre_proyecto) ILIKE public.f_unaccent_immutable(:title))',
+          { title: `%${trimmed}%` }
+        );
+
+      if (isExec) {
+        qbFallback.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
+      }
+
+      const fbCandidates = await fetchCandidates(qbFallback);
+      if (fbCandidates.length > 0) {
+        const evalRes = evaluateScoredCandidates(fbCandidates);
+        if (evalRes.item || evalRes.ambiguousCandidates.length > 0) {
+          return evalRes;
+        }
+      }
+    }
+
+    // 3. Fallback ignorando espacios intermedios y acentos (ej. "cotizacion4" o "redmagic")
+    const compactSearch = normalizeText(trimmed).replace(/\s+/g, '');
+    if (compactSearch.length >= 2) {
+      const qbCompact = this.opportunityRepo.createQueryBuilder('opp')
+        .leftJoinAndSelect('opp.stage', 'stage')
+        .leftJoinAndSelect('opp.cliente', 'cliente')
+        .leftJoinAndSelect('opp.company', 'company')
+        .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
+        .leftJoinAndSelect('opp.linea_negocio', 'linea_negocio')
+        .leftJoinAndSelect('opp.tipo_entrega', 'tipo_entrega')
+        .leftJoinAndSelect('opp.licenciamiento', 'licenciamiento')
+        .where('opp.archived = :archived', { archived: false })
+        .andWhere(
+          "REPLACE(public.f_unaccent_immutable(opp.nombre_proyecto), ' ', '') ILIKE :compact",
+          { compact: `%${compactSearch}%` }
+        );
+
+      if (isExec) {
+        qbCompact.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
+      }
+
+      const compactCandidates = await fetchCandidates(qbCompact);
+      if (compactCandidates.length > 0) {
+        const evalRes = evaluateScoredCandidates(compactCandidates);
+        if (evalRes.item || evalRes.ambiguousCandidates.length > 0) {
+          return evalRes;
+        }
+      }
+    }
+
+    // 4. Fallback por tokens significativos o números aislados (ej. "4" en "Cotización 4")
+    const stopWords = new Set(['la', 'el', 'los', 'las', 'de', 'del', 'para', 'en', 'con', 'oportunidad', 'proyecto']);
+    const rawTokens = trimmed.split(/\s+/).map(t => t.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]/g, '').trim());
+    const tokens = rawTokens.filter(t => (t.length >= 2 || /^\d+$/.test(t)) && !stopWords.has(t.toLowerCase()));
+
+    if (tokens.length > 0) {
+      const qbTokens = this.opportunityRepo.createQueryBuilder('opp')
+        .leftJoinAndSelect('opp.stage', 'stage')
+        .leftJoinAndSelect('opp.cliente', 'cliente')
+        .leftJoinAndSelect('opp.company', 'company')
+        .leftJoinAndSelect('opp.opportunityProducts', 'opportunityProducts')
+        .leftJoinAndSelect('opp.linea_negocio', 'linea_negocio')
+        .leftJoinAndSelect('opp.tipo_entrega', 'tipo_entrega')
+        .leftJoinAndSelect('opp.licenciamiento', 'licenciamiento')
+        .where('opp.archived = :archived', { archived: false });
+
+      if (isExec) {
+        qbTokens.andWhere('opp.ejecutivo_id = :userId', { userId: user.id });
+      }
+
+      const conditions = tokens.map((_, i) =>
+        `(opp.nombre_proyecto ILIKE :tok${i} OR public.f_unaccent_immutable(opp.nombre_proyecto) ILIKE public.f_unaccent_immutable(:tok${i}))`
+      ).join(' OR ');
+
+      const paramsObj: Record<string, string> = {};
+      tokens.forEach((tok, i) => { paramsObj[`tok${i}`] = `%${tok}%`; });
+      qbTokens.andWhere(`(${conditions})`, paramsObj);
+
+      const tokenCandidates = await fetchCandidates(qbTokens);
+      if (tokenCandidates.length > 0) {
+        const evalRes = evaluateScoredCandidates(tokenCandidates);
+        if (evalRes.item || evalRes.ambiguousCandidates.length > 0) {
+          return evalRes;
+        }
+      }
+    }
+
+    return { item: null, ambiguousCandidates: [] };
+  }
+
+  /**
+   * Wrapper retrocompatible que devuelve la oportunidad unívoca si no hay ambigüedad.
+   */
+  async resolveOpportunityByTitle(
+    searchTitle: string,
+    user: User,
+    isExec: boolean,
+    companyHint?: string,
+    clientHint?: string,
+  ): Promise<Opportunity | null> {
+    const res = await this.resolveOpportunityResolution(searchTitle, user, isExec, companyHint, clientHint);
+    return res.item;
   }
 
   /**

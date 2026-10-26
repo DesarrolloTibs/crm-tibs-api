@@ -51,6 +51,7 @@ export class WebchatService {
     userRole: string,
     username: string,
     conversationHistory?: ConversationHistoryMessage[],
+    fullUser?: User,
   ): Promise<WebchatResponse> {
     const turnAccumulator: TurnTokenAccumulator = {
       promptTokens: 0,
@@ -70,7 +71,7 @@ export class WebchatService {
     let classification: any = null;
 
     try {
-      const userObj = { id: userId, role: userRole as Role, username } as User;
+      const userObj = fullUser || ({ id: userId, role: userRole as Role, username } as User);
 
       // 1. Construir historial de conversación reciente para contexto
       let historyText = '';

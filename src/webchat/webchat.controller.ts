@@ -49,6 +49,7 @@ export class WebchatController {
       user.role,
       user.username,
       body.conversationHistory,
+      user,
     );
   }
 
