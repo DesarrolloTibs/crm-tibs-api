@@ -603,6 +603,15 @@ export class TenantProvisionerService {
           CONSTRAINT pk_transaction_history PRIMARY KEY (id)
         );
 
+        -- Índices funcionales inmutables para resolución ortográfica y de acentos
+        CREATE OR REPLACE FUNCTION public.f_unaccent_immutable(text)
+        RETURNS text AS $$
+          SELECT TRANSLATE(LOWER($1), 'áéíóúÁÉÍÓÚñÑüÜ', 'aeiouaeiounnuu');
+        $$ LANGUAGE sql IMMUTABLE STRICT;
+
+        CREATE INDEX IF NOT EXISTS idx_companies_nombre_norm ON "${schemaName}".companies (public.f_unaccent_immutable(nombre));
+        CREATE INDEX IF NOT EXISTS idx_clients_nombre_norm ON "${schemaName}".clients (public.f_unaccent_immutable(nombre));
+        CREATE INDEX IF NOT EXISTS idx_clients_apellido_norm ON "${schemaName}".clients (public.f_unaccent_immutable(apellido));
       `);
 
       // c) Sembrado de Datos Predeterminados

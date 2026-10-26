@@ -131,3 +131,26 @@ Cada vez que se aprovisiona una organización, se crea su propio esquema Postgre
 1. **Identificadores UUID:** Todas las tablas de negocio en esquemas de inquilino utilizan identificadores únicos universales generados por la función nativa `gen_random_uuid()`.
 2. **Timestamps con Zona Horaria:** Todas las columnas de fecha utilizan `timestamptz` para garantizar consistencia horaria en entornos multi-región.
 3. **Restricciones de Integridad:** Se aplican reglas `ON DELETE CASCADE` para hijos directos (ej. partidas de oportunidad) y `ON DELETE SET NULL` para relaciones secundarias (ej. empresa en cliente).
+
+
+---
+
+## 8. Índices Funcionales de Alto Rendimiento para Resolución de Entidades (Unaccent / B-Tree)
+
+Para optimizar la búsqueda difusa e insensible a acentos en el Webchat Interno y Capa Semántica, se cuenta con una función SQL inmutable centralizada en el esquema `public` e índices funcionales B-Tree en cada esquema de inquilino:
+
+```sql
+-- 1. Función inmutable central en public
+CREATE OR REPLACE FUNCTION public.f_unaccent_immutable(text)
+RETURNS text AS $$
+  SELECT TRANSLATE(LOWER($1), 'áéíóúÁÉÍÓÚñÑüÜ', 'aeiouaeiounnuu');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+-- 2. Índices funcionales por esquema de tenant
+CREATE INDEX IF NOT EXISTS idx_companies_nombre_norm ON "${schema}".companies (public.f_unaccent_immutable(nombre));
+CREATE INDEX IF NOT EXISTS idx_clients_nombre_norm ON "${schema}".clients (public.f_unaccent_immutable(nombre));
+CREATE INDEX IF NOT EXISTS idx_clients_apellido_norm ON "${schema}".clients (public.f_unaccent_immutable(apellido));
+```
+
+* **Alineación con TypeORM:** Las consultas en `WebchatActionExecutorService` y `WebchatEntityMatcherService` emplean el helper `PG_TRANSLATE_EXPRESSION(alias)`, que invoca `public.f_unaccent_immutable(...)`. Esto permite que el optimizador de costos de PostgreSQL utilice de inmediato los índices funcionales B-Tree sin recurrir a Sequential Scans.
+* **Aprovisionamiento Automático:** Tanto la migración inicial en `AppModule.onModuleInit` como el servicio de aprovisionamiento `TenantProvisionerService.provisionTenant` generan automáticamente estos índices para todos los tenants existentes y futuros.

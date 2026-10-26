@@ -4,6 +4,11 @@ import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { WebchatCubeExecutorService } from './webchat-cube-executor.service';
 import { WebchatSecurityService } from './webchat-security.service';
 import { CubeQuery, EntityMatchItem } from '../interfaces/webchat.interfaces';
+import {
+  normalizeText,
+  rankEntitiesByRelevance,
+  PG_TRANSLATE_EXPRESSION,
+} from './webchat-entity-ranker.util';
 
 @Injectable()
 export class WebchatEntityMatcherService {
@@ -197,14 +202,20 @@ export class WebchatEntityMatcherService {
     const rawTerms = searchTerm.trim().split(/\s+/).filter(t => t.length >= 2);
     if (rawTerms.length === 0) return [];
 
+    const normTerms = rawTerms.map(t => normalizeText(t)).filter(t => t.length >= 2);
+    const searchTermsToUse = normTerms.length > 0 ? normTerms : rawTerms;
+
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     const isExec = this.securityService.isExecutive(userRole);
     const matches: EntityMatchItem[] = [];
+    const trCol = PG_TRANSLATE_EXPRESSION;
 
     try {
-      // 1. Buscar en Clientes (nombre, apellido, correo, empresa)
-      const clientConditions = rawTerms.map((_, i) => `(nombre ILIKE $${i + 1} OR apellido ILIKE $${i + 1} OR correo ILIKE $${i + 1} OR empresa ILIKE $${i + 1})`).join(' AND ');
-      const clientParams = rawTerms.map(t => `%${t}%`);
+      // 1. Buscar en Clientes (nombre, apellido, correo, empresa) con inmunidad a acentos
+      const clientConditions = searchTermsToUse.map((_, i) =>
+        `(${trCol('nombre')} ILIKE $${i + 1} OR ${trCol('apellido')} ILIKE $${i + 1} OR correo ILIKE $${i + 1} OR ${trCol('empresa')} ILIKE $${i + 1})`
+      ).join(' AND ');
+      const clientParams = searchTermsToUse.map(t => `%${t}%`);
       const clientQuery = `
         SELECT id, nombre, apellido, correo, telefono, empresa, category, estatus
         FROM "${tenantSchema}".clients
@@ -236,9 +247,11 @@ export class WebchatEntityMatcherService {
         });
       }
 
-      // 2. Buscar en Empresas (nombre, correo, telefono, website)
-      const compConditions = rawTerms.map((_, i) => `(nombre ILIKE $${i + 1} OR correo ILIKE $${i + 1} OR telefono ILIKE $${i + 1} OR website ILIKE $${i + 1})`).join(' AND ');
-      const compParams = rawTerms.map(t => `%${t}%`);
+      // 2. Buscar en Empresas (nombre, correo, telefono, website) con inmunidad a acentos
+      const compConditions = searchTermsToUse.map((_, i) =>
+        `(${trCol('nombre')} ILIKE $${i + 1} OR correo ILIKE $${i + 1} OR telefono ILIKE $${i + 1} OR website ILIKE $${i + 1})`
+      ).join(' AND ');
+      const compParams = searchTermsToUse.map(t => `%${t}%`);
       const compQuery = `
         SELECT id, nombre, correo, telefono, website, direccion, estatus
         FROM "${tenantSchema}".companies
@@ -271,9 +284,11 @@ export class WebchatEntityMatcherService {
         });
       }
 
-      // 3. Buscar en Productos (nombre, descripcion)
-      const prodConditions = rawTerms.map((_, i) => `(nombre ILIKE $${i + 1} OR descripcion ILIKE $${i + 1})`).join(' AND ');
-      const prodParams = rawTerms.map(t => `%${t}%`);
+      // 3. Buscar en Productos (nombre, descripcion) con inmunidad a acentos
+      const prodConditions = searchTermsToUse.map((_, i) =>
+        `(${trCol('nombre')} ILIKE $${i + 1} OR ${trCol('descripcion')} ILIKE $${i + 1})`
+      ).join(' AND ');
+      const prodParams = searchTermsToUse.map(t => `%${t}%`);
       const prodQuery = `
         SELECT id, nombre, descripcion, "precioBase", "unidadMedida", status
         FROM "${tenantSchema}".products
@@ -306,8 +321,10 @@ export class WebchatEntityMatcherService {
 
       // 4. Buscar en Usuarios (Solo SuperAdmin y Admin)
       if (!isExec) {
-        const userConditions = rawTerms.map((_, i) => `(username ILIKE $${i + 1} OR email ILIKE $${i + 1})`).join(' AND ');
-        const userParams = rawTerms.map(t => `%${t}%`);
+        const userConditions = searchTermsToUse.map((_, i) =>
+          `(${trCol('username')} ILIKE $${i + 1} OR email ILIKE $${i + 1})`
+        ).join(' AND ');
+        const userParams = searchTermsToUse.map(t => `%${t}%`);
         const userQuery = `
           SELECT id, username, email, role, "isActive"
           FROM "${tenantSchema}".users
@@ -337,9 +354,9 @@ export class WebchatEntityMatcherService {
         }
       }
 
-      // 5. Buscar en Oportunidades
-      const oppConditions = rawTerms.map((_, i) => `"nombreProyecto" ILIKE $${i + 1}`).join(' AND ');
-      const oppParams: any[] = rawTerms.map(t => `%${t}%`);
+      // 5. Buscar en Oportunidades con inmunidad a acentos
+      const oppConditions = searchTermsToUse.map((_, i) => `${trCol('"nombreProyecto"')} ILIKE $${i + 1}`).join(' AND ');
+      const oppParams: any[] = searchTermsToUse.map(t => `%${t}%`);
       let oppQuery = `
         SELECT id, "nombreProyecto", "montoTotal", moneda, "clienteId", "ejecutivoId"
         FROM "${tenantSchema}".opportunities
@@ -371,9 +388,11 @@ export class WebchatEntityMatcherService {
         });
       }
 
-      // 6. Buscar en Tickets
-      const ticketConditions = rawTerms.map((_, i) => `(titulo ILIKE $${i + 1} OR "contactName" ILIKE $${i + 1})`).join(' AND ');
-      const ticketParams: any[] = rawTerms.map(t => `%${t}%`);
+      // 6. Buscar en Tickets con inmunidad a acentos
+      const ticketConditions = searchTermsToUse.map((_, i) =>
+        `(${trCol('titulo')} ILIKE $${i + 1} OR ${trCol('"contactName"')} ILIKE $${i + 1})`
+      ).join(' AND ');
+      const ticketParams: any[] = searchTermsToUse.map(t => `%${t}%`);
       let ticketQuery = `
         SELECT id, "ticketNumber", titulo, "tipoIncidencia", "contactName", "responsableId"
         FROM "${tenantSchema}".tickets
@@ -409,6 +428,22 @@ export class WebchatEntityMatcherService {
 
     } catch (err: any) {
       this.logger.warn(`[EntityMatcher - Fuzzy Fallback] Error en búsqueda transversal: ${err.message}`);
+    }
+
+    // 7. Ordenar todos los matches por relevancia semántica respecto a searchTerm (preservando todos los resultados)
+    if (matches.length > 1) {
+      const scoredMatches = rankEntitiesByRelevance(
+        matches,
+        searchTerm,
+        (m: EntityMatchItem) => [
+          m.title,
+          m.subtitle || '',
+          String(m.raw?.['Empresas.nombre'] || m.raw?.['Clientes.nombre'] || m.raw?.['Productos.nombre'] || ''),
+        ],
+      );
+      const scoreMap = new Map<string, number>();
+      scoredMatches.forEach(s => scoreMap.set(s.item.id, s.score));
+      matches.sort((a, b) => (scoreMap.get(b.id) || 0) - (scoreMap.get(a.id) || 0));
     }
 
     return matches;

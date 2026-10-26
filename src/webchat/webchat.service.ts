@@ -388,7 +388,7 @@ Genera tu respuesta JSON:`;
 
           const clientOrCompMatches = fallbackMatches.filter(fm => fm.entityType === 'Cliente' || fm.entityType === 'Empresa');
           for (const match of clientOrCompMatches) {
-            const cname = match.title.split(' ')[0] || match.title;
+            const cname = match.title;
             orFilters.push({
               member: 'Oportunidades.cuentaOCliente',
               operator: 'contains',

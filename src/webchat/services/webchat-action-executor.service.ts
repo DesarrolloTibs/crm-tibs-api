@@ -1,6 +1,13 @@
 import { Injectable, Logger, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike } from 'typeorm';
+import { Repository, ILike, Raw } from 'typeorm';
+import {
+  normalizeText,
+  rankEntitiesByRelevance,
+  MIN_ENTITY_MATCH_SCORE,
+  CRM_ENTITY_STOPWORDS,
+  PG_TRANSLATE_EXPRESSION,
+} from './webchat-entity-ranker.util';
 import { OpportunitiesService } from '../../opportunities/opportunities.service';
 import { ActivitiesService } from '../../activities/activities.service';
 import { TicketsService } from '../../tickets/tickets.service';
@@ -381,14 +388,15 @@ export class WebchatActionExecutorService {
       clientEntity = await this.clientRepo.findOne({ where: { id: clienteId } });
       if (clientEntity?.companyId) companyId = clientEntity.companyId;
     } else if (oppClientHint) {
-      clientEntity = await this.resolveClient(oppClientHint);
-      if (clientEntity) {
-        clienteId = clientEntity.id;
-        if (clientEntity.companyId) companyId = clientEntity.companyId;
-      } else {
-        // Fallback: Si el usuario dijo "cliente X" pero X está registrado como Empresa
-        companyEntity = await this.resolveCompany(oppClientHint);
-        if (companyEntity) companyId = companyEntity.id;
+      const resolved = await this.resolveClientOrCompany(oppClientHint);
+      if (resolved.company) {
+        companyEntity = resolved.company;
+        companyId = resolved.company.id;
+      }
+      if (resolved.client) {
+        clientEntity = resolved.client;
+        clienteId = resolved.client.id;
+        if (!companyId && clientEntity.companyId) companyId = clientEntity.companyId;
       }
     }
 
@@ -396,15 +404,14 @@ export class WebchatActionExecutorService {
       companyId = params.companyId;
       companyEntity = await this.companyRepo.findOne({ where: { id: companyId } });
     } else if (!companyId && oppCompanyHint) {
-      companyEntity = await this.resolveCompany(oppCompanyHint);
-      if (companyEntity) {
-        companyId = companyEntity.id;
-      } else if (!clientEntity) {
-        clientEntity = await this.resolveClient(oppCompanyHint);
-        if (clientEntity) {
-          clienteId = clientEntity.id;
-          if (clientEntity.companyId) companyId = clientEntity.companyId;
-        }
+      const resolved = await this.resolveClientOrCompany(oppCompanyHint);
+      if (resolved.company) {
+        companyEntity = resolved.company;
+        companyId = resolved.company.id;
+      } else if (resolved.client && !clientEntity) {
+        clientEntity = resolved.client;
+        clienteId = resolved.client.id;
+        if (clientEntity.companyId) companyId = clientEntity.companyId;
       }
     }
 
@@ -1069,20 +1076,18 @@ export class WebchatActionExecutorService {
         companyId = clientEntity.companyId;
       }
     } else if (rawClientHint) {
-      clientEntity = await this.resolveClient(rawClientHint);
-      if (clientEntity) {
+      const resolved = await this.resolveClientOrCompany(rawClientHint);
+      if (resolved.client) {
+        clientEntity = resolved.client;
         clientId = clientEntity.id;
         // Solo adoptar la empresa del contacto si el usuario NO especificó una empresa distinta
         if (!companyId && clientEntity.companyId) {
           companyId = clientEntity.companyId;
         }
-      } else if (!companyId) {
+      } else if (resolved.company && !companyId) {
         // Fallback: Si el usuario dijo "cliente X" pero X es en realidad una Empresa registrada (ej. "cliente universidad metropolitana")
-        const fallbackComp = await this.resolveCompany(rawClientHint);
-        if (fallbackComp) {
-          companyEntity = fallbackComp;
-          companyId = fallbackComp.id;
-        }
+        companyEntity = resolved.company;
+        companyId = resolved.company.id;
       }
     }
 
@@ -1879,78 +1884,230 @@ export class WebchatActionExecutorService {
     }
   }
 
-  async resolveClient(hint: string): Promise<Client | null> {
-    if (!hint) return null;
+  async resolveClientWithScore(hint: string): Promise<{ item: Client | null; score: number }> {
+    if (!hint) return { item: null, score: 0 };
     const clean = hint.replace(/^["']|["']$/g, '').trim();
-    if (!clean) return null;
+    if (!clean) return { item: null, score: 0 };
     if (this.isValidUuid(clean)) {
-      return this.clientRepo.findOne({ where: { id: clean } });
+      const c = await this.clientRepo.findOne({ where: { id: clean } }).catch(() => null);
+      return { item: c, score: c ? 10000 : 0 };
     }
-    // 1. Coincidencia directa completa en nombre, apellido, correo, telefono o empresa
+
+    const cleanNorm = normalizeText(clean);
+    const words = cleanNorm.split(/\s+/).filter(w => w.length >= 2);
+    const nonStopWords = words.filter(w => !CRM_ENTITY_STOPWORDS.has(w));
+    const wordsToSearch = nonStopWords.length > 0 ? nonStopWords : words;
+
+    // 1. Coincidencia directa completa
     const direct = await this.clientRepo.findOne({
       where: [
         { nombre: ILike(`%${clean}%`) },
         { apellido: ILike(`%${clean}%`) },
         { correo: ILike(`%${clean}%`) },
         { telefono: ILike(`%${clean}%`) },
-        { empresa: ILike(`%${clean}%`) },
       ],
-    });
-    if (direct) return direct;
+    }).catch(() => null);
 
-    // 2. Si son múltiples palabras (ej. "Guillermo Requema"), buscar nombre y apellido conjuntamente
-    const words = clean.split(/\s+/).filter(w => w.length > 1);
-    if (words.length > 1) {
-      const firstName = words[0];
-      const rest = words.slice(1).join(' ');
-      const match = await this.clientRepo.findOne({
-        where: [
-          { nombre: ILike(`%${firstName}%`), apellido: ILike(`%${rest}%`) },
-          { nombre: ILike(`%${rest}%`), apellido: ILike(`%${firstName}%`) },
-        ],
-      });
-      if (match) return match;
-    } else if (words.length === 1) {
-      // Si el usuario proporcionó una única palabra (ej. "Guillermo"), buscar por nombre o apellido
-      const matchSingle = await this.clientRepo.findOne({
-        where: [
-          { nombre: ILike(`%${words[0]}%`) },
-          { apellido: ILike(`%${words[0]}%`) },
-        ],
-      });
-      if (matchSingle) return matchSingle;
+    if (direct) {
+      const directFullName = normalizeText(`${direct.nombre || ''} ${direct.apellido || ''}`);
+      if (directFullName === cleanNorm) {
+        return { item: direct, score: 10000 };
+      }
     }
-    return null;
+
+    // 2. Búsqueda de candidatos amplia para evaluar con ranking
+    const candidateWhere: any[] = [
+      { nombre: ILike(`%${clean}%`) },
+      { apellido: ILike(`%${clean}%`) },
+      { correo: ILike(`%${clean}%`) },
+      { telefono: ILike(`%${clean}%`) },
+    ];
+
+    // Búsqueda insensible a acentos con Raw PG_TRANSLATE_EXPRESSION en PostgreSQL (SIEMPRE activa)
+    if (cleanNorm) {
+      candidateWhere.push(
+        { nombre: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${cleanNorm}%` }) },
+        { apellido: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${cleanNorm}%` }) },
+      );
+    }
+
+    for (const w of wordsToSearch) {
+      candidateWhere.push(
+        { nombre: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${w}%` }) },
+        { apellido: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${w}%` }) },
+        { nombre: ILike(`%${w}%`) },
+        { apellido: ILike(`%${w}%`) },
+      );
+    }
+
+    let candidates: Client[] = [];
+    try {
+      candidates = await this.clientRepo.find({
+        where: candidateWhere,
+        order: { nombre: 'ASC' },
+        take: 30,
+      });
+    } catch {
+      candidates = await this.clientRepo.find({
+        where: [
+          { nombre: ILike(`%${clean}%`) },
+          { apellido: ILike(`%${clean}%`) },
+          ...wordsToSearch.map(w => ({ nombre: ILike(`%${w}%`) })),
+          ...wordsToSearch.map(w => ({ apellido: ILike(`%${w}%`) })),
+        ],
+        order: { nombre: 'ASC' },
+        take: 30,
+      }).catch(() => []);
+    }
+
+    if (direct && !candidates.some(c => c.id === direct.id)) {
+      candidates.push(direct);
+    }
+
+    // 3. Evaluar y rankear candidatos
+    const scored = rankEntitiesByRelevance(
+      candidates,
+      clean,
+      (c: Client) => [
+        `${c.nombre || ''} ${c.apellido || ''}`.trim(),
+        c.nombre,
+        c.apellido,
+        c.correo || '',
+        c.telefono || '',
+      ],
+    );
+
+    if (scored.length > 0 && scored[0].score >= MIN_ENTITY_MATCH_SCORE) {
+      return { item: scored[0].item, score: scored[0].score };
+    }
+
+    return { item: direct || null, score: direct ? 1000 : 0 };
   }
 
-  async resolveCompany(hint: string): Promise<Company | null> {
-    if (!hint) return null;
+  async resolveClient(hint: string): Promise<Client | null> {
+    const res = await this.resolveClientWithScore(hint);
+    return res.score >= MIN_ENTITY_MATCH_SCORE ? res.item : (res.score >= 1000 ? res.item : null);
+  }
+
+  async resolveCompanyWithScore(hint: string): Promise<{ item: Company | null; score: number }> {
+    if (!hint) return { item: null, score: 0 };
     const clean = hint.replace(/^["']|["']$/g, '').trim();
-    if (!clean) return null;
+    if (!clean) return { item: null, score: 0 };
     if (this.isValidUuid(clean)) {
-      return this.companyRepo.findOne({ where: { id: clean } });
+      const comp = await this.companyRepo.findOne({ where: { id: clean } }).catch(() => null);
+      return { item: comp, score: comp ? 10000 : 0 };
     }
-    // 1. Coincidencia directa completa en nombre, correo o telefono
+
+    const cleanNorm = normalizeText(clean);
+    const words = cleanNorm.split(/\s+/).filter(w => w.length >= 2);
+    const nonStopWords = words.filter(w => !CRM_ENTITY_STOPWORDS.has(w));
+    const wordsToSearch = nonStopWords.length > 0 ? nonStopWords : words;
+
+    // 1. Coincidencia directa completa
     const direct = await this.companyRepo.findOne({
       where: [
         { nombre: ILike(`%${clean}%`) },
         { correo: ILike(`%${clean}%`) },
       ],
-    });
-    if (direct) return direct;
+    }).catch(() => null);
 
-    // 2. Si son múltiples palabras (ej. "Universidad Metropolitana"), buscar por la primera palabra representativa
-    const words = clean.split(/\s+/).filter(w => w.length > 2);
-    if (words.length > 0) {
-      for (const w of words) {
-        if (['sociedad', 'anonima', 'capital', 'variable', 'empresa', 'grupo', 'de', 'la', 'el', 'los', 'las'].includes(w.toLowerCase())) continue;
-        const match = await this.companyRepo.findOne({
-          where: { nombre: ILike(`%${w}%`) },
-        });
-        if (match) return match;
+    if (direct) {
+      const directNorm = normalizeText(direct.nombre);
+      if (directNorm === cleanNorm) {
+        return { item: direct, score: 10000 };
       }
     }
-    return null;
+
+    // 2. Búsqueda de candidatos amplia para evaluar con ranking
+    const candidateWhere: any[] = [
+      { nombre: ILike(`%${clean}%`) },
+      { correo: ILike(`%${clean}%`) },
+    ];
+
+    // Búsqueda insensible a acentos con Raw PG_TRANSLATE_EXPRESSION en PostgreSQL (SIEMPRE activa)
+    if (cleanNorm) {
+      candidateWhere.push(
+        { nombre: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${cleanNorm}%` }) },
+      );
+    }
+
+    for (const w of wordsToSearch) {
+      candidateWhere.push(
+        { nombre: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${w}%` }) },
+        { nombre: ILike(`%${w}%`) },
+      );
+    }
+
+    let candidates: Company[] = [];
+    try {
+      candidates = await this.companyRepo.find({
+        where: candidateWhere,
+        order: { nombre: 'ASC' },
+        take: 30,
+      });
+    } catch {
+      candidates = await this.companyRepo.find({
+        where: [
+          { nombre: ILike(`%${clean}%`) },
+          ...wordsToSearch.map(w => ({ nombre: ILike(`%${w}%`) })),
+        ],
+        order: { nombre: 'ASC' },
+        take: 30,
+      }).catch(() => []);
+    }
+
+    if (direct && !candidates.some(c => c.id === direct.id)) {
+      candidates.push(direct);
+    }
+
+    // 3. Evaluar y rankear candidatos
+    const scored = rankEntitiesByRelevance(
+      candidates,
+      clean,
+      (comp: Company) => [comp.nombre, comp.correo, comp.telefono, comp.website],
+    );
+
+    if (scored.length > 0 && scored[0].score >= MIN_ENTITY_MATCH_SCORE) {
+      return { item: scored[0].item, score: scored[0].score };
+    }
+
+    return { item: direct || null, score: direct ? 1000 : 0 };
+  }
+
+  async resolveCompany(hint: string): Promise<Company | null> {
+    const res = await this.resolveCompanyWithScore(hint);
+    return res.score >= MIN_ENTITY_MATCH_SCORE ? res.item : (res.score >= 1000 ? res.item : null);
+  }
+
+  async resolveClientOrCompany(hint: string): Promise<{ client: Client | null; company: Company | null }> {
+    if (!hint) return { client: null, company: null };
+    const clean = hint.replace(/^["']|["']$/g, '').trim();
+    if (!clean) return { client: null, company: null };
+
+    const [clientRes, compRes] = await Promise.all([
+      this.resolveClientWithScore(clean),
+      this.resolveCompanyWithScore(clean),
+    ]);
+
+    // Si la empresa tiene puntuación confiable y es mayor o igual a la del cliente
+    if (compRes.item && compRes.score >= MIN_ENTITY_MATCH_SCORE && compRes.score >= clientRes.score) {
+      return { client: null, company: compRes.item };
+    }
+
+    // Si el cliente tiene puntuación confiable y supera a la empresa
+    if (clientRes.item && clientRes.score >= MIN_ENTITY_MATCH_SCORE) {
+      return { client: clientRes.item, company: null };
+    }
+
+    // Si la empresa superó el umbral pero el cliente no
+    if (compRes.item && compRes.score >= MIN_ENTITY_MATCH_SCORE) {
+      return { client: null, company: compRes.item };
+    }
+
+    return {
+      client: clientRes.score >= 1000 ? clientRes.item : null,
+      company: compRes.score >= 1000 ? compRes.item : null,
+    };
   }
 
   async resolveUser(hint: string): Promise<User | null> {
