@@ -1,8 +1,8 @@
 import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BlobServiceClient, ContainerClient } from '@azure/storage-blob';
-import { existsSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { existsSync, unlinkSync, mkdirSync, writeFileSync } from 'fs';
+import { join, dirname } from 'path';
 import type { Response } from 'express';
 
 @Injectable()
@@ -82,6 +82,53 @@ export class StorageService {
     } catch (err) {
       this.logger.error(`Azure upload failed for file ${localPath}: ${err.message}`);
       throw new InternalServerErrorException(`Azure storage upload error: ${err.message}`);
+    }
+  }
+
+  /**
+   * Guarda un búfer binario directamente en almacenamiento local o Azure Blob Storage.
+   * Crea automáticamente los directorios necesarios y retorna la ruta pública/relativa.
+   */
+  async saveBuffer(buffer: Buffer, destPath: string, mimeType?: string): Promise<string> {
+    const normalizedDestPath = destPath.replace(/\\/g, '/');
+    let relativePath = normalizedDestPath;
+    if (relativePath.startsWith('/')) {
+      relativePath = relativePath.substring(1);
+    }
+    if (relativePath.startsWith('./')) {
+      relativePath = relativePath.substring(2);
+    }
+
+    if (this.isAzure()) {
+      if (!this.containerClient) {
+        throw new InternalServerErrorException('Azure Blob Service Client is not initialized');
+      }
+      try {
+        await this.containerClient.createIfNotExists();
+        const blockBlobClient = this.containerClient.getBlockBlobClient(relativePath);
+        await blockBlobClient.uploadData(buffer, {
+          blobHTTPHeaders: {
+            blobContentType: mimeType || 'application/octet-stream',
+          },
+        });
+        return normalizedDestPath.startsWith('/') ? normalizedDestPath : `/${normalizedDestPath}`;
+      } catch (err: any) {
+        this.logger.error(`Azure uploadData failed for buffer ${destPath}: ${err.message}`);
+        throw new InternalServerErrorException(`Azure storage upload error: ${err.message}`);
+      }
+    } else {
+      try {
+        const absolutePath = join(process.cwd(), relativePath);
+        const parentDir = dirname(absolutePath);
+        if (!existsSync(parentDir)) {
+          mkdirSync(parentDir, { recursive: true });
+        }
+        writeFileSync(absolutePath, buffer);
+        return normalizedDestPath.startsWith('/') ? normalizedDestPath : `/${normalizedDestPath}`;
+      } catch (err: any) {
+        this.logger.error(`Local file write failed for ${destPath}: ${err.message}`);
+        throw new InternalServerErrorException(`Local storage save error: ${err.message}`);
+      }
     }
   }
 

@@ -27,6 +27,7 @@ import { TicketsModule } from '../tickets/tickets.module';
 import { RagModule } from '../rag/rag.module';
 import { UsersModule } from '../users/users.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
     RagModule,
     SubscriptionsModule,
     UsersModule,
+    StorageModule,
     // NotificationsModule is NOT imported — ConversationsService uses EventEmitter for notifications
   ],
   providers: [
