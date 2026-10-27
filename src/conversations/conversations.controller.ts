@@ -29,6 +29,8 @@ import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
 import { MetaOauthService } from './meta-oauth.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import type { Response } from 'express';
+import { basename } from 'path';
 
 @ApiTags('conversations')
 @ApiBearerAuth()
@@ -272,6 +274,14 @@ export class ConversationsController {
     @Body() body: AssignUserDto,
   ) {
     return this.conversationsService.assignUser(id, body.assignedUserId || null, user.id);
+  }
+
+  @Get('media/:filename')
+  @ApiOperation({ summary: 'Descargar o reproducir archivo multimedia de audio de una conversación' })
+  async getMediaFile(@Param('filename') filename: string, @Res() res: Response) {
+    const sanitizedFilename = basename(filename);
+    const filePath = `uploads/conversations/audios/${sanitizedFilename}`;
+    return this.conversationsService.streamMediaFile(filePath, res, sanitizedFilename);
   }
 }
 

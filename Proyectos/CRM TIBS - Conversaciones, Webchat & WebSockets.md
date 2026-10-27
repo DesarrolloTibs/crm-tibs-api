@@ -197,14 +197,16 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
   * Servicio desacoplado en `src/conversations/speech-to-text.service.ts` conectado a la instancia oficial de **IBM Watson Speech to Text** (`us-south`).
   * Autenticación HTTP Basic directa (`Authorization: Basic base64('apikey:' + apiKey)`), reduciendo sobrecarga de SDKs externos.
   * Modelo predeterminado: `es-MX_BroadbandModel` (Español de México, banda ancha) con fallback configurable por variable de entorno `IBM_SPEECH_TO_TEXT_MODEL`.
-* **Descarga Multi-Canal de Binarios de Meta:**
-  * **WhatsApp:** Procesa webhooks con `message.type === 'audio'`. Consulta metadata en Graph API `GET /v19.0/{audioId}` para obtener URL temporal de `lookaside.fbsbx.com` y descarga el búfer binario en formato `audio/ogg;codecs=opus` autenticado con Bearer Token y User-Agent de transporte.
-  * **Messenger & Instagram:** Detecta `messaging.message.attachments` con `type === 'audio'`. Descarga el búfer de audio directamente desde la URL del CDN de Meta.
-* **Persistencia Omnicanal y Flujo con Agente de IA:**
-  * El audio transcrito se envía a `receiveIncomingMessage` con `messageType: 'audio'`.
-  * Se almacena en la tabla `messages` con `messageType: 'audio'` y `content: transcriptText`.
-  * Se emite en vivo a los asesores mediante `ConversationsGateway` (`message_received`).
-  * Si la conversación tiene el bot activo (`botActive: true`), se programa el debounce de 7 segundos (`scheduleAiReplyDebounce`). Si el usuario no envía más mensajes o audios en esa ventana, `triggerAiReply` recupera el texto transcrito y lo entrega al motor agéntico (`AiAgentOrchestratorService`), que formula la respuesta automática y la remite en texto libre al cliente por el canal correspondiente.
+* **Descarga y Persistencia Física de Audios (`StorageService.saveBuffer`):**
+  * **WhatsApp:** Procesa webhooks con `message.type === 'audio'`. Consulta metadata en Graph API `GET /v19.0/{audioId}` para obtener URL temporal de `lookaside.fbsbx.com` y descarga el búfer binario en formato `audio/ogg;codecs=opus`.
+  * **Messenger & Instagram:** Detecta `messaging.message.attachments` con `type === 'audio'`. Descarga el búfer de audio directamente desde la URL del CDN de Meta (`audio/mp4`, `audio/aac`).
+  * **Almacenamiento Físico Inmutable:** El archivo de audio se persiste automáticamente mediante `StorageService.saveBuffer` en `uploads/conversations/audios/${timestamp}_${mediaId}.${ext}` (compatible de forma nativa con Local Storage y Azure Blob Storage).
+  * **Endpoint de Streaming:** `GET /api/conversations/media/:filename` permite reproducir o descargar audios con soporte de headers de rango HTTP para scrubbing y reproducción fluida en cualquier navegador.
+* **Modelo Híbrido: Persistencia Omnicanal + Transcripción IA:**
+  * El mensaje se persiste en la tabla `messages` con `messageType: 'audio'`, `mediaUrl` (URL del archivo), `mediaMimeType` y `content: transcriptText`.
+  * **Atención Humana (Bot Apagado):** El asesor comercial cuenta con el archivo de audio reproducible directamente en el módulo de conversaciones, eliminando la dependencia ciega de la transcripción.
+  * **Atención Automatizada (Bot Activo):** Se programa el debounce de 7 segundos (`scheduleAiReplyDebounce`). Si el usuario no envía más mensajes en esa ventana, `triggerAiReply` recupera el texto transcrito de `content` y lo entrega al motor agéntico (`AiAgentOrchestratorService`) para generar la respuesta contextual.
+  * Se emite en vivo a los asesores mediante `ConversationsGateway` (`message_received`) con todos los metadatos multimedia.
 
 
 ### 4.1. Sincronización en Tiempo Real de Acciones en la UI (WebSockets Multi-Tenant)

@@ -121,7 +121,7 @@ Cada vez que se aprovisiona una organización, se crea su propio esquema Postgre
 * **`ai_sub_agents`:** Sub-agentes especializados configurables para transferencias de tareas agénticas.
 * **`channel_configs`:** Configuración de canales de entrada (Webchat, WhatsApp).
 * **`conversations`:** Hilos de conversación iniciados vía Webchat o API.
-* **`messages`:** Mensajes individuales entrantes (prospecto) o salientes (agente IA u operador humano).
+* **`messages`:** Mensajes individuales entrantes (prospecto) o salientes (agente IA u operador humano). Incluye campos multimedia `mediaUrl`, `mediaMimeType` y `mediaDuration` para notas de voz y archivos adjuntos.
 * **`dashboard_indicators`:** Configuración personalizada de widgets y KPIs visuales en el dashboard del inquilino.
 * **`notifications`:** Notificaciones internas generadas por el sistema.
 

@@ -332,6 +332,9 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
             ALTER TABLE "${schema}".conversations ADD COLUMN IF NOT EXISTS "lastCustomerMessageAt" timestamptz NULL;
             ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "status" varchar(50) NOT NULL DEFAULT 'sent';
             ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "messageType" varchar(50) NOT NULL DEFAULT 'text';
+            ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "mediaUrl" varchar(500) NULL;
+            ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "mediaMimeType" varchar(100) NULL;
+            ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "mediaDuration" integer NULL;
             ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "externalMessageId" varchar(255) NULL;
             ALTER TABLE "${schema}".messages ADD COLUMN IF NOT EXISTS "errorMessage" text NULL;
 
@@ -429,6 +432,9 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
           ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS "lastCustomerMessageAt" timestamptz NULL;
           ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "status" varchar(50) NOT NULL DEFAULT 'sent';
           ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "messageType" varchar(50) NOT NULL DEFAULT 'text';
+          ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "mediaUrl" varchar(500) NULL;
+          ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "mediaMimeType" varchar(100) NULL;
+          ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "mediaDuration" integer NULL;
           ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "externalMessageId" varchar(255) NULL;
           ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS "errorMessage" text NULL;
 

@@ -33,6 +33,15 @@ export class Message {
   @Column({ type: 'varchar', length: 50, default: 'text' })
   messageType: string; // 'text' | 'template' | 'document' | 'image'
 
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  mediaUrl: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  mediaMimeType: string | null;
+
+  @Column({ type: 'integer', nullable: true })
+  mediaDuration: number | null;
+
   @Column({ type: 'varchar', length: 255, nullable: true })
   externalMessageId: string | null; // ID de mensaje de Meta (wamid)
 
