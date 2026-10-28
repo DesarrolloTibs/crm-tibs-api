@@ -234,3 +234,21 @@ Para evitar tanto fallos por errores ortográficos/tildes como falsos positivos 
   * Se implementa `rankEntitiesByRelevance` en `webchat-entity-ranker.util.ts` para evaluar similitud de cadena completa, inclusión de subcadenas, palabras clave y tolerancia a erratas tipográficas.
 * **Confirmación Interactiva ante Ambigüedad:**
   * Si se encuentran múltiples candidatos con puntajes cercanos ($\Delta < 1500$), el Webchat no adivina ni ejecuta la modificación a ciegas. En su lugar, responde solicitando confirmación al usuario y listando las opciones encontradas con sus metadatos clave (nombre, cliente/empresa, monto y etapa).
+
+
+### 5.12. WhatsApp Embedded Signup (Conexión Simplificada On-Behalf-Of)
+Para homologar la experiencia de usuario con la conexión simple de Facebook e Instagram, se implementa la integración nativa con **Meta WhatsApp Embedded Signup**:
+* **Endpoints de Soporte en `ConversationsController` y `MetaOauthService`:**
+  * `GET /api/conversations/oauth/meta-config`: Expone dinámicamente al frontend el `appId` y el `whatsappConfigId` (`META_WHATSAPP_CONFIG_ID`) registrados en Meta for Developers, evitando duplicación y desincronización de credenciales.
+  * `POST /api/conversations/oauth/whatsapp/embedded-callback`: Ingesta el payload de `ConnectWhatsAppEmbeddedDto` (`code`, `wabaId`, `phoneNumberId` y `name`).
+* **Flujo Automatizado de Alta:**
+  1. Canjea en vivo el código temporal de autorización por un token de acceso mediante `POST https://graph.facebook.com/v19.0/oauth/access_token`.
+  2. Auto-suscribe automáticamente la WABA a los Webhooks de la App mediante `POST https://graph.facebook.com/v19.0/{wabaId}/subscribed_apps` con autorización Bearer.
+  3. Consulta metadata en Graph API `GET /{phoneNumberId}?fields=verified_name,display_phone_number` para nombrar amigablemente la cuenta en el CRM.
+  4. Valida unicidad multi-tenant mediante `checkAssetConflictInOtherTenants('whatsapp', phoneNumberId, tenantSchema)` para impedir colisiones entre empresas.
+  5. Persiste el canal en `channel_configs` del tenant con `verifyToken = 'meta_oauth_auto'` e `isActive = true`.
+  6. Garantiza la existencia e inicialización de la plantilla base `crm_inicio_conversacion` (`isBase = true`), asegurando que el envío outbound y la ventana de 23 horas queden listos de inmediato para operar.
+
+* **Estrategia de Persistencia de Tokens Permanentes:**
+  * Al vincular la cuenta mediante Embedded Signup, el backend canjea el código de autorización por un `Long-Lived User Access Token`.
+  * Además, `MetaOauthService.connectWhatsAppEmbedded` prioriza la variable `META_SYSTEM_USER_TOKEN` / `META_PERMANENT_SYSTEM_USER_TOKEN`. Si está presente en `.env`, el canal se vincula con el token permanente del usuario del sistema central de la plataforma, asegurando inmunidad total a revocaciones o expiraciones de sesión personal de Facebook del usuario.

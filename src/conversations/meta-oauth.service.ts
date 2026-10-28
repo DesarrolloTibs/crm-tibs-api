@@ -1,9 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ChannelConfig } from './entities/channel-config.entity';
+import { WhatsAppTemplate } from './entities/whatsapp-template.entity';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { ConnectWhatsAppEmbeddedDto } from './dto/conversations.dto';
 
 @Injectable()
 export class MetaOauthService {
@@ -14,6 +16,16 @@ export class MetaOauthService {
     @InjectRepository(ChannelConfig)
     private readonly channelConfigRepo: Repository<ChannelConfig>,
   ) {}
+
+  /**
+   * Retorna la configuración pública de Meta para el frontend (App ID e ID de configuración de WhatsApp Embedded).
+   */
+  getMetaPublicConfig(): { appId: string; whatsappConfigId: string } {
+    return {
+      appId: this.configService.get<string>('META_APP_ID') || '27443728448663271',
+      whatsappConfigId: this.configService.get<string>('META_WHATSAPP_CONFIG_ID') || '1520771090103071',
+    };
+  }
 
   /**
    * Genera la URL de autorización oficial de Meta para Facebook Login for Business.
@@ -89,7 +101,10 @@ export class MetaOauthService {
 
     for (const t of tenants) {
       try {
-        const query = `SELECT id, name FROM "${t.schema_name}".channel_configs WHERE channel = $1 AND "accountId" = $2 AND "isActive" = true`;
+        const query =
+          channel === 'whatsapp'
+            ? `SELECT id, name FROM "${t.schema_name}".channel_configs WHERE channel = $1 AND ("accountId" = $2 OR "phoneNumberId" = $2) AND "isActive" = true`
+            : `SELECT id, name FROM "${t.schema_name}".channel_configs WHERE channel = $1 AND "accountId" = $2 AND "isActive" = true`;
         const res = await this.channelConfigRepo.manager.query(query, [dbChannel, accountId]);
         if (res && res.length > 0) {
           return {
@@ -414,6 +429,194 @@ export class MetaOauthService {
       this.logger.error(`[handleCallback] Excepción procesando Meta OAuth callback: ${error.message}`, error.stack);
       return { success: false, message: `Error interno procesando vinculación: ${error.message}` };
     }
+  }
+
+  /**
+   * Conecta WhatsApp Cloud API mediante el flujo simplificado de Meta Embedded Signup.
+   * Canjea el código de autorización por token, auto-suscribe los webhooks a la WABA y
+   * persiste las credenciales de forma aislada en el esquema del tenant.
+   */
+  async connectWhatsAppEmbedded(
+    dto: ConnectWhatsAppEmbeddedDto,
+    tenantSchema: string,
+    userId: string,
+  ): Promise<{ success: boolean; message: string; channelConfig?: any; verifiedName?: string }> {
+    if (!dto.code || !dto.wabaId || !dto.phoneNumberId) {
+      throw new BadRequestException('Faltan parámetros requeridos: code, wabaId o phoneNumberId.');
+    }
+
+    const appId = this.configService.get<string>('META_APP_ID') || '27443728448663271';
+    const appSecret = this.configService.get<string>('META_APP_SECRET') || '';
+
+    if (!appSecret) {
+      this.logger.error('[connectWhatsAppEmbedded] META_APP_SECRET no configurado en .env');
+      throw new BadRequestException('El servidor no tiene configurado META_APP_SECRET.');
+    }
+
+    // 1. Canjear código por User Access Token
+    const tokenUrl = `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&code=${dto.code}`;
+    let userAccessToken = '';
+    try {
+      const tokenRes = await fetch(tokenUrl, { signal: AbortSignal.timeout(10000) });
+      const tokenData: any = await tokenRes.json();
+      if (!tokenRes.ok || !tokenData.access_token) {
+        const errMsg = tokenData?.error?.message || 'Error canjeando código de autorización con Meta.';
+        this.logger.error(`[connectWhatsAppEmbedded] Error canjeando token: ${errMsg}`);
+        throw new BadRequestException(errMsg);
+      }
+      userAccessToken = tokenData.access_token;
+    } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
+      this.logger.error(`[connectWhatsAppEmbedded] Excepción al canjear token: ${err.message}`);
+      throw new BadRequestException(`No se pudo obtener el token de Meta: ${err.message}`);
+    }
+
+    // 1.1 Canjear por Long-Lived Token (60 días extendible) para máxima duración
+    let finalAccessToken = userAccessToken;
+    try {
+      const exchangeUrl = `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${userAccessToken}`;
+      const exchangeRes = await fetch(exchangeUrl, { signal: AbortSignal.timeout(8000) });
+      if (exchangeRes.ok) {
+        const exchangeData: any = await exchangeRes.json();
+        if (exchangeData.access_token) {
+          finalAccessToken = exchangeData.access_token;
+          this.logger.log('[connectWhatsAppEmbedded] Token de WhatsApp extendido a Long-Lived con éxito.');
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(`[connectWhatsAppEmbedded] Advertencia extendiendo token a long-lived: ${err.message}`);
+    }
+
+    // 1.2 Priorizar Token de Usuario del Sistema Permanente (Nunca expira) si está configurado en .env
+    const systemPermanentToken =
+      this.configService.get<string>('META_SYSTEM_USER_TOKEN') ||
+      this.configService.get<string>('META_PERMANENT_SYSTEM_USER_TOKEN');
+
+    if (systemPermanentToken) {
+      finalAccessToken = systemPermanentToken;
+      this.logger.log('[connectWhatsAppEmbedded] Utilizando Token de Sistema Permanente configurado para WhatsApp.');
+    }
+
+    // 2. Auto-suscribir la WABA a los Webhooks de la App
+    try {
+      const subUrl = `https://graph.facebook.com/v19.0/${dto.wabaId}/subscribed_apps`;
+      const subRes = await fetch(subUrl, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${userAccessToken}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      const subData: any = await subRes.json().catch(() => ({}));
+      if (subRes.ok && subData.success) {
+        this.logger.log(`[connectWhatsAppEmbedded] Webhook auto-suscrito con éxito para WABA ${dto.wabaId}`);
+      } else {
+        this.logger.warn(`[connectWhatsAppEmbedded] Respuesta al suscribir webhook en WABA: ${JSON.stringify(subData)}`);
+      }
+    } catch (subErr: any) {
+      this.logger.warn(`[connectWhatsAppEmbedded] Error suscribiendo webhook a la WABA: ${subErr.message}`);
+    }
+
+    // 3. Consultar datos y nombre verificado del número en Meta
+    let verifiedName = dto.name || 'WhatsApp Business';
+    try {
+      const phoneUrl = `https://graph.facebook.com/v19.0/${dto.phoneNumberId}?fields=verified_name,display_phone_number,quality_rating`;
+      const phoneRes = await fetch(phoneUrl, {
+        headers: { Authorization: `Bearer ${finalAccessToken}` },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (phoneRes.ok) {
+        const phoneData: any = await phoneRes.json();
+        const displayName = phoneData.verified_name || phoneData.display_phone_number;
+        if (displayName) {
+          verifiedName = phoneData.verified_name
+            ? `${phoneData.verified_name} (${phoneData.display_phone_number || ''})`.trim()
+            : phoneData.display_phone_number;
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(`[connectWhatsAppEmbedded] No se pudo obtener metadata del teléfono: ${err.message}`);
+    }
+
+    // 4. Validar conflicto de activo en otros tenants
+    const phoneConflict = await this.checkAssetConflictInOtherTenants('whatsapp', dto.phoneNumberId, tenantSchema);
+    if (phoneConflict) {
+      this.logger.warn(`[connectWhatsAppEmbedded] Conflicto: número ${dto.phoneNumberId} ya activo en tenant ${phoneConflict.otherTenantSchema}`);
+      throw new BadRequestException(
+        `El número de WhatsApp ya se encuentra vinculado y activo en otra empresa (${phoneConflict.otherTenantName}). Desactívalo allá antes de vincularlo aquí.`
+      );
+    }
+
+    // 5. Persistir en el esquema PostgreSQL del tenant
+    return await TenantContextService.run({ tenantSchema, userId }, async () => {
+      const channelRepo = this.channelConfigRepo.manager.getRepository(ChannelConfig);
+      const templateRepo = this.channelConfigRepo.manager.getRepository(WhatsAppTemplate);
+
+      let config = await channelRepo.findOne({
+        where: [
+          { channel: 'whatsapp', phoneNumberId: dto.phoneNumberId },
+          { channel: 'whatsapp' },
+        ],
+      });
+
+      if (!config) {
+        config = channelRepo.create({
+          channel: 'whatsapp',
+          name: verifiedName,
+          appId,
+          accountId: dto.wabaId,
+          phoneNumberId: dto.phoneNumberId,
+          accessToken: finalAccessToken,
+          verifyToken: 'meta_oauth_auto',
+          isActive: true,
+        });
+      } else {
+        config.name = verifiedName;
+        config.appId = appId;
+        config.accountId = dto.wabaId;
+        config.phoneNumberId = dto.phoneNumberId;
+        config.accessToken = finalAccessToken;
+        config.verifyToken = 'meta_oauth_auto';
+        config.isActive = true;
+      }
+
+      const saved = await channelRepo.save(config);
+      this.logger.log(`[connectWhatsAppEmbedded] Canal WhatsApp guardado en esquema ${tenantSchema}: ${verifiedName} (${dto.phoneNumberId})`);
+
+      // 6. Asegurar existencia de plantilla base de inicio vinculada al canal
+      try {
+        let baseTpl = await templateRepo.findOne({
+          where: [
+            { channelConfigId: saved.id, isBase: true },
+            { isBase: true },
+          ],
+        });
+
+        if (!baseTpl) {
+          baseTpl = templateRepo.create({
+            channelConfigId: saved.id,
+            name: 'crm_inicio_conversacion',
+            category: 'MARKETING',
+            language: 'es',
+            bodyText: 'Hola {{1}}, ¿cómo estás? Me comunico contigo para dar seguimiento y revisar lo siguiente:',
+            status: 'APPROVED',
+            isBase: true,
+          });
+          await templateRepo.save(baseTpl);
+          this.logger.log(`[connectWhatsAppEmbedded] Plantilla base inicial creada para el canal ${saved.id}`);
+        } else if (!baseTpl.channelConfigId) {
+          baseTpl.channelConfigId = saved.id;
+          await templateRepo.save(baseTpl);
+        }
+      } catch (tplErr: any) {
+        this.logger.warn(`[connectWhatsAppEmbedded] Advertencia inicializando plantilla base: ${tplErr.message}`);
+      }
+
+      return {
+        success: true,
+        message: `Número de WhatsApp (${verifiedName}) vinculado exitosamente.`,
+        channelConfig: saved,
+        verifiedName,
+      };
+    });
   }
 
   /**
