@@ -67,3 +67,17 @@ export class SelectExistingBaseTemplateDto {
   bodyText?: string;
 }
 
+export class ConnectWhatsAppEmbeddedDto {
+  @IsString()
+  code: string;
+
+  @IsString()
+  wabaId: string;
+
+  @IsString()
+  phoneNumberId: string;
+
+  @IsString()
+  @IsOptional()
+  name?: string;
+}

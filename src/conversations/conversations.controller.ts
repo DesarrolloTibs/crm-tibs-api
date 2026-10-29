@@ -23,6 +23,7 @@ import {
   SendTemplateMessageDto,
   UpsertBaseTemplateDto,
   SelectExistingBaseTemplateDto,
+  ConnectWhatsAppEmbeddedDto,
 } from './dto/conversations.dto';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
@@ -129,6 +130,24 @@ export class ConversationsController {
     const result = await this.metaOauthService.handleCallback(code, state);
     const html = this.metaOauthService.renderPopupResponse(result.success, result.message, result.data);
     return res.type('text/html').send(html);
+  }
+
+  @Get('oauth/meta-config')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Obtener configuración pública de Meta (App ID y WhatsApp Config ID)' })
+  async getMetaPublicConfig() {
+    return this.metaOauthService.getMetaPublicConfig();
+  }
+
+  @Post('oauth/whatsapp/embedded-callback')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Vincular canal WhatsApp mediante Meta Embedded Signup' })
+  async connectWhatsAppEmbedded(
+    @Body() body: ConnectWhatsAppEmbeddedDto,
+    @GetUser() user: User,
+  ) {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    return this.metaOauthService.connectWhatsAppEmbedded(body, tenantSchema, user.id);
   }
 
   @Get('channels/:channelConfigId/base-template')
