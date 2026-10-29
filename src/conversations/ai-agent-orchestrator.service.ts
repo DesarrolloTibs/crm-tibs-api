@@ -13,7 +13,7 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 import { PhoneUtils } from '../common/utils/phone.utils';
 import { ActivitiesService } from '../activities/activities.service';
 import { ClientsService } from '../clients/clients.service';
-import { SubscriptionValidatorService, ConsumptionAuditContext, TurnTokenAccumulator } from '../subscriptions/subscription-validator.service';
+import { SubscriptionValidatorService, ConsumptionAuditContext, TurnTokenAccumulator, CourtesyVerdict } from '../subscriptions/subscription-validator.service';
 import { TenantConcurrencyService } from '../subscriptions/tenant-concurrency.service';
 import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
@@ -518,12 +518,12 @@ export class AiAgentOrchestratorService {
     turnAccumulator: TurnTokenAccumulator,
     actionName: string,
     auditContext: ConsumptionAuditContext,
-  ): Promise<void> {
+  ): Promise<CourtesyVerdict | null> {
     const activeSchema = TenantContextService.getTenantSchema() || 'public';
     if (activeSchema !== 'public' && turnAccumulator.totalTokens > 0) {
       try {
         const primaryModel = turnAccumulator.models.join(', ') || auditContext.modelName || null;
-        await this.subscriptionValidator.recordConsumption(
+        const verdict = await this.subscriptionValidator.recordConsumption(
           activeSchema,
           turnAccumulator.promptTokens,
           turnAccumulator.completionTokens,
@@ -541,10 +541,12 @@ export class AiAgentOrchestratorService {
           },
         );
         this.eventEmitter.emit(CONVERSATION_EVENTS.TENANT_CONSUMPTION_UPDATED, { schemaName: activeSchema });
+        return verdict;
       } catch (err: any) {
         this.logger.error(`Error al registrar consumo acumulado de mensaje para tenant ${activeSchema}: ${err.message}`);
       }
     }
+    return null;
   }
 
   /** Cleans LLM output so it contains exactly one balanced JSON object. */
@@ -631,6 +633,35 @@ NUEVO RESUMEN ACUMULADO:`;
   async processIncomingMessage(
     conversation: Conversation,
     incomingContent: string,
+  ): Promise<{ reply: string; route: string; isHandedOff: boolean }> {
+    const holder: { verdict: CourtesyVerdict | null } = { verdict: null };
+    const result = await this.processIncomingMessageCore(conversation, incomingContent, holder);
+
+    // Cortesía excedida (> 2% del plan, allow_extra = false): tokens ya registrados, pero no se entrega la respuesta.
+    if (holder.verdict?.exceeded && result.route !== 'subscription_blocked') {
+      const v = holder.verdict;
+      this.logger.warn(`[Subscription] Cortesía excedida (${v.courtesyUsed}/${v.courtesyCap} tokens) — respuesta suprimida.`);
+      return {
+        reply: '',
+        route: 'subscription_blocked',
+        isHandedOff: false,
+        subscriptionCode: 'TOKENS_LIMIT_EXCEEDED',
+        subscriptionPayload: {
+          code: 'TOKENS_LIMIT_EXCEEDED',
+          message: 'Se agotaron los tokens del plan y el margen de cortesía.',
+          tokens_used: v.tokensUsed,
+          tokens_limit: v.tokensLimit,
+          next_renewal_date: v.nextRenewalDate,
+        },
+      } as any;
+    }
+    return result;
+  }
+
+  private async processIncomingMessageCore(
+    conversation: Conversation,
+    incomingContent: string,
+    holder: { verdict: CourtesyVerdict | null },
   ): Promise<{ reply: string; route: string; isHandedOff: boolean }> {
     const config = await this.getOrInitConfig();
     if (!config.isActive) return { reply: '', route: 'inactive', isHandedOff: false };
@@ -1435,7 +1466,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
     } finally {
       if (turnAccumulator.totalTokens > 0) {
         const finalAction = finalState?.route ? `subagent_${finalState.route}` : (turnAccumulator.steps[turnAccumulator.steps.length - 1] || 'asistente_virtual');
-        await this.commitTurnConsumption(turnAccumulator, finalAction, baseAuditContext);
+        holder.verdict = await this.commitTurnConsumption(turnAccumulator, finalAction, baseAuditContext);
       }
     }
   }

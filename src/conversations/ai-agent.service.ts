@@ -5,7 +5,7 @@ import { AiSubAgent } from './entities/ai-sub-agent.entity';
 import { AiAgentOrchestratorService, AgentStateAnnotation, AgentState } from './ai-agent-orchestrator.service';
 import { AiSubAgentMigrationService } from './ai-sub-agent-migration.service';
 import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
-import { ConsumptionAuditContext, TurnTokenAccumulator } from '../subscriptions/subscription-validator.service';
+import { ConsumptionAuditContext, TurnTokenAccumulator, CourtesyVerdict } from '../subscriptions/subscription-validator.service';
 
 // Re-export types consumed by other modules (WebchatService, etc.)
 export type { AgentState };
@@ -83,7 +83,7 @@ export class AiAgentService implements OnModuleInit {
   }
 
   /** Commits the accumulated tokens for a completed turn/interaction into a single transaction. */
-  async commitTurnConsumption(turnAccumulator: TurnTokenAccumulator, actionName: string, auditContext: ConsumptionAuditContext): Promise<void> {
+  async commitTurnConsumption(turnAccumulator: TurnTokenAccumulator, actionName: string, auditContext: ConsumptionAuditContext): Promise<CourtesyVerdict | null> {
     return this.orchestrator.commitTurnConsumption(turnAccumulator, actionName, auditContext);
   }
 

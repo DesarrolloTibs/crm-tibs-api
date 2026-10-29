@@ -9,7 +9,7 @@ import { WebchatResponseFormatterService } from './services/webchat-response-for
 import { WebchatActionExecutorService } from './services/webchat-action-executor.service';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
-import { ConsumptionAuditContext, TurnTokenAccumulator } from '../subscriptions/subscription-validator.service';
+import { ConsumptionAuditContext, TurnTokenAccumulator, CourtesyVerdict } from '../subscriptions/subscription-validator.service';
 import {
   ConversationHistoryMessage,
   CubeAnnotation,
@@ -52,6 +52,26 @@ export class WebchatService {
     username: string,
     conversationHistory?: ConversationHistoryMessage[],
     fullUser?: User,
+  ): Promise<WebchatResponse> {
+    const holder: { verdict: CourtesyVerdict | null } = { verdict: null };
+    const response = await this.processQueryCore(question, userId, userRole, username, conversationHistory, fullUser, holder);
+
+    // Cortesía excedida (> 2% del plan, allow_extra = false): tokens registrados, pero se oculta el resultado.
+    if (holder.verdict?.exceeded) {
+      this.logger.warn(`[WebChat] Cortesía excedida (${holder.verdict.courtesyUsed}/${holder.verdict.courtesyCap} tokens) — respuesta suprimida.`);
+      return { answer: 'Se ha alcanzado el límite de recursos de IA del plan actual. Contacte a un administrador para ampliar su suscripción o habilitar consumo extra.' };
+    }
+    return response;
+  }
+
+  private async processQueryCore(
+    question: string,
+    userId: string,
+    userRole: string,
+    username: string,
+    conversationHistory: ConversationHistoryMessage[] | undefined,
+    fullUser: User | undefined,
+    holder: { verdict: CourtesyVerdict | null },
   ): Promise<WebchatResponse> {
     const turnAccumulator: TurnTokenAccumulator = {
       promptTokens: 0,
@@ -232,7 +252,7 @@ Genera tu respuesta JSON:`;
     } finally {
       if (turnAccumulator.totalTokens > 0) {
         const actionLabel = classification?.domain ? `subagent_${classification.domain.toLowerCase()}` : (turnAccumulator.steps[turnAccumulator.steps.length - 1] || 'webchat_interaction');
-        await this.aiAgentService.commitTurnConsumption(turnAccumulator, actionLabel, baseAuditContext);
+        holder.verdict = await this.aiAgentService.commitTurnConsumption(turnAccumulator, actionLabel, baseAuditContext);
       }
     }
   }

@@ -13,7 +13,7 @@ import { UpdateTenantPlanDto } from './dto/update-tenant-plan.dto';
 import { EnqueueRenewalDto } from './dto/enqueue-renewal.dto';
 import { UpdateQueueItemDto } from './dto/update-queue-item.dto';
 
-import { SubscriptionValidatorService } from '../subscriptions/subscription-validator.service';
+import { SubscriptionValidatorService, getCourtesyCap } from '../subscriptions/subscription-validator.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { addBillingMonths, subtractBillingMonths } from '../common/utils/billing-date.util';
 
@@ -179,6 +179,8 @@ export class TenantsService implements OnModuleInit {
       total_tokens_consumed: totalTokensConsumed,
       tokens_overage_absorbed: overageAbsorbed,
       has_courtesy_overage: overageAbsorbed > 0,
+      courtesy_cap: allowExtra ? 0 : getCourtesyCap(tokensLimit),
+      courtesy_cap_exceeded: !allowExtra && overageAbsorbed > getCourtesyCap(tokensLimit),
       extra_percentage_used: extraPercentageUsed,
       next_renewal_date: nextRenewal,
       plan_name: planName,

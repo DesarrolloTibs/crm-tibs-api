@@ -26,6 +26,23 @@ export interface ConsumptionAuditContext {
   turnAccumulator?: TurnTokenAccumulator;
 }
 
+/** Porcentaje máximo del tokens_limit del plan que puede absorberse como cortesía (allow_extra = false). */
+export const COURTESY_RATIO = 0.02;
+
+export function getCourtesyCap(tokensLimit: number): number {
+  return tokensLimit > 0 ? Math.floor(tokensLimit * COURTESY_RATIO) : 0;
+}
+
+export interface CourtesyVerdict {
+  /** true si la cortesía absorbida superó el tope permitido y la respuesta debe suprimirse. */
+  exceeded: boolean;
+  courtesyUsed: number;
+  courtesyCap: number;
+  tokensUsed: number;
+  tokensLimit: number;
+  nextRenewalDate: Date | null;
+}
+
 export interface SubscriptionErrorPayload {
   code: 'PLAN_NOT_ASSIGNED' | 'SUBSCRIPTION_EXPIRED' | 'TOKENS_LIMIT_EXCEEDED' | 'EXTRA_TOKENS_LIMIT_EXCEEDED';
   message: string;
@@ -339,7 +356,7 @@ export class SubscriptionValidatorService implements OnModuleInit {
     isExtra: boolean = false,
     actionName?: string,
     auditContext?: ConsumptionAuditContext
-  ): Promise<void> {
+  ): Promise<CourtesyVerdict | null> {
     let calculatedIsExtra = isExtra;
     if (!calculatedIsExtra) {
       try {
@@ -359,15 +376,49 @@ export class SubscriptionValidatorService implements OnModuleInit {
       }
     }
 
+    // Con consumo extra desactivado: si el desborde supera el tope de cortesía (2% del plan),
+    // solo se imputan los tokens restantes del plan base (sin generar cortesía) y se suprime la respuesta.
+    let courtesyRejected = false;
+    let recPrompt = promptTokens;
+    let recCompletion = completionTokens;
+    let recTotal = totalTokens;
+    let metadata: Record<string, any> | null = auditContext?.metadata || null;
+    if (!calculatedIsExtra && totalTokens > 0) {
+      try {
+        const tenantInfo = await this.getTenantPlanInfo(schemaName);
+        if (tenantInfo && !tenantInfo.allow_extra && tenantInfo.next_renewal_date && tenantInfo.tokens_limit > 0) {
+          const periodStart = subtractBillingMonths(new Date(tenantInfo.next_renewal_date), tenantInfo.billing_period_months || 1);
+          const current = await this.getTokensConsumptionInPeriod(schemaName, periodStart, tenantInfo.next_renewal_date, tenantInfo.tokens_limit);
+          const remaining = Math.max(0, tenantInfo.tokens_limit - current.baseTotal);
+          const overage = Math.max(0, totalTokens - remaining);
+          if (overage > getCourtesyCap(tenantInfo.tokens_limit)) {
+            courtesyRejected = true;
+            const ratio = remaining / totalTokens;
+            recTotal = remaining;
+            recPrompt = Math.floor(promptTokens * ratio);
+            recCompletion = Math.max(0, recTotal - recPrompt);
+            metadata = {
+              ...(metadata || {}),
+              courtesy_rejected: true,
+              real_total_tokens: totalTokens,
+              rejected_overage_tokens: overage,
+            };
+          }
+        }
+      } catch (err) {
+        // Ignorar fallback: se registra el consumo completo
+      }
+    }
+
     await this.dataSource.query(
       `INSERT INTO "${schemaName}".transaction_history 
        (prompt_tokens, completion_tokens, total_tokens, fecha_procesamiento, is_extra, action_name,
         user_id, user_name, client_id, client_name, conversation_id, channel, model_name, metadata) 
        VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
-        promptTokens,
-        completionTokens,
-        totalTokens,
+        recPrompt,
+        recCompletion,
+        recTotal,
         calculatedIsExtra,
         actionName || null,
         auditContext?.userId || null,
@@ -377,8 +428,43 @@ export class SubscriptionValidatorService implements OnModuleInit {
         auditContext?.conversationId || null,
         auditContext?.channel || null,
         auditContext?.modelName || null,
-        auditContext?.metadata ? JSON.stringify(auditContext.metadata) : null,
+        metadata ? JSON.stringify(metadata) : null,
       ]
     );
+
+    const verdict = await this.evaluateCourtesyVerdict(schemaName);
+    if (verdict && courtesyRejected) verdict.exceeded = true;
+    return verdict;
+  }
+
+  /**
+   * Evalúa, tras registrar el consumo, si la cortesía absorbida excede el tope (2% del plan).
+   * Solo aplica con allow_extra = false: los tokens ya quedaron registrados, pero la respuesta debe suprimirse.
+   */
+  async evaluateCourtesyVerdict(schemaName: string): Promise<CourtesyVerdict | null> {
+    try {
+      const tenantInfo = await this.getTenantPlanInfo(schemaName);
+      if (!tenantInfo || tenantInfo.allow_extra || !tenantInfo.next_renewal_date || tenantInfo.tokens_limit <= 0) {
+        return null;
+      }
+      const periodStart = subtractBillingMonths(new Date(tenantInfo.next_renewal_date), tenantInfo.billing_period_months || 1);
+      const consumption = await this.getTokensConsumptionInPeriod(
+        schemaName,
+        periodStart,
+        tenantInfo.next_renewal_date,
+        tenantInfo.tokens_limit,
+      );
+      const courtesyCap = getCourtesyCap(tenantInfo.tokens_limit);
+      return {
+        exceeded: consumption.baseCourtesy > courtesyCap,
+        courtesyUsed: consumption.baseCourtesy,
+        courtesyCap,
+        tokensUsed: consumption.tokensUsed,
+        tokensLimit: tenantInfo.tokens_limit,
+        nextRenewalDate: tenantInfo.next_renewal_date,
+      };
+    } catch {
+      return null;
+    }
   }
 }
