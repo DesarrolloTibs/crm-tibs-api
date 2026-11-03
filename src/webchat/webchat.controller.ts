@@ -7,20 +7,24 @@ import {
   Query,
   Headers,
   UseGuards,
+  UseInterceptors,
+  UploadedFiles,
   UsePipes,
   ValidationPipe,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
-import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { WebchatService } from './webchat.service';
 import { WebchatQueryDto } from './dto/webchat-query.dto';
 import { SendPublicWebchatMessageDto, GetPublicWebchatQueryDto } from './dto/public-webchat.dto';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { ConversationsService } from '../conversations/conversations.service';
+import { SpeechToTextService } from '../conversations/speech-to-text.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @ApiTags('webchat')
@@ -33,7 +37,46 @@ export class WebchatController {
   constructor(
     private readonly webchatService: WebchatService,
     private readonly conversationsService: ConversationsService,
+    private readonly speechToTextService: SpeechToTextService,
   ) {}
+
+  @Post('transcribe')
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Transcribir un archivo de audio a texto plano para el WebChat interno usando IBM Speech to Text' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Archivo de audio grabado desde el WebChat interno (campo "audio" o "file")',
+    schema: {
+      type: 'object',
+      properties: {
+        audio: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  @UseInterceptors(AnyFilesInterceptor())
+  async transcribeAudio(
+    @UploadedFiles() files: Express.Multer.File[],
+  ) {
+    const file = files?.[0];
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      throw new BadRequestException('Se requiere un archivo de audio válido para transcribir.');
+    }
+
+    const transcript = await this.speechToTextService.transcribeAudio(
+      file.buffer,
+      file.mimetype,
+    );
+
+    if (!transcript) {
+      throw new BadRequestException('No se detectó voz en el audio. Por favor intenta hablar más claro o verifica tu micrófono.');
+    }
+
+    return {
+      text: transcript,
+      transcript,
+    };
+  }
 
   @Post('query')
   @ApiBearerAuth()

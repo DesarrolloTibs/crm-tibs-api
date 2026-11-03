@@ -10,7 +10,7 @@ export class SpeechToTextService {
   constructor(private readonly configService: ConfigService) {}
 
   /**
-   * Convierte un búfer de audio (ej. MP4, M4A, AAC, contenedores de video)
+   * Convierte un búfer de audio (ej. MP4, M4A, AAC, WebM, contenedores de video)
    * a formato estándar WAV (16kHz mono) soportado al 100% por IBM Watson.
    */
   private async convertToWav(inputBuffer: Buffer): Promise<Buffer> {
@@ -44,7 +44,7 @@ export class SpeechToTextService {
 
   /**
    * Transcribe un búfer de audio a texto utilizando IBM Watson Speech to Text.
-   * Si el audio viene en MP4, M4A, AAC o contenedor incompatible (común en Instagram/Messenger),
+   * Si el audio viene en MP4, M4A, AAC, WebM o contenedor incompatible (común en Instagram/Messenger/Navegadores),
    * lo transcodifica automáticamente a WAV 16kHz mono antes de enviarlo a IBM.
    *
    * @param audioBuffer Búfer binario del archivo de audio
@@ -70,16 +70,17 @@ export class SpeechToTextService {
     let cleanMimeType = (rawMimeType || 'audio/ogg;codecs=opus').toLowerCase().trim();
     cleanMimeType = cleanMimeType.replace(/;\s+/g, ';');
 
-    // Instagram y Facebook Messenger suelen enviar notas de voz en contenedores MP4/M4A con AAC o video/mp4.
-    // IBM Watson rechaza audio/mp4 con HTTP 415, por lo que transcodificamos a WAV nativo de forma transparente.
-    const isMp4OrAac =
+    // Instagram, Facebook Messenger y navegadores web (MediaRecorder) suelen enviar notas de voz en contenedores MP4/M4A/AAC/WebM.
+    // IBM Watson rechaza audio/mp4 con HTTP 415 o ciertos contenedores WebM, por lo que transcodificamos a WAV nativo de forma transparente.
+    const isMp4AacOrWebm =
       cleanMimeType.includes('mp4') ||
       cleanMimeType.includes('m4a') ||
       cleanMimeType.includes('aac') ||
+      cleanMimeType.includes('webm') ||
       cleanMimeType.includes('video') ||
       cleanMimeType.includes('quicktime');
 
-    if (isMp4OrAac) {
+    if (isMp4AacOrWebm) {
       try {
         this.logger.log(
           `[SpeechToText] Detectado contenedor ${cleanMimeType}. Transcodificando a WAV 16kHz mono con FFmpeg...`,
