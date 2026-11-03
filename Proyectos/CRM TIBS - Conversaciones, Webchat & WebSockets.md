@@ -249,9 +249,9 @@ Para homologar la experiencia de usuario con la conexión simple de Facebook e I
   5. Persiste el canal en `channel_configs` del tenant con `verifyToken = 'meta_oauth_auto'` e `isActive = true`.
   6. Garantiza la existencia e inicialización de la plantilla base `crm_inicio_conversacion` (`isBase = true`), asegurando que el envío outbound y la ventana de 23 horas queden listos de inmediato para operar.
 
-* **Estrategia de Persistencia de Tokens Permanentes:**
-  * Al vincular la cuenta mediante Embedded Signup, el backend canjea el código de autorización por un `Long-Lived User Access Token`.
-  * Además, `MetaOauthService.connectWhatsAppEmbedded` prioriza la variable `META_SYSTEM_USER_TOKEN` / `META_PERMANENT_SYSTEM_USER_TOKEN`. Si está presente en `.env`, el canal se vincula con el token permanente del usuario del sistema central de la plataforma, asegurando inmunidad total a revocaciones o expiraciones de sesión personal de Facebook del usuario.
+* **Estrategia de Tokens para Proveedor de Plataforma (Tech Provider Multi-Tenant):**
+  * Al vincular la cuenta mediante Embedded Signup, el backend canjea en vivo el código de autorización por un **Business Integration System User Access Token** exclusivo para esa WABA y número de teléfono.
+  * **Aislamiento Multi-Tenant de Permisos:** Este token generado dinámicamente es permanente para la integración empresarial del cliente y cuenta con permisos delegados explícitos (`whatsapp_business_messaging`, `whatsapp_business_management`) sobre los activos del tenant. El backend persiste dicho token directamente en `channel_configs.accessToken` del esquema del tenant, sin sobrescribirlo con tokens centrales de la plataforma, garantizando que Meta Graph API autorice sin restricciones las consultas de metadatos, envío de plantillas y mensajes en cada inquilino de forma independiente.
 
 
 ---
