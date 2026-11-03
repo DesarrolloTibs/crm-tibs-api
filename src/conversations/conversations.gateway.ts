@@ -90,6 +90,13 @@ export class ConversationsGateway implements OnGatewayInit, OnGatewayConnection,
     @MessageBody() data: { tenantSchema: string },
   ) {
     if (data?.tenantSchema) {
+      const user = (client as any).user;
+      const isSuperAdmin = user?.role === 'superadmin';
+      const tokenTenant = user?.tenantSchema;
+      if (!isSuperAdmin && tokenTenant && tokenTenant !== 'public' && tokenTenant !== data.tenantSchema) {
+        this.logger.warn(`Client ${client.id} intentó cambiar a un tenant no autorizado (${data.tenantSchema})`);
+        return { status: 'forbidden' };
+      }
       const current = (client as any).tenantSchema;
       if (current && current !== data.tenantSchema) {
         client.leave(`tenant:${current}`);
@@ -107,6 +114,13 @@ export class ConversationsGateway implements OnGatewayInit, OnGatewayConnection,
     @MessageBody() data: { tenantSchema: string },
   ) {
     if (data?.tenantSchema) {
+      const user = (client as any).user;
+      const isSuperAdmin = user?.role === 'superadmin';
+      const tokenTenant = user?.tenantSchema;
+      if (!isSuperAdmin && tokenTenant && tokenTenant !== 'public' && tokenTenant !== data.tenantSchema) {
+        this.logger.warn(`Client ${client.id} intentó unirse a un tenant no autorizado (${data.tenantSchema})`);
+        return { status: 'forbidden' };
+      }
       client.join(`tenant:${data.tenantSchema}`);
       this.logger.log(`Client ${client.id} joined room tenant:${data.tenantSchema}`);
       return { status: 'ok', room: `tenant:${data.tenantSchema}` };

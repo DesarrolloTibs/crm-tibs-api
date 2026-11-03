@@ -658,6 +658,28 @@ NUEVO RESUMEN ACUMULADO:`;
     return result;
   }
 
+  /**
+   * Guardia determinista contra inyección SQL y comandos de manipulación directa de base de datos
+   * en los canales de entrada de la IA (WhatsApp, Messenger, Instagram, Webchat público).
+   */
+  private detectMaliciousSqlOrDbPayload(text: string): boolean {
+    if (!text || typeof text !== 'string') return false;
+    const normalized = text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\s+/g, ' ').trim();
+    const sqlPatterns: RegExp[] = [
+      /\b(?:DROP|TRUNCATE|ALTER)\s+(?:TABLE|SCHEMA|DATABASE|INDEX|VIEW|FUNCTION|TRIGGER)\b/i,
+      /\bDELETE\s+FROM\s+[a-zA-Z0-9_."]+\b/i,
+      /\bINSERT\s+INTO\s+[a-zA-Z0-9_."]+\s*(?:\(|VALUES\b)/i,
+      /\bUPDATE\s+[a-zA-Z0-9_."]+\s+SET\s+[a-zA-Z0-9_."]+\s*=/i,
+      /\bUNION\s+(?:ALL\s+)?SELECT\b/i,
+      /\bSELECT\s+.+\s+FROM\s+(?:information_schema|pg_catalog|pg_tables|pg_stat_activity|pg_user|pg_shadow|users|tenants|clients)\b/i,
+      /\b(?:pg_sleep|pg_read_file|pg_ls_dir|lo_import|lo_export|dblink| COPY\s+.*\s+TO\s+PROGRAM)\s*\(?/i,
+      /(?:';|";)\s*(?:DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|SELECT|EXEC|EXECUTE|SET\s+search_path)\b/i,
+      /(?:'\s*OR\s*'1'\s*=\s*'1|'\s*OR\s*1\s*=\s*1\s*(?:--|\/*|#|$))/i,
+      /\bSET\s+search_path\s+TO\b/i,
+    ];
+    return sqlPatterns.some((pattern) => pattern.test(normalized));
+  }
+
   private async processIncomingMessageCore(
     conversation: Conversation,
     incomingContent: string,
@@ -665,6 +687,18 @@ NUEVO RESUMEN ACUMULADO:`;
   ): Promise<{ reply: string; route: string; isHandedOff: boolean }> {
     const config = await this.getOrInitConfig();
     if (!config.isActive) return { reply: '', route: 'inactive', isHandedOff: false };
+
+    // Guardia de seguridad de entrada: bloqueo inmediato de payloads de inyección SQL o comandos directos a BD
+    if (this.detectMaliciousSqlOrDbPayload(incomingContent)) {
+      this.logger.warn(
+        `[Security Guardrail] Payload sospechoso de inyección SQL/BD bloqueado en conversación ${conversation.id} (${conversation.channel}).`,
+      );
+      return {
+        reply: 'Por motivos de seguridad, no puedo procesar comandos de base de datos ni instrucciones técnicas no autorizadas. ¿En qué puedo ayudarte respecto a nuestros productos o servicios?',
+        route: 'security_blocked',
+        isHandedOff: false,
+      };
+    }
 
     const turnAccumulator: TurnTokenAccumulator = {
       promptTokens: 0,
@@ -685,30 +719,12 @@ NUEVO RESUMEN ACUMULADO:`;
 
     let finalState: any = null;
     try {
-      // 0. Detección automática en el mensaje del cliente si comparte su correo o teléfono para actualizar el CRM de inmediato
+      // NOTA DE SEGURIDAD: No se realizan mutaciones directas a `clients` fuera del flujo de tools.
+      // Cualquier actualización de correo o teléfono debe ocurrir exclusivamente a través de las tools
+      // validadas con Zod (`registerContact`, `updateContact`, `createOpportunity`, `createActivity`).
       const emailMatch = incomingContent.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
       const isWhatsAppChannel = conversation.channel?.toLowerCase() === 'whatsapp';
       const phoneMatch = !isWhatsAppChannel ? PhoneUtils.extractPhoneFromText(incomingContent) : null;
-      if (conversation.clientId && (emailMatch || phoneMatch)) {
-        const client = await this.clientRepository.findOne({ where: { id: conversation.clientId } });
-        if (client) {
-          let clientUpdated = false;
-          if (emailMatch && (!client.correo || !client.correo.trim())) {
-            client.correo = emailMatch[0].toLowerCase();
-            clientUpdated = true;
-            this.logger.log(`[processIncomingMessage] Correo auto-detectado y guardado en CRM: ${client.correo}`);
-          }
-          if (phoneMatch && (!client.telefono || !client.telefono.trim())) {
-            client.telefono = phoneMatch;
-            clientUpdated = true;
-            this.logger.log(`[processIncomingMessage] Teléfono auto-detectado y guardado en CRM: ${client.telefono}`);
-          }
-          if (clientUpdated) {
-            await this.clientRepository.save(client);
-            conversation.client = client;
-          }
-        }
-      }
 
       // 1. Build omni-channel history
       const historyLimit = config.historyMessageLimit && config.historyMessageLimit > 0 ? config.historyMessageLimit : 10;
@@ -1278,7 +1294,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
                 const recentHistoryLower = (messages.slice(-4).map(m => m.content).join(' ') + ' ' + incomingContent).toLowerCase();
                 const isQuoteInProgress = recentHistoryLower.includes('cotiz') || recentHistoryLower.includes('precio') || recentHistoryLower.includes('plan');
 
-                if (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress)) {
+                if (allowedTools.includes('createOpportunity') && (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress))) {
                   this.logger.warn(`[Anti-Alucinación Comercial] El sub-agente intentó desviar o detener con final_answer ('${answerText.substring(0, 80)}...') sin entregar la cotización. Interceptando para forzar createOpportunity.`);
                   return {
                     nextAction: 'call_tool',
@@ -1342,7 +1358,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
             const recentHistoryLower = (messages.slice(-4).map(m => m.content).join(' ') + ' ' + incomingContent).toLowerCase();
             const isQuoteInProgress = recentHistoryLower.includes('cotiz') || recentHistoryLower.includes('precio') || recentHistoryLower.includes('plan');
 
-            if (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress)) {
+            if (allowedTools.includes('createOpportunity') && (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress))) {
               this.logger.warn(`[Anti-Alucinación Comercial - Regex] Interceptando para forzar createOpportunity.`);
               return {
                 nextAction: 'call_tool',

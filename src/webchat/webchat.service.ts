@@ -91,6 +91,16 @@ export class WebchatService {
     let classification: any = null;
 
     try {
+      // 0. Guardia de seguridad de entrada: bloqueo determinista de payloads de inyección SQL o comandos directos de BD
+      if (this.securityService.detectMaliciousSqlOrDbPayload(question)) {
+        this.logger.warn(
+          `[WebChat - Security Guardrail] Intento de inyección SQL o comando de BD bloqueado para usuario ${userId} (${username}).`,
+        );
+        return {
+          answer: 'Por políticas de seguridad, no se permite ejecutar comandos SQL ni instrucciones directas sobre la base de datos. Todas las operaciones deben realizarse mediante consultas en lenguaje natural o las herramientas autorizadas del CRM (Oportunidades, Actividades y Tickets).',
+        };
+      }
+
       const userObj = fullUser || ({ id: userId, role: userRole as Role, username } as User);
 
       // 1. Construir historial de conversación reciente para contexto

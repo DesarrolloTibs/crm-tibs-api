@@ -252,3 +252,13 @@ Para homologar la experiencia de usuario con la conexión simple de Facebook e I
 * **Estrategia de Persistencia de Tokens Permanentes:**
   * Al vincular la cuenta mediante Embedded Signup, el backend canjea el código de autorización por un `Long-Lived User Access Token`.
   * Además, `MetaOauthService.connectWhatsAppEmbedded` prioriza la variable `META_SYSTEM_USER_TOKEN` / `META_PERMANENT_SYSTEM_USER_TOKEN`. Si está presente en `.env`, el canal se vincula con el token permanente del usuario del sistema central de la plataforma, asegurando inmunidad total a revocaciones o expiraciones de sesión personal de Facebook del usuario.
+
+
+---
+
+## 9. Blindaje de Seguridad en Entrada Omnicanal y Webchat (`Anti-SQLi` & `Tool Isolation`)
+
+* **Validación en `POST /conversations/test-receive`:** Protegido con `@UseGuards(AuthGuard('jwt'))` para impedir inyección no autenticada de mensajes y creación arbitraria de conversaciones/contactos.
+* **Autorización de Salas en `ConversationsGateway`:** Los eventos `@SubscribeMessage('set_tenant')` y `@SubscribeMessage('join_tenant')` validan que el socket autenticado tenga rol `superadmin` o que su `tokenTenant` coincida con el `tenantSchema` solicitado.
+* **Protección de Datos Preexistentes en `receiveIncomingMessage` (`webchat`):** Al recibir metadatos `contactInfo` desde el widget público, solo se completan campos vacíos o nombres placeholder (`Visitante`) sin sobrescribir datos de clientes previamente verificados.
+* **Guardrails Anti-SQLi y Restricción Estricta a Tools:** Tanto `AiAgentOrchestratorService` como `WebchatService` bloquean payloads SQL/DDL/DML en la entrada y garantizan que todo impacto en base de datos ocurra exclusivamente dentro del catálogo de herramientas autorizadas y validadas con Zod/RBAC.

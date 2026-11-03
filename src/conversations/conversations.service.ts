@@ -344,14 +344,22 @@ export class ConversationsService {
         }
 
         if (conversation.clientId && contactInfo) {
-          const updates: Partial<Client> = {};
-          if (contactInfo.email) updates.correo = contactInfo.email;
-          if (contactInfo.phone) updates.telefono = contactInfo.phone;
-          if (clientNickname && !clientNickname.toLowerCase().includes('visitante')) {
-            updates.nombre = clientNickname;
-          }
-          if (Object.keys(updates).length > 0) {
-            await this.clientRepository.update(conversation.clientId, updates).catch(() => null);
+          const existingClient = await this.clientRepository.findOne({ where: { id: conversation.clientId } }).catch(() => null);
+          if (existingClient) {
+            const updates: Partial<Client> = {};
+            if (contactInfo.email && (!existingClient.correo || !existingClient.correo.trim())) {
+              updates.correo = contactInfo.email.trim().toLowerCase();
+            }
+            if (contactInfo.phone && (!existingClient.telefono || !existingClient.telefono.trim())) {
+              updates.telefono = contactInfo.phone.trim();
+            }
+            const isPlaceholder = !existingClient.nombre || /^(visitante|prospecto|contacto)\b/i.test(existingClient.nombre.trim());
+            if (clientNickname && !clientNickname.toLowerCase().includes('visitante') && isPlaceholder) {
+              updates.nombre = clientNickname.trim();
+            }
+            if (Object.keys(updates).length > 0) {
+              await this.clientRepository.update(conversation.clientId, updates).catch(() => null);
+            }
           }
         }
 
