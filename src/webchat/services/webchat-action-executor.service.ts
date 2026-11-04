@@ -2570,7 +2570,7 @@ export class WebchatActionExecutorService {
     if (conversationHistory && conversationHistory.length > 0) {
       const userMsgs = conversationHistory
         .filter(m => m.role === 'user')
-        .slice(-3);
+        .filter(m => Boolean(m?.content));
       for (const msg of userMsgs) {
         if (this.checkTemporalText(msg.content)) {
           return true;

@@ -107,7 +107,7 @@ export class WebchatService {
       let historyText = '';
       if (conversationHistory && conversationHistory.length > 0) {
         historyText = conversationHistory
-          .slice(-4)
+          .filter(m => m && m.content)
           .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
           .join('\n');
       }
