@@ -36,10 +36,23 @@ export class ExpensesService implements OnModuleInit {
         } catch (e) {}
     }
 
+    private formatExpense(expense: Expense): Expense {
+        if (expense.client && !expense.client_id) {
+            expense.client_id = expense.client.id;
+        }
+        if (expense.opportunity && !expense.opportunity_id) {
+            expense.opportunity_id = expense.opportunity.id;
+        }
+        if (expense.usuario && !expense.usuario_id) {
+            expense.usuario_id = expense.usuario.id;
+        }
+        return expense;
+    }
+
     async create(createExpenseDto: CreateExpenseDto, user: any): Promise<Expense> {
         const { client_id, opportunity_id, ...expenseData } = createExpenseDto;
 
-        // Validate XOR logic: Either client_id OR opportunity_id, but NOT both, and NOT neither.
+        // Validar lógica XOR: Debe tener client_id O opportunity_id, pero no ambos ni ninguno.
         if ((client_id && opportunity_id) || (!client_id && !opportunity_id)) {
             throw new BadRequestException(
                 'El gasto debe estar asociado a un Cliente O a una Oportunidad, pero no a ambos ni a ninguno.',
@@ -72,17 +85,16 @@ export class ExpensesService implements OnModuleInit {
             }
         }
 
-
         const newExpense = this.expensesRepository.create({
             ...expenseData,
-            client_id,
-            opportunity_id,
+            client_id: client_id || null,
+            opportunity_id: opportunity_id || null,
             usuario_id: userId,
         });
 
-        return this.expensesRepository.save(newExpense);
+        const saved = await this.expensesRepository.save(newExpense);
+        return this.findOne(saved.id);
     }
-
 
     async findAll(user: any): Promise<Expense[]> {
         const userId = user ? (user.id || user.userId) : null;
@@ -109,9 +121,9 @@ export class ExpensesService implements OnModuleInit {
             query.where('expense.usuario_id = :userId', { userId });
         }
 
-        return query.getMany();
+        const expenses = await query.getMany();
+        return expenses.map((exp) => this.formatExpense(exp));
     }
-
 
     async findOne(id: string): Promise<Expense> {
         const expense = await this.expensesRepository.findOne({
@@ -123,7 +135,7 @@ export class ExpensesService implements OnModuleInit {
             throw new NotFoundException(`Expense with ID ${id} not found`);
         }
 
-        return expense;
+        return this.formatExpense(expense);
     }
 
     async update(id: string, updateExpenseDto: UpdateExpenseDto): Promise<Expense> {
@@ -131,11 +143,24 @@ export class ExpensesService implements OnModuleInit {
 
         const { client_id, opportunity_id, ...updateData } = updateExpenseDto;
 
-        // Logic for updating relationships if provided
+        // Lógica de actualización de relaciones si se enviaron en el DTO
         if (client_id !== undefined || opportunity_id !== undefined) {
-            // Determine new state
-            const newClientId = client_id !== undefined ? client_id : expense.client ? expense.client.id : null;
-            const newOpportunityId = opportunity_id !== undefined ? opportunity_id : expense.opportunity ? expense.opportunity.id : null;
+            const currentClientId = expense.client_id || (expense.client ? expense.client.id : null);
+            const currentOppId = expense.opportunity_id || (expense.opportunity ? expense.opportunity.id : null);
+
+            let newClientId: string | null = null;
+            let newOpportunityId: string | null = null;
+
+            if (client_id !== undefined && opportunity_id !== undefined) {
+                newClientId = client_id;
+                newOpportunityId = opportunity_id;
+            } else if (client_id !== undefined) {
+                newClientId = client_id;
+                newOpportunityId = newClientId ? null : currentOppId;
+            } else if (opportunity_id !== undefined) {
+                newOpportunityId = opportunity_id;
+                newClientId = newOpportunityId ? null : currentClientId;
+            }
 
             if ((newClientId && newOpportunityId) || (!newClientId && !newOpportunityId)) {
                 throw new BadRequestException(
@@ -143,22 +168,23 @@ export class ExpensesService implements OnModuleInit {
                 );
             }
 
-            // Update relations. Note: direct ID assignment is preferred if relations are not eager loaded or if you want to avoid overhead.
-            // However, since we are using save() on the entity causing a reload, let's stick to what we have or better yet, assign IDs if possible.
-            // Given previous issues, simple assignment is better contextually.
-            if (client_id !== undefined) expense.client_id = client_id;
-            if (opportunity_id !== undefined) expense.opportunity_id = opportunity_id;
-
-            // We need to nullify the *other* relation if we are switching.
-            // But validation above ensures we have exactly one.
-            // If client_id is set, it means we want a client. We should ensure opportunity_id is null.
-            if (newClientId) expense.opportunity_id = null;
-            if (newOpportunityId) expense.client_id = null;
+            if (newClientId) {
+                expense.client_id = newClientId;
+                expense.client = { id: newClientId } as Client;
+                expense.opportunity_id = null;
+                expense.opportunity = null;
+            } else if (newOpportunityId) {
+                expense.opportunity_id = newOpportunityId;
+                expense.opportunity = { id: newOpportunityId } as Opportunity;
+                expense.client_id = null;
+                expense.client = null;
+            }
         }
 
         Object.assign(expense, updateData);
 
-        return this.expensesRepository.save(expense);
+        await this.expensesRepository.save(expense);
+        return this.findOne(id);
     }
 
     async remove(id: string): Promise<void> {
@@ -169,9 +195,9 @@ export class ExpensesService implements OnModuleInit {
     async uploadReceipt(id: string, receiptUrl: string): Promise<Expense> {
         const expense = await this.findOne(id);
 
-        // Remove old file if exists
+        // Eliminar archivo antiguo si existe
         if (expense.receiptUrl) {
-            const oldPath = `.${expense.receiptUrl}`; // relative path to root
+            const oldPath = `.${expense.receiptUrl}`;
             if (fs.existsSync(oldPath)) {
                 try {
                     fs.unlinkSync(oldPath);
@@ -182,7 +208,8 @@ export class ExpensesService implements OnModuleInit {
         }
 
         expense.receiptUrl = receiptUrl;
-        return this.expensesRepository.save(expense);
+        await this.expensesRepository.save(expense);
+        return this.findOne(id);
     }
 
     async removeReceipt(id: string): Promise<Expense> {
@@ -198,7 +225,8 @@ export class ExpensesService implements OnModuleInit {
                 }
             }
             expense.receiptUrl = null;
-            return this.expensesRepository.save(expense);
+            await this.expensesRepository.save(expense);
+            return this.findOne(id);
         }
 
         return expense;
