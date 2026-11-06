@@ -40,7 +40,8 @@ erDiagram
 
 ### 2.2. Clientes / Contactos (`Client` - `clients`)
 * Representa a los individuos que fungen como tomadores de decisión, compradores o contactos técnicos.
-* Atributos: `nombre`, `email`, `telefono` (en formato internacional), puesto o rol en la empresa, y la clave foránea `companyId`.
+* **Campos y Validaciones (DTOs):** Únicamente `nombre` es de captura obligatoria (`@IsNotEmpty()`). Todos los demás atributos (`apellido`, `correo`, `telefono`, `puesto`, `empresa`, `companyId`, `ejecutivo_id`, `category`) son opcionales (`@IsOptional()`).
+* **Regla en BD:** `apellido` y `correo` están configurados como `nullable: true` (`apellido` con default `''`).
 * Si una empresa se da de baja, la relación está configurada con `ON DELETE SET NULL` para preservar el expediente del contacto.
 
 ---

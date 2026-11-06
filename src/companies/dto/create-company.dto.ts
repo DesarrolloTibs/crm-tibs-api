@@ -1,5 +1,6 @@
-import { IsString, IsEmail, IsNotEmpty, IsOptional, IsUUID, IsBoolean } from 'class-validator';
+import { IsString, IsEmail, IsNotEmpty, IsOptional, IsUUID, IsBoolean, ValidateIf } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 
 export class CreateCompanyDto {
   @ApiProperty({ description: 'Nombre de la empresa' })
@@ -8,24 +9,29 @@ export class CreateCompanyDto {
   nombre: string;
 
   @ApiPropertyOptional({ description: 'Correo electrónico de la empresa' })
+  @Transform(({ value }) => (value === '' ? null : value))
+  @ValidateIf((_, value) => !!value)
   @IsEmail()
   @IsOptional()
-  correo?: string;
+  correo?: string | null;
 
   @ApiPropertyOptional({ description: 'Teléfono de la empresa' })
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsString()
   @IsOptional()
-  telefono?: string;
+  telefono?: string | null;
 
   @ApiPropertyOptional({ description: 'Sitio web de la empresa' })
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsString()
   @IsOptional()
-  website?: string;
+  website?: string | null;
 
   @ApiPropertyOptional({ description: 'Dirección física de la empresa' })
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsString()
   @IsOptional()
-  direccion?: string;
+  direccion?: string | null;
 
   @ApiPropertyOptional({ description: 'Estatus de la empresa', default: true })
   @IsBoolean()
@@ -33,7 +39,9 @@ export class CreateCompanyDto {
   estatus?: boolean;
 
   @ApiPropertyOptional({ description: 'ID del ejecutivo asignado' })
+  @Transform(({ value }) => (value === '' ? null : value))
+  @ValidateIf((_, value) => !!value)
   @IsUUID()
   @IsOptional()
-  ejecutivo_id?: string;
+  ejecutivo_id?: string | null;
 }

@@ -1,12 +1,12 @@
-import { PartialType } from '@nestjs/swagger';
+import { PartialType, ApiProperty } from '@nestjs/swagger';
 import { CreateCompanyDto } from './create-company.dto';
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean } from 'class-validator';
+import { IsBoolean, IsNotEmpty } from 'class-validator';
 
 export class UpdateCompanyDto extends PartialType(CreateCompanyDto) {}
 
 export class UpdateCompanyStatusDto {
-  @ApiPropertyOptional({ description: 'Estatus de la empresa' })
+  @ApiProperty({ description: 'Estatus de la empresa' })
   @IsBoolean()
+  @IsNotEmpty()
   estatus: boolean;
 }
