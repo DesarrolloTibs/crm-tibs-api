@@ -13,7 +13,7 @@ import { TenantContextService } from '../tenancy/tenant-context.service';
 import { PhoneUtils } from '../common/utils/phone.utils';
 import { ActivitiesService } from '../activities/activities.service';
 import { ClientsService } from '../clients/clients.service';
-import { SubscriptionValidatorService, ConsumptionAuditContext, TurnTokenAccumulator } from '../subscriptions/subscription-validator.service';
+import { SubscriptionValidatorService, ConsumptionAuditContext, TurnTokenAccumulator, CourtesyVerdict } from '../subscriptions/subscription-validator.service';
 import { TenantConcurrencyService } from '../subscriptions/tenant-concurrency.service';
 import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
@@ -518,12 +518,12 @@ export class AiAgentOrchestratorService {
     turnAccumulator: TurnTokenAccumulator,
     actionName: string,
     auditContext: ConsumptionAuditContext,
-  ): Promise<void> {
+  ): Promise<CourtesyVerdict | null> {
     const activeSchema = TenantContextService.getTenantSchema() || 'public';
     if (activeSchema !== 'public' && turnAccumulator.totalTokens > 0) {
       try {
         const primaryModel = turnAccumulator.models.join(', ') || auditContext.modelName || null;
-        await this.subscriptionValidator.recordConsumption(
+        const verdict = await this.subscriptionValidator.recordConsumption(
           activeSchema,
           turnAccumulator.promptTokens,
           turnAccumulator.completionTokens,
@@ -541,10 +541,12 @@ export class AiAgentOrchestratorService {
           },
         );
         this.eventEmitter.emit(CONVERSATION_EVENTS.TENANT_CONSUMPTION_UPDATED, { schemaName: activeSchema });
+        return verdict;
       } catch (err: any) {
         this.logger.error(`Error al registrar consumo acumulado de mensaje para tenant ${activeSchema}: ${err.message}`);
       }
     }
+    return null;
   }
 
   /** Cleans LLM output so it contains exactly one balanced JSON object. */
@@ -632,8 +634,71 @@ NUEVO RESUMEN ACUMULADO:`;
     conversation: Conversation,
     incomingContent: string,
   ): Promise<{ reply: string; route: string; isHandedOff: boolean }> {
+    const holder: { verdict: CourtesyVerdict | null } = { verdict: null };
+    const result = await this.processIncomingMessageCore(conversation, incomingContent, holder);
+
+    // Cortesía excedida (> 2% del plan, allow_extra = false): tokens ya registrados, pero no se entrega la respuesta.
+    if (holder.verdict?.exceeded && result.route !== 'subscription_blocked') {
+      const v = holder.verdict;
+      this.logger.warn(`[Subscription] Cortesía excedida (${v.courtesyUsed}/${v.courtesyCap} tokens) — respuesta suprimida.`);
+      return {
+        reply: '',
+        route: 'subscription_blocked',
+        isHandedOff: false,
+        subscriptionCode: 'TOKENS_LIMIT_EXCEEDED',
+        subscriptionPayload: {
+          code: 'TOKENS_LIMIT_EXCEEDED',
+          message: 'Se agotaron los tokens del plan y el margen de cortesía.',
+          tokens_used: v.tokensUsed,
+          tokens_limit: v.tokensLimit,
+          next_renewal_date: v.nextRenewalDate,
+        },
+      } as any;
+    }
+    return result;
+  }
+
+  /**
+   * Guardia determinista contra inyección SQL y comandos de manipulación directa de base de datos
+   * en los canales de entrada de la IA (WhatsApp, Messenger, Instagram, Webchat público).
+   */
+  private detectMaliciousSqlOrDbPayload(text: string): boolean {
+    if (!text || typeof text !== 'string') return false;
+    const normalized = text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\s+/g, ' ').trim();
+    const sqlPatterns: RegExp[] = [
+      /\b(?:DROP|TRUNCATE|ALTER)\s+(?:TABLE|SCHEMA|DATABASE|INDEX|VIEW|FUNCTION|TRIGGER)\b/i,
+      /\bDELETE\s+FROM\s+[a-zA-Z0-9_."]+\b/i,
+      /\bINSERT\s+INTO\s+[a-zA-Z0-9_."]+\s*(?:\(|VALUES\b)/i,
+      /\bUPDATE\s+[a-zA-Z0-9_."]+\s+SET\s+[a-zA-Z0-9_."]+\s*=/i,
+      /\bUNION\s+(?:ALL\s+)?SELECT\b/i,
+      /\bSELECT\s+.+\s+FROM\s+(?:information_schema|pg_catalog|pg_tables|pg_stat_activity|pg_user|pg_shadow|users|tenants|clients)\b/i,
+      /\b(?:pg_sleep|pg_read_file|pg_ls_dir|lo_import|lo_export|dblink| COPY\s+.*\s+TO\s+PROGRAM)\s*\(?/i,
+      /(?:';|";)\s*(?:DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|SELECT|EXEC|EXECUTE|SET\s+search_path)\b/i,
+      /(?:'\s*OR\s*'1'\s*=\s*'1|'\s*OR\s*1\s*=\s*1\s*(?:--|\/*|#|$))/i,
+      /\bSET\s+search_path\s+TO\b/i,
+    ];
+    return sqlPatterns.some((pattern) => pattern.test(normalized));
+  }
+
+  private async processIncomingMessageCore(
+    conversation: Conversation,
+    incomingContent: string,
+    holder: { verdict: CourtesyVerdict | null },
+  ): Promise<{ reply: string; route: string; isHandedOff: boolean }> {
     const config = await this.getOrInitConfig();
     if (!config.isActive) return { reply: '', route: 'inactive', isHandedOff: false };
+
+    // Guardia de seguridad de entrada: bloqueo inmediato de payloads de inyección SQL o comandos directos a BD
+    if (this.detectMaliciousSqlOrDbPayload(incomingContent)) {
+      this.logger.warn(
+        `[Security Guardrail] Payload sospechoso de inyección SQL/BD bloqueado en conversación ${conversation.id} (${conversation.channel}).`,
+      );
+      return {
+        reply: 'Por motivos de seguridad, no puedo procesar comandos de base de datos ni instrucciones técnicas no autorizadas. ¿En qué puedo ayudarte respecto a nuestros productos o servicios?',
+        route: 'security_blocked',
+        isHandedOff: false,
+      };
+    }
 
     const turnAccumulator: TurnTokenAccumulator = {
       promptTokens: 0,
@@ -654,30 +719,12 @@ NUEVO RESUMEN ACUMULADO:`;
 
     let finalState: any = null;
     try {
-      // 0. Detección automática en el mensaje del cliente si comparte su correo o teléfono para actualizar el CRM de inmediato
+      // NOTA DE SEGURIDAD: No se realizan mutaciones directas a `clients` fuera del flujo de tools.
+      // Cualquier actualización de correo o teléfono debe ocurrir exclusivamente a través de las tools
+      // validadas con Zod (`registerContact`, `updateContact`, `createOpportunity`, `createActivity`).
       const emailMatch = incomingContent.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
       const isWhatsAppChannel = conversation.channel?.toLowerCase() === 'whatsapp';
       const phoneMatch = !isWhatsAppChannel ? PhoneUtils.extractPhoneFromText(incomingContent) : null;
-      if (conversation.clientId && (emailMatch || phoneMatch)) {
-        const client = await this.clientRepository.findOne({ where: { id: conversation.clientId } });
-        if (client) {
-          let clientUpdated = false;
-          if (emailMatch && (!client.correo || !client.correo.trim())) {
-            client.correo = emailMatch[0].toLowerCase();
-            clientUpdated = true;
-            this.logger.log(`[processIncomingMessage] Correo auto-detectado y guardado en CRM: ${client.correo}`);
-          }
-          if (phoneMatch && (!client.telefono || !client.telefono.trim())) {
-            client.telefono = phoneMatch;
-            clientUpdated = true;
-            this.logger.log(`[processIncomingMessage] Teléfono auto-detectado y guardado en CRM: ${client.telefono}`);
-          }
-          if (clientUpdated) {
-            await this.clientRepository.save(client);
-            conversation.client = client;
-          }
-        }
-      }
 
       // 1. Build omni-channel history
       const historyLimit = config.historyMessageLimit && config.historyMessageLimit > 0 ? config.historyMessageLimit : 10;
@@ -1247,7 +1294,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
                 const recentHistoryLower = (messages.slice(-4).map(m => m.content).join(' ') + ' ' + incomingContent).toLowerCase();
                 const isQuoteInProgress = recentHistoryLower.includes('cotiz') || recentHistoryLower.includes('precio') || recentHistoryLower.includes('plan');
 
-                if (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress)) {
+                if (allowedTools.includes('createOpportunity') && (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress))) {
                   this.logger.warn(`[Anti-Alucinación Comercial] El sub-agente intentó desviar o detener con final_answer ('${answerText.substring(0, 80)}...') sin entregar la cotización. Interceptando para forzar createOpportunity.`);
                   return {
                     nextAction: 'call_tool',
@@ -1311,7 +1358,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
             const recentHistoryLower = (messages.slice(-4).map(m => m.content).join(' ') + ' ' + incomingContent).toLowerCase();
             const isQuoteInProgress = recentHistoryLower.includes('cotiz') || recentHistoryLower.includes('precio') || recentHistoryLower.includes('plan');
 
-            if (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress)) {
+            if (allowedTools.includes('createOpportunity') && (claimsEmailOrPreparing || ((divertingToCall || thanksContactWithoutQuoting) && hasAnyContact && isQuoteInProgress))) {
               this.logger.warn(`[Anti-Alucinación Comercial - Regex] Interceptando para forzar createOpportunity.`);
               return {
                 nextAction: 'call_tool',
@@ -1435,7 +1482,7 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
     } finally {
       if (turnAccumulator.totalTokens > 0) {
         const finalAction = finalState?.route ? `subagent_${finalState.route}` : (turnAccumulator.steps[turnAccumulator.steps.length - 1] || 'asistente_virtual');
-        await this.commitTurnConsumption(turnAccumulator, finalAction, baseAuditContext);
+        holder.verdict = await this.commitTurnConsumption(turnAccumulator, finalAction, baseAuditContext);
       }
     }
   }

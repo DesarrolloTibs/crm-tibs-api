@@ -16,8 +16,8 @@ export class Client {
   @Column({ type: 'varchar', length: 255 })
   nombre: string;
 
-  @Column({ type: 'varchar', length: 255 })
-  apellido: string;
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  apellido: string | null;
 
   @Column({ type: 'varchar', length: 255, unique: true, nullable: true })
   correo: string | null;
@@ -26,7 +26,7 @@ export class Client {
   empresa: string | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })
-  puesto: string;
+  puesto: string | null;
 
   @Column({ type: 'varchar', length: 50, nullable: true })
   telefono: string | null;
@@ -42,11 +42,11 @@ export class Client {
   estatus: boolean;
 
   @Column({ type: 'uuid', nullable: true })
-  ejecutivo_id: string;
+  ejecutivo_id: string | null;
 
-  @ManyToOne(() => User)
+  @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'ejecutivo_id' })
-  ejecutivo: User;
+  ejecutivo: User | null;
 
   @Column({ type: 'uuid', nullable: true })
   companyId: string | null;

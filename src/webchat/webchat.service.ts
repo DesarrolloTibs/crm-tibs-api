@@ -9,7 +9,7 @@ import { WebchatResponseFormatterService } from './services/webchat-response-for
 import { WebchatActionExecutorService } from './services/webchat-action-executor.service';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
-import { ConsumptionAuditContext, TurnTokenAccumulator } from '../subscriptions/subscription-validator.service';
+import { ConsumptionAuditContext, TurnTokenAccumulator, CourtesyVerdict } from '../subscriptions/subscription-validator.service';
 import {
   ConversationHistoryMessage,
   CubeAnnotation,
@@ -53,6 +53,26 @@ export class WebchatService {
     conversationHistory?: ConversationHistoryMessage[],
     fullUser?: User,
   ): Promise<WebchatResponse> {
+    const holder: { verdict: CourtesyVerdict | null } = { verdict: null };
+    const response = await this.processQueryCore(question, userId, userRole, username, conversationHistory, fullUser, holder);
+
+    // Cortesía excedida (> 2% del plan, allow_extra = false): tokens registrados, pero se oculta el resultado.
+    if (holder.verdict?.exceeded) {
+      this.logger.warn(`[WebChat] Cortesía excedida (${holder.verdict.courtesyUsed}/${holder.verdict.courtesyCap} tokens) — respuesta suprimida.`);
+      return { answer: 'Se ha alcanzado el límite de recursos de IA del plan actual. Contacte a un administrador para ampliar su suscripción o habilitar consumo extra.' };
+    }
+    return response;
+  }
+
+  private async processQueryCore(
+    question: string,
+    userId: string,
+    userRole: string,
+    username: string,
+    conversationHistory: ConversationHistoryMessage[] | undefined,
+    fullUser: User | undefined,
+    holder: { verdict: CourtesyVerdict | null },
+  ): Promise<WebchatResponse> {
     const turnAccumulator: TurnTokenAccumulator = {
       promptTokens: 0,
       completionTokens: 0,
@@ -71,13 +91,23 @@ export class WebchatService {
     let classification: any = null;
 
     try {
+      // 0. Guardia de seguridad de entrada: bloqueo determinista de payloads de inyección SQL o comandos directos de BD
+      if (this.securityService.detectMaliciousSqlOrDbPayload(question)) {
+        this.logger.warn(
+          `[WebChat - Security Guardrail] Intento de inyección SQL o comando de BD bloqueado para usuario ${userId} (${username}).`,
+        );
+        return {
+          answer: 'Por políticas de seguridad, no se permite ejecutar comandos SQL ni instrucciones directas sobre la base de datos. Todas las operaciones deben realizarse mediante consultas en lenguaje natural o las herramientas autorizadas del CRM (Oportunidades, Actividades y Tickets).',
+        };
+      }
+
       const userObj = fullUser || ({ id: userId, role: userRole as Role, username } as User);
 
       // 1. Construir historial de conversación reciente para contexto
       let historyText = '';
       if (conversationHistory && conversationHistory.length > 0) {
         historyText = conversationHistory
-          .slice(-4)
+          .filter(m => m && m.content)
           .map(m => `${m.role === 'user' ? 'Usuario' : 'Asistente'}: ${m.content}`)
           .join('\n');
       }
@@ -232,7 +262,7 @@ Genera tu respuesta JSON:`;
     } finally {
       if (turnAccumulator.totalTokens > 0) {
         const actionLabel = classification?.domain ? `subagent_${classification.domain.toLowerCase()}` : (turnAccumulator.steps[turnAccumulator.steps.length - 1] || 'webchat_interaction');
-        await this.aiAgentService.commitTurnConsumption(turnAccumulator, actionLabel, baseAuditContext);
+        holder.verdict = await this.aiAgentService.commitTurnConsumption(turnAccumulator, actionLabel, baseAuditContext);
       }
     }
   }

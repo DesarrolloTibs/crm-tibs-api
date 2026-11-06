@@ -501,3 +501,27 @@ Para los canales de comunicación, el consumo total auditado debe computarse **p
      - Los resultados finales devueltos se ordenan aplicando `rankEntitiesByRelevance` respecto al término buscado.
   4. **Suite de Pruebas Automatizadas:**
      - Se crearon pruebas unitarias en `webchat-entity-ranker.spec.ts` y se extendió `webchat-action-executor.spec.ts` validando la resolución correcta de `"grupo mexico"` a `"Grupo méxico"`, el descarte de falsos positivos como `"Transportes Mexico"`, la resolución de contactos individuales con acentos (`"jose perez"` a `"José Pérez"`) y la creación segura de oportunidades.
+
+
+---
+
+## 5. Blindaje de Seguridad en Puntos de Entrada de IA (Anti-SQLi & Aislamiento de Tools)
+
+Para garantizar que ningún mensaje entrante desde canales externos (WhatsApp, Facebook Messenger, Instagram, Webchat Público) ni desde el Webchat Interno del CRM pueda ejecutar inyecciones SQL o provocar mutaciones en la base de datos fuera del flujo autorizado de herramientas (`tools`), el sistema implementa las siguientes capas de defensa determinista:
+
+1. **Guardrail Determinista Anti-SQLi y Anti-Comandos de BD (`detectMaliciousSqlOrDbPayload`):**
+   - Implementado tanto en `AiAgentOrchestratorService.processIncomingMessageCore` (canales omnicanal) como en `WebchatSecurityService` / `WebchatService.processQueryCore` (webchat interno).
+   - Intercepta y bloquea inmediatamente cualquier payload con patrones de manipulación DDL/DML (`DROP`, `TRUNCATE`, `ALTER`, `DELETE FROM`, `INSERT INTO`, `UPDATE ... SET`, `UNION SELECT`, `SET search_path`), acceso a catálogos del sistema (`information_schema`, `pg_catalog`, `pg_shadow`) o inyecciones booleanas/funciones de sistema (`' OR '1'='1`, `pg_sleep`, `dblink`) **antes** de invocar al LLM, RAG, Cube.dev o cualquier repositorio TypeORM.
+2. **Eliminación de Mutaciones Pre-Tool sobre `clients`:**
+   - En `AiAgentOrchestratorService.processIncomingMessageCore`, la detección regex de correo y teléfono en el mensaje entrante (`emailMatch`, `phoneMatch`) se mantiene únicamente como señal de enrutamiento en memoria, eliminando la escritura directa `clientRepository.save(client)` previa al grafo LangGraph. Toda actualización de contacto ocurre exclusivamente a través de las tools validadas con Zod (`registerContact`, `updateContact`, `createOpportunity`, `createActivity`).
+   - El interceptor antialucinación de `subAgentNode` verifica estrictamente `allowedTools.includes('createOpportunity')` antes de forzar la ejecución de la herramienta.
+3. **Validación Estricta de Propiedad (`clientId`) y No-Sobrescritura en `AiAgentToolsHandlerService`:**
+   - `modifyOpportunity` y `sendQuotationPdf` verifican que `existingOpp.cliente_id === conversation.clientId`, impidiendo que un usuario externo modifique o extraiga el PDF de una oportunidad perteneciente a otro cliente mediante inyección de UUID.
+   - `registerContact` y `updateContact` protegen los registros existentes en el CRM: cuando un visitante se vincula por coincidencia de correo/teléfono a un cliente preexistente de otra conversación, solo se completan campos vacíos o placeholders sin sobrescribir datos verificados.
+4. **Aislamiento de Acciones y Sanitización en Webchat Interno (`WebchatActionExecutorService` & `WebchatSecurityService`):**
+   - `WebchatActionExecutorService.executeAction` valida contra una lista blanca cerrada (`createOpportunity`, `modifyOpportunity`, `createActivity`, `modifyActivity`, `createTicket`) y bloquea explícitamente intenciones destructivas (`eliminar`, `borrar`, `drop`, `truncate`) o mutaciones sobre entidades no autorizadas (`usuarios`, `roles`, `permisos`, `tenants`, `planes`).
+   - `WebchatSecurityService.applySecurityFilters` y `sanitizeFilterList` validan todos los identificadores de `measures`, `dimensions`, `timeDimensions` y `filters[].member` bajo la expresión estricta `/^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$/`.
+   - `WebchatEntityMatcherService.fallbackFuzzyEntitySearch` valida el esquema con `TenantContextService.validateSchemaName` antes de interpolar `"${tenantSchema}"` en consultas SQL parametrizadas (`$1, $2`).
+5. **Protección de Endpoints y Salas WebSocket (`ConversationsController` & `ConversationsGateway`):**
+   - El endpoint `POST /conversations/test-receive` exige `@UseGuards(AuthGuard('jwt'))`.
+   - Los eventos `set_tenant` y `join_tenant` en `ConversationsGateway` verifican que el usuario del socket sea `superadmin` o pertenezca al `tenantSchema` solicitado.

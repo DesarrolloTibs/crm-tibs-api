@@ -1,5 +1,6 @@
-import { IsString, IsEmail, IsNotEmpty, IsOptional, IsUUID, IsEnum } from 'class-validator';
+import { IsString, IsEmail, IsNotEmpty, IsOptional, IsUUID, IsEnum, IsBoolean, ValidateIf } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import { ClientCategory } from '../entities/client.entity';
 
 export class CreateClientDto {
@@ -8,45 +9,55 @@ export class CreateClientDto {
   @IsNotEmpty()
   nombre: string;
 
-  @ApiProperty({ description: 'Apellido del cliente' })
+  @ApiPropertyOptional({ description: 'Apellido del cliente' })
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsString()
-  @IsNotEmpty()
-  apellido: string;
+  @IsOptional()
+  apellido?: string | null;
 
-  @ApiProperty({ description: 'Correo electrónico del cliente' })
+  @ApiPropertyOptional({ description: 'Correo electrónico del cliente' })
+  @Transform(({ value }) => (value === '' ? null : value))
+  @ValidateIf((_, value) => !!value)
   @IsEmail()
-  @IsNotEmpty()
-  correo: string;
+  @IsOptional()
+  correo?: string | null;
 
   @ApiPropertyOptional({ description: 'Empresa del cliente' })
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsString()
   @IsOptional()
-  empresa?: string;
+  empresa?: string | null;
 
   @ApiPropertyOptional({ description: 'ID de la empresa asociada' })
+  @Transform(({ value }) => (value === '' ? null : value))
+  @ValidateIf((_, value) => !!value)
   @IsUUID()
   @IsOptional()
-  companyId?: string;
-
+  companyId?: string | null;
 
   @ApiPropertyOptional({ description: 'Puesto del cliente' })
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsString()
   @IsOptional()
-  puesto?: string;
+  puesto?: string | null;
 
   @ApiPropertyOptional({ description: 'Teléfono del cliente' })
+  @Transform(({ value }) => (value === '' ? null : value))
   @IsString()
   @IsOptional()
-  telefono?: string;
+  telefono?: string | null;
 
   @ApiPropertyOptional({ description: 'Estatus del cliente', default: true })
+  @IsBoolean()
   @IsOptional()
   estatus?: boolean;
 
   @ApiPropertyOptional({ description: 'ID del ejecutivo asignado' })
+  @Transform(({ value }) => (value === '' ? null : value))
+  @ValidateIf((_, value) => !!value)
   @IsUUID()
   @IsOptional()
-  ejecutivo_id?: string;
+  ejecutivo_id?: string | null;
 
   @ApiPropertyOptional({
     description: 'Categoría del cliente',

@@ -206,6 +206,8 @@ export class ConversationsController {
   }
 
   @Post('test-receive')
+  @UseGuards(AuthGuard('jwt'))
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Simular mensaje entrante para pruebas locales' })
   async testReceive(
     @Body('channel') channel: string,

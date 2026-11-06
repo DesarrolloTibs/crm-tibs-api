@@ -89,6 +89,9 @@ El módulo de webchat permite a los clientes de CRM TIBS integrar un widget de c
 
 ## 4. Asistente de Webchat Interno & Ejecución de Acciones (`WebchatActionExecutorService`)
 El Webchat Interno asiste a ejecutivos y administradores para consultar métricas y ejecutar acciones operativas en lenguaje natural:
+* **Doble Método de Entrada (Texto y Audio con IBM Speech-to-Text) y Memoria de Sesión Completa:**
+  * **Entrada por Texto (`POST /api/webchat/query`):** Recibe `question` (texto plano) y `conversationHistory` (`ConversationMessageDto[]`) manteniendo la memoria conversacional _stateless_ en el backend y gestionada por el estado del cliente. El backend procesa la totalidad del `conversationHistory` enviado por el frontend sin recortar mensajes, de modo que toda la sesión activa se mantiene en contexto hasta que el usuario limpie el chat en el frontend (`conversationHistory: []`).
+  * **Entrada por Audio (`POST /api/webchat/transcribe`):** Recibe un archivo de audio grabado desde el navegador (`multipart/form-data`, campo `audio` o `file`) protegido por `AuthGuard('jwt')`. Utiliza `SpeechToTextService.transcribeAudio()` (con transcodificación automática a `WAV 16kHz mono` mediante `ffmpeg-static` para contenedores `webm`, `mp4`, `m4a` y `aac`) y devuelve `{ text, transcript }`. El frontend inyecta este texto transcrito como texto plano en su `conversationHistory` y ejecuta `POST /api/webchat/query`, garantizando compatibilidad total con el contexto del LLM y la reconstrucción multi-turno.
 * **Flujos Multi-Turno:** Si una solicitud carece de parámetros indispensables (fecha, detalle, tipo de actividad o correo de contacto), el motor detiene la ejecución y solicita los datos pendientes conservando el contexto en turnos sucesivos.
 * **Validación Obligatoria de Correo en Contactos:** Al programar actividades (`createActivity`) vinculadas a un contacto (`clientId`, `contacto` o `contactIds`), el sistema valida obligatoriamente que dicho contacto tenga un correo electrónico registrado en el CRM. Si carece de correo, el asistente solicita explícitamente el correo antes de agendar. Cuando el usuario proporciona el correo (en el mismo mensaje o en turnos sucesivos), el sistema actualiza y persiste el correo en el registro del contacto (`Client`) y completa la creación de la actividad automáticamente.
 * **Modificación de Oportunidades y Cambio de Etapa (`modifyOpportunity`):** Permite actualizar montos, productos, catálogos, y mover oportunidades entre etapas del pipeline (`stage_id`) en lenguaje natural (ej. *"muevela a calificado"*, *"cambia a propuesta"*, *"pasa a negociación"*). Resuelve dinámicamente la etapa contra el catálogo real `tblstagescatalog` del pipeline mediante `resolveStage`, aplicando coincidencias semánticas e insensibles a mayúsculas/acentos, emitiendo la actualización en vivo por WebSocket (`PipelinesGateway`) y registrando la transición en `opportunity_trackings`.
@@ -249,6 +252,16 @@ Para homologar la experiencia de usuario con la conexión simple de Facebook e I
   5. Persiste el canal en `channel_configs` del tenant con `verifyToken = 'meta_oauth_auto'` e `isActive = true`.
   6. Garantiza la existencia e inicialización de la plantilla base `crm_inicio_conversacion` (`isBase = true`), asegurando que el envío outbound y la ventana de 23 horas queden listos de inmediato para operar.
 
-* **Estrategia de Persistencia de Tokens Permanentes:**
-  * Al vincular la cuenta mediante Embedded Signup, el backend canjea el código de autorización por un `Long-Lived User Access Token`.
-  * Además, `MetaOauthService.connectWhatsAppEmbedded` prioriza la variable `META_SYSTEM_USER_TOKEN` / `META_PERMANENT_SYSTEM_USER_TOKEN`. Si está presente en `.env`, el canal se vincula con el token permanente del usuario del sistema central de la plataforma, asegurando inmunidad total a revocaciones o expiraciones de sesión personal de Facebook del usuario.
+* **Estrategia de Tokens para Proveedor de Plataforma (Tech Provider Multi-Tenant):**
+  * Al vincular la cuenta mediante Embedded Signup, el backend canjea en vivo el código de autorización por un **Business Integration System User Access Token** exclusivo para esa WABA y número de teléfono.
+  * **Aislamiento Multi-Tenant de Permisos:** Este token generado dinámicamente es permanente para la integración empresarial del cliente y cuenta con permisos delegados explícitos (`whatsapp_business_messaging`, `whatsapp_business_management`) sobre los activos del tenant. El backend persiste dicho token directamente en `channel_configs.accessToken` del esquema del tenant, sin sobrescribirlo con tokens centrales de la plataforma, garantizando que Meta Graph API autorice sin restricciones las consultas de metadatos, envío de plantillas y mensajes en cada inquilino de forma independiente.
+
+
+---
+
+## 9. Blindaje de Seguridad en Entrada Omnicanal y Webchat (`Anti-SQLi` & `Tool Isolation`)
+
+* **Validación en `POST /conversations/test-receive`:** Protegido con `@UseGuards(AuthGuard('jwt'))` para impedir inyección no autenticada de mensajes y creación arbitraria de conversaciones/contactos.
+* **Autorización de Salas en `ConversationsGateway`:** Los eventos `@SubscribeMessage('set_tenant')` y `@SubscribeMessage('join_tenant')` validan que el socket autenticado tenga rol `superadmin` o que su `tokenTenant` coincida con el `tenantSchema` solicitado.
+* **Protección de Datos Preexistentes en `receiveIncomingMessage` (`webchat`):** Al recibir metadatos `contactInfo` desde el widget público, solo se completan campos vacíos o nombres placeholder (`Visitante`) sin sobrescribir datos de clientes previamente verificados.
+* **Guardrails Anti-SQLi y Restricción Estricta a Tools:** Tanto `AiAgentOrchestratorService` como `WebchatService` bloquean payloads SQL/DDL/DML en la entrada y garantizan que todo impacto en base de datos ocurra exclusivamente dentro del catálogo de herramientas autorizadas y validadas con Zod/RBAC.

@@ -37,6 +37,19 @@ export class WebchatSecurityService {
       throw new ForbiddenException(`Se requiere un usuario identificado y válido para realizar consultas.`);
     }
 
+    const validMemberRegex = /^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$/;
+    if (Array.isArray(cubeQuery.measures)) {
+      cubeQuery.measures = cubeQuery.measures.filter((m) => typeof m === 'string' && validMemberRegex.test(m));
+    }
+    if (Array.isArray(cubeQuery.dimensions)) {
+      cubeQuery.dimensions = cubeQuery.dimensions.filter((d) => typeof d === 'string' && validMemberRegex.test(d));
+    }
+    if (Array.isArray(cubeQuery.timeDimensions)) {
+      cubeQuery.timeDimensions = cubeQuery.timeDimensions.filter(
+        (td) => td && typeof td.dimension === 'string' && validMemberRegex.test(td.dimension),
+      );
+    }
+
     const extractFilterMembers = (filters: any[]): string[] => {
       const members: string[] = [];
       for (const f of filters || []) {
@@ -216,8 +229,12 @@ export class WebchatSecurityService {
         continue;
       }
 
-      // Descartar filtros inexistentes o inventados en catálogos globales como Productos
+      // Descartar filtros con identificadores malformados o sospechosos de inyección
       if (filter.member) {
+        if (typeof filter.member !== 'string' || !/^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$/.test(filter.member)) {
+          this.logger.warn(`[WebChat - Security] Filtro descartado por identificador inválido: ${String(filter.member)}`);
+          continue;
+        }
         const lowerMem = filter.member.toLowerCase();
         if (
           lowerMem.startsWith('productos.ejecutivoid') ||
@@ -375,6 +392,29 @@ export class WebchatSecurityService {
   isExecutive(role: string): boolean {
     const r = (role || '').toLowerCase().trim();
     return r === 'executive' || r === 'ejecutivo';
+  }
+
+  /**
+   * Detecta payloads de inyección SQL o comandos de manipulación directa de base de datos
+   * (DDL/DML crudo, acceso a catálogos del sistema o funciones internas de PostgreSQL)
+   * antes de procesar la consulta en el LLM, RAG o Cube.dev.
+   */
+  detectMaliciousSqlOrDbPayload(text?: string): boolean {
+    if (!text || typeof text !== 'string') return false;
+    const normalized = text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\s+/g, ' ').trim();
+    const sqlPatterns: RegExp[] = [
+      /\b(?:DROP|TRUNCATE|ALTER)\s+(?:TABLE|SCHEMA|DATABASE|INDEX|VIEW|FUNCTION|TRIGGER)\b/i,
+      /\bDELETE\s+FROM\s+[a-zA-Z0-9_."]+\b/i,
+      /\bINSERT\s+INTO\s+[a-zA-Z0-9_."]+\s*(?:\(|VALUES\b)/i,
+      /\bUPDATE\s+[a-zA-Z0-9_."]+\s+SET\s+[a-zA-Z0-9_."]+\s*=/i,
+      /\bUNION\s+(?:ALL\s+)?SELECT\b/i,
+      /\bSELECT\s+.+\s+FROM\s+(?:information_schema|pg_catalog|pg_tables|pg_stat_activity|pg_user|pg_shadow|users|tenants|clients)\b/i,
+      /\b(?:pg_sleep|pg_read_file|pg_ls_dir|lo_import|lo_export|dblink|COPY\s+.*\s+TO\s+PROGRAM)\s*\(?/i,
+      /(?:';|";)\s*(?:DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|SELECT|EXEC|EXECUTE|SET\s+search_path)\b/i,
+      /(?:'\s*OR\s*'1'\s*=\s*'1|'\s*OR\s*1\s*=\s*1\s*(?:--|\/*|#|$))/i,
+      /\bSET\s+search_path\s+TO\b/i,
+    ];
+    return sqlPatterns.some((pattern) => pattern.test(normalized));
   }
 
   private normalizeString(str: string): string {

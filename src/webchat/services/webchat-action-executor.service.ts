@@ -117,6 +117,34 @@ export class WebchatActionExecutorService {
     originalQuestion: string,
     conversationHistory?: ConversationHistoryMessage[],
   ): Promise<WebchatResponse> {
+    const allowedActions = new Set([
+      'createOpportunity',
+      'modifyOpportunity',
+      'createActivity',
+      'modifyActivity',
+      'createTicket',
+    ]);
+    if (!actionPlan?.action || !allowedActions.has(actionPlan.action)) {
+      this.logger.warn(`[WebChat - Action Executor] Acción bloqueada por no pertenecer al catálogo de tools permitidas: '${(actionPlan as any)?.action}'`);
+      return {
+        answer: `La acción solicitada no está permitida. Únicamente puedo ejecutar operaciones autorizadas sobre Oportunidades, Actividades y Tickets.`,
+      };
+    }
+
+    // Guardia contra operaciones destructivas o sobre entidades ajenas a las tools permitidas
+    const normalizedQ = (originalQuestion || '').toLowerCase().trim();
+    const isDestructiveRequest = /\b(elimina|eliminar|borra|borrar|suprime|suprimir|destruye|destruir|drop\s+table|truncate\s+table|delete\s+from)\b/i.test(normalizedQ);
+    const isUnauthorizedEntityMutation = /\b(crea|crear|modifica|modificar|actualiza|actualizar|cambia|cambiar|elimina|eliminar|borra|borrar)\s+(?:el\s+|la\s+|un\s+|una\s+|los\s+|las\s+)?(usuario|usuarios|rol|roles|permiso|permisos|tenant|tenants|esquema|schema|suscripci[oó]n|plan\s+saas|contrase[ñn]a|password)\b/i.test(normalizedQ);
+
+    if (isDestructiveRequest || isUnauthorizedEntityMutation) {
+      this.logger.warn(
+        `[WebChat - Action Executor] Petición con impacto a BD fuera del alcance de tools bloqueada para usuario ${user.username}: "${originalQuestion}"`,
+      );
+      return {
+        answer: 'Por seguridad, el asistente no tiene permitido eliminar registros ni modificar usuarios, roles, permisos o configuraciones de sistema. Solo puedo crear o actualizar Oportunidades, Actividades y Tickets.',
+      };
+    }
+
     let params = actionPlan.parameters || {};
 
     // Si faltan datos en params, enriquecer con el contexto previo de la conversación
@@ -2542,7 +2570,7 @@ export class WebchatActionExecutorService {
     if (conversationHistory && conversationHistory.length > 0) {
       const userMsgs = conversationHistory
         .filter(m => m.role === 'user')
-        .slice(-3);
+        .filter(m => Boolean(m?.content));
       for (const msg of userMsgs) {
         if (this.checkTemporalText(msg.content)) {
           return true;

@@ -600,6 +600,15 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
           if (!existingOpp) {
             return { status: 'ERROR', message: `Oportunidad con ID ${input.id} no encontrada.` };
           }
+          if (conversation.clientId && existingOpp.cliente_id && existingOpp.cliente_id !== conversation.clientId) {
+            this.logger.warn(
+              `[Security] Intento bloqueado en modifyOpportunity: oportunidad ${input.id} no pertenece al cliente ${conversation.clientId}`,
+            );
+            return {
+              status: 'ERROR',
+              message: `La oportunidad solicitada no pertenece al contacto de esta conversación.`,
+            };
+          }
 
           // 1. Construir mapa con los productos existentes { productId -> cantidad }
           const itemMap = new Map<string, number>();
@@ -698,6 +707,15 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
 
         case 'sendQuotationPdf': {
           let targetOppId = input?.opportunityId;
+          if (targetOppId && conversation.clientId) {
+            const targetOpp = await this.opportunitiesService.findOne(targetOppId).catch(() => null);
+            if (!targetOpp || (targetOpp.cliente_id && targetOpp.cliente_id !== conversation.clientId)) {
+              this.logger.warn(
+                `[Security] Intento bloqueado en sendQuotationPdf: oportunidad ${targetOppId} ajena al cliente ${conversation.clientId}. Usando oportunidad propia.`,
+              );
+              targetOppId = undefined;
+            }
+          }
           if (!targetOppId && conversation.clientId) {
             const clientOpps = await this.opportunitiesService.findByClientId(conversation.clientId);
             if (clientOpps && clientOpps.length > 0) targetOppId = clientOpps[0].id;
@@ -723,14 +741,16 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
           }
 
           if (client) {
-            if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
+            const isSameConversationClient = client.id === conversation.clientId;
+            const isPlaceholderName = !client.nombre || /^(visitante|prospecto|contacto|usuario|cliente)\b/i.test(client.nombre.trim());
+            if (input.nombre && !input.nombre.toLowerCase().includes('visitante') && (isSameConversationClient || isPlaceholderName)) {
               const names = this.splitFullName(input.nombre);
               client.nombre = names.nombre;
               if (names.apellido) client.apellido = names.apellido;
             }
-            if (email) client.correo = email;
-            if (phone) client.telefono = phone;
-            if (empresa) client.empresa = empresa;
+            if (email && (isSameConversationClient || !client.correo || !client.correo.trim())) client.correo = email;
+            if (phone && (isSameConversationClient || !client.telefono || !client.telefono.trim())) client.telefono = phone;
+            if (empresa && (isSameConversationClient || !client.empresa || !client.empresa.trim())) client.empresa = empresa;
             await this.clientRepository.save(client);
           } else if (conversation.clientId) {
             client = await this.clientRepository.findOne({ where: { id: conversation.clientId } });

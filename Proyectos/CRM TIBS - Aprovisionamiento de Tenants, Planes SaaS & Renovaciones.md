@@ -269,3 +269,14 @@ Se corrigió un desfase crítico en la desestructuración del array resultante d
     - `action_name`: Etiqueta del subagente resolutivo (ej. `subagent_comercial`).
     - `channel`: Canal de origen del mensaje (ej. `messenger`, `whatsapp`, `instagram`).
     - `metadata.steps`: Arreglo de pasos ejecutados para trazabilidad transparente (`['router', 'rag_search', 'subagent_comercial', 'conversation_summary']`).
+
+
+## Tope de cortesía (2%) con consumo extra desactivado
+- `COURTESY_RATIO = 0.02`; `getCourtesyCap(limit) = floor(limit * 0.02)` en `subscription-validator.service.ts`.
+- `recordConsumption` / `commitTurnConsumption` devuelven un `CourtesyVerdict` (`exceeded`, `courtesyUsed`, `courtesyCap`) calculado tras el INSERT. Solo aplica con `allow_extra = false`; `exceeded = baseCourtesy > cap`.
+- Solo la petición que cruza el límite usa cortesía; las siguientes siguen bloqueándose en `checkSubscriptionLimits` (402).
+- Si `exceeded`: los tokens quedan registrados, pero la respuesta se suprime. `processIncomingMessage` (WhatsApp/canales) devuelve `route: 'subscription_blocked'` (solo notifica a admins); `WebchatService.processQuery` devuelve el mensaje de agotamiento.
+- Con `allow_extra = true` el flujo no cambia (el sobrante del tramo extra no tiene tope).
+- `getConsumption` expone `courtesy_cap` y `courtesy_cap_exceeded`.
+
+- **Ajuste**: si el desborde supera el tope (2%) con `allow_extra = false`, `recordConsumption` solo imputa los tokens restantes del plan base (el plan queda en 100%, sin cortesía absorbida). El costo real queda en `transaction_history.metadata` (`courtesy_rejected`, `real_total_tokens`, `rejected_overage_tokens`).

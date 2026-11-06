@@ -471,31 +471,14 @@ export class MetaOauthService {
       throw new BadRequestException(`No se pudo obtener el token de Meta: ${err.message}`);
     }
 
-    // 1.1 Canjear por Long-Lived Token (60 días extendible) para máxima duración
-    let finalAccessToken = userAccessToken;
-    try {
-      const exchangeUrl = `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${userAccessToken}`;
-      const exchangeRes = await fetch(exchangeUrl, { signal: AbortSignal.timeout(8000) });
-      if (exchangeRes.ok) {
-        const exchangeData: any = await exchangeRes.json();
-        if (exchangeData.access_token) {
-          finalAccessToken = exchangeData.access_token;
-          this.logger.log('[connectWhatsAppEmbedded] Token de WhatsApp extendido a Long-Lived con éxito.');
-        }
-      }
-    } catch (err: any) {
-      this.logger.warn(`[connectWhatsAppEmbedded] Advertencia extendiendo token a long-lived: ${err.message}`);
-    }
-
-    // 1.2 Priorizar Token de Usuario del Sistema Permanente (Nunca expira) si está configurado en .env
-    const systemPermanentToken =
-      this.configService.get<string>('META_SYSTEM_USER_TOKEN') ||
-      this.configService.get<string>('META_PERMANENT_SYSTEM_USER_TOKEN');
-
-    if (systemPermanentToken) {
-      finalAccessToken = systemPermanentToken;
-      this.logger.log('[connectWhatsAppEmbedded] Utilizando Token de Sistema Permanente configurado para WhatsApp.');
-    }
+    // 1.1 Nota de Arquitectura (Tech Provider / Proveedor de Plataforma):
+    // El canje del código de Embedded Signup con Meta devuelve directamente un
+    // Business Integration System User Access Token permanente con permisos explícitos
+    // ('whatsapp_business_messaging', 'whatsapp_business_management') sobre la WABA
+    // y el número del cliente (tenant). No expira por tiempo y NO debe sobrescribirse
+    // con META_SYSTEM_USER_TOKEN central para preservar el aislamiento y permisos multi-tenant.
+    const finalAccessToken = (userAccessToken || '').trim();
+    this.logger.log(`[connectWhatsAppEmbedded] Token de integración permanente asignado a tenant ${tenantSchema} para WABA ${dto.wabaId}`);
 
     // 2. Auto-suscribir la WABA a los Webhooks de la App
     try {

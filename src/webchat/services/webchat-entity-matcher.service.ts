@@ -205,7 +205,11 @@ export class WebchatEntityMatcherService {
     const normTerms = rawTerms.map(t => normalizeText(t)).filter(t => t.length >= 2);
     const searchTermsToUse = normTerms.length > 0 ? normTerms : rawTerms;
 
-    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const rawSchema = TenantContextService.getTenantSchema() || 'public';
+    const tenantSchema =
+      rawSchema === 'public' || TenantContextService.validateSchemaName(rawSchema)
+        ? rawSchema
+        : 'public';
     const isExec = this.securityService.isExecutive(userRole);
     const matches: EntityMatchItem[] = [];
     const trCol = PG_TRANSLATE_EXPRESSION;
