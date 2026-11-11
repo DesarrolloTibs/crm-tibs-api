@@ -9,6 +9,104 @@ export class SpeechToTextService {
 
   constructor(private readonly configService: ConfigService) {}
 
+  normalizeSpokenNumbersAndEmail(text: string): string {
+    if (!text || typeof text !== 'string') return text;
+    let result = text.trim();
+
+    if (/\barroba\b/i.test(result)) {
+      result = result
+        .replace(/\s+arroba\s+/gi, '@')
+        .replace(/(\S+)\s+punto\s+(\S+)/gi, '$1.$2')
+        .replace(/(\S+)\s+guion\s+bajo\s+(\S+)/gi, '$1_$2')
+        .replace(/(\S+)\s+guion\s+(\S+)/gi, '$1-$2');
+    }
+
+    const unitsAndTeens: Record<string, number> = {
+      cero: 0, un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
+      seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12,
+      trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17,
+      dieciocho: 18, diecinueve: 19, veinte: 20, veintiun: 21, veintiuno: 21,
+      veintidos: 22, veintitres: 23, veinticuatro: 24, veinticinco: 25,
+      veintiseis: 26, veintisiete: 27, veintiocho: 28, veintinueve: 29,
+    };
+    const tens: Record<string, number> = {
+      treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60,
+      setenta: 70, ochenta: 80, noventa: 90,
+    };
+    const hundreds: Record<string, number> = {
+      cien: 100, ciento: 100, doscientos: 200, doscientas: 200,
+      trescientos: 300, trescientas: 300, cuatrocientos: 400, cuatrocientas: 400,
+      quinientos: 500, quinientas: 500, seiscientos: 600, seiscientas: 600,
+      setecientos: 700, setecientas: 700, ochocientos: 800, ochocientas: 800,
+      novecientos: 900, novecientas: 900,
+    };
+
+    const normWord = (w: string) =>
+      w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+    const tokens = result.split(/\s+/);
+
+    const parseSubHundred = (idx: number): { val: string; nextIdx: number } | null => {
+      if (idx >= tokens.length) return null;
+      const w = normWord(tokens[idx]);
+      if (unitsAndTeens[w] !== undefined) {
+        return { val: String(unitsAndTeens[w]), nextIdx: idx + 1 };
+      }
+      if (tens[w] !== undefined) {
+        const base = tens[w];
+        if (idx + 2 < tokens.length && normWord(tokens[idx + 1]) === 'y') {
+          const u = normWord(tokens[idx + 2]);
+          if (unitsAndTeens[u] !== undefined && unitsAndTeens[u] >= 1 && unitsAndTeens[u] <= 9) {
+            return { val: String(base + unitsAndTeens[u]), nextIdx: idx + 3 };
+          }
+        }
+        return { val: String(base), nextIdx: idx + 1 };
+      }
+      return null;
+    };
+
+    const parseNumberGroup = (idx: number): { val: string; nextIdx: number } | null => {
+      if (idx >= tokens.length) return null;
+      const w = normWord(tokens[idx]);
+      if (/^\d+$/.test(w)) {
+        return { val: w, nextIdx: idx + 1 };
+      }
+      if (hundreds[w] !== undefined) {
+        const hVal = hundreds[w];
+        if (w === 'cien') {
+          return { val: '100', nextIdx: idx + 1 };
+        }
+        const sub = parseSubHundred(idx + 1);
+        if (sub) {
+          return { val: String(hVal + parseInt(sub.val, 10)), nextIdx: sub.nextIdx };
+        }
+        return { val: String(hVal), nextIdx: idx + 1 };
+      }
+      return parseSubHundred(idx);
+    };
+
+    const out: string[] = [];
+    let i = 0;
+    while (i < tokens.length) {
+      const groups: string[] = [];
+      let curr = i;
+      while (curr < tokens.length) {
+        const g = parseNumberGroup(curr);
+        if (!g) break;
+        groups.push(g.val);
+        curr = g.nextIdx;
+      }
+      const joined = groups.join('');
+      if (groups.length >= 2 && joined.length >= 7 && joined.length <= 15) {
+        out.push(joined);
+        i = curr;
+      } else {
+        out.push(tokens[i]);
+        i++;
+      }
+    }
+    return out.join(' ');
+  }
+
   /**
    * Convierte un búfer de audio (ej. MP4, M4A, AAC, WebM, contenedores de video)
    * a formato estándar WAV (16kHz mono) soportado al 100% por IBM Watson.
@@ -102,7 +200,7 @@ export class SpeechToTextService {
     }
 
     const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
-    const endpoint = `${normalizedBaseUrl}/v1/recognize?model=${encodeURIComponent(model)}`;
+    const endpoint = `${normalizedBaseUrl}/v1/recognize?model=${encodeURIComponent(model)}&smart_formatting=true`;
     const authHeader = `Basic ${Buffer.from(`apikey:${apiKey}`).toString('base64')}`;
 
     this.logger.log(

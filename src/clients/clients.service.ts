@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindManyOptions, FindOptionsWhere, Repository, Brackets } from 'typeorm';
 import { Client } from './entities/client.entity';
@@ -10,6 +10,7 @@ import { PhoneUtils } from '../common/utils/phone.utils';
 
 @Injectable()
 export class ClientsService {
+  private readonly logger = new Logger(ClientsService.name);
   constructor(
     @InjectRepository(Client)
     private readonly clientRepository: Repository<Client>,
@@ -61,6 +62,9 @@ export class ClientsService {
           ejecutivo_id: createClientDto.ejecutivo_id,
         });
         company = await this.companyRepository.save(company);
+        this.logger.log(`[ClientsService] Empresa "${company.nombre}" (ID: ${company.id}) creada automáticamente en BD y vinculada al contacto.`);
+      } else {
+        this.logger.log(`[ClientsService] Empresa existente "${company.nombre}" (ID: ${company.id}) encontrada y vinculada al contacto.`);
       }
       companyId = company.id;
     }
@@ -69,7 +73,9 @@ export class ClientsService {
       ...createClientDto,
       companyId: companyId || null,
     });
-    return this.clientRepository.save(client);
+    const savedClient = await this.clientRepository.save(client);
+    this.logger.log(`[ClientsService] Contacto "${savedClient.nombre} ${savedClient.apellido || ''}" guardado exitosamente (ID: ${savedClient.id} | companyId: ${savedClient.companyId || 'N/A'}).`);
+    return savedClient;
   }
 
   findAll(): Promise<Client[]> {
@@ -112,6 +118,9 @@ export class ClientsService {
           ejecutivo_id: updateClientDto.ejecutivo_id,
         });
         company = await this.companyRepository.save(company);
+        this.logger.log(`[ClientsService] Empresa "${company.nombre}" (ID: ${company.id}) creada automáticamente en BD y vinculada al contacto.`);
+      } else {
+        this.logger.log(`[ClientsService] Empresa existente "${company.nombre}" (ID: ${company.id}) encontrada y vinculada al contacto.`);
       }
       companyId = company.id;
     }
@@ -124,12 +133,17 @@ export class ClientsService {
     if (!client) {
       throw new NotFoundException(`Client with ID "${id}" not found`);
     }
-    return this.clientRepository.save(client);
+    const savedClient = await this.clientRepository.save(client);
+    this.logger.log(`[ClientsService] Contacto "${savedClient.nombre} ${savedClient.apellido || ''}" guardado exitosamente (ID: ${savedClient.id} | companyId: ${savedClient.companyId || 'N/A'}).`);
+    return savedClient;
   }
 
   async updateStatus(id: string, updateClientStatusDto: UpdateClientStatusDto): Promise<Client> {
     const client = await this.findOne(id);
     client.estatus = updateClientStatusDto.estatus;
-    return this.clientRepository.save(client);
+
+    const savedClient = await this.clientRepository.save(client);
+    this.logger.log(`[ClientsService] Contacto "${savedClient.nombre} ${savedClient.apellido || ''}" guardado exitosamente (ID: ${savedClient.id} | companyId: ${savedClient.companyId || 'N/A'}).`);
+    return savedClient;
   }
 }

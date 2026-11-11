@@ -23,7 +23,7 @@ import { DeliveryTypeOption } from '../../opportunities/entities/delivery-type-o
 import { LicensingOption } from '../../opportunities/entities/licensing-option.entity';
 import { OpportunityLabel } from '../../opportunities/entities/opportunity-label.entity';
 import { TypeActivity } from '../../activities/entities/type-activity.entity';
-import { Client } from '../../clients/entities/client.entity';
+import { Client, ClientCategory } from '../../clients/entities/client.entity';
 import { Company } from '../../companies/entities/company.entity';
 import { Opportunity, Currency } from '../../opportunities/entities/opportunity.entity';
 import { Stage } from '../../stages/entities/stage.entity';
@@ -123,11 +123,15 @@ export class WebchatActionExecutorService {
       'createActivity',
       'modifyActivity',
       'createTicket',
+      'createClient',
+      'modifyClient',
+      'createCompany',
+      'modifyCompany',
     ]);
     if (!actionPlan?.action || !allowedActions.has(actionPlan.action)) {
       this.logger.warn(`[WebChat - Action Executor] Acción bloqueada por no pertenecer al catálogo de tools permitidas: '${(actionPlan as any)?.action}'`);
       return {
-        answer: `La acción solicitada no está permitida. Únicamente puedo ejecutar operaciones autorizadas sobre Oportunidades, Actividades y Tickets.`,
+        answer: `La acción solicitada no está permitida. Únicamente puedo ejecutar operaciones autorizadas sobre Clientes, Empresas, Oportunidades, Actividades y Tickets.`,
       };
     }
 
@@ -141,7 +145,7 @@ export class WebchatActionExecutorService {
         `[WebChat - Action Executor] Petición con impacto a BD fuera del alcance de tools bloqueada para usuario ${user.username}: "${originalQuestion}"`,
       );
       return {
-        answer: 'Por seguridad, el asistente no tiene permitido eliminar registros ni modificar usuarios, roles, permisos o configuraciones de sistema. Solo puedo crear o actualizar Oportunidades, Actividades y Tickets.',
+        answer: 'Por seguridad, el asistente no tiene permitido eliminar registros ni modificar usuarios, roles, permisos o configuraciones de sistema. Solo puedo crear o actualizar Clientes, Empresas, Oportunidades, Actividades y Tickets.',
       };
     }
 
@@ -170,6 +174,14 @@ export class WebchatActionExecutorService {
         return this.handleModifyActivity(params, user);
       case 'createTicket':
         return this.handleCreateTicket(params, user);
+      case 'createClient':
+        return this.handleCreateClient(params, user, originalQuestion);
+      case 'modifyClient':
+        return this.handleModifyClient(params, user, conversationHistory);
+      case 'createCompany':
+        return this.handleCreateCompany(params, user, originalQuestion);
+      case 'modifyCompany':
+        return this.handleModifyCompany(params, user, conversationHistory);
       default:
         return {
           answer: `No reconozco la acción '${(actionPlan as any).action}'. ¿Podrías indicarme qué deseas realizar?`,
@@ -320,6 +332,48 @@ export class WebchatActionExecutorService {
         const projMatch = aMsg.match(/-\s+Proyecto:\s+([^\n]+)/i);
         if (projMatch && projMatch[1]) {
           merged.nombreProyecto = projMatch[1].trim();
+          break;
+        }
+      }
+    }
+
+    // 5. Si es modifyClient y no se especificó el cliente objetivo en el turno actual (ej. completando datos en el siguiente turno), recuperar del historial del asistente
+    if (action === 'modifyClient' && !merged.id && !merged.clientId && !merged.clienteId && !merged.targetClient && !merged.nombreOriginal && !merged.correoOriginal && !merged.cliente && !merged.client && !merged.nombre) {
+      const assistantMessages = conversationHistory
+        .filter(m => m.role === 'assistant')
+        .map(m => m.content)
+        .reverse();
+
+      for (const aMsg of assistantMessages) {
+        const clientMatch = aMsg.match(/-\s+(?:Cliente|Nombre(?:\s+Completo)?):\s+([^\n\(]+)/i);
+        if (clientMatch && clientMatch[1]) {
+          merged.targetClient = clientMatch[1].trim();
+          break;
+        }
+        const listMatch = aMsg.match(/1\.\s+([^\(\[\n—]+?)(?:\s+\(|\s+—|\s+\[|\n|$)/);
+        if (listMatch && listMatch[1]) {
+          merged.targetClient = listMatch[1].trim();
+          break;
+        }
+      }
+    }
+
+    // 6. Si es modifyCompany y no se especificó la empresa objetivo en el turno actual, recuperar del historial del asistente
+    if (action === 'modifyCompany' && !merged.id && !merged.companyId && !merged.empresaId && !merged.targetCompany && !merged.nombreOriginal && !merged.empresa && !merged.company && !merged.nombre) {
+      const assistantMessages = conversationHistory
+        .filter(m => m.role === 'assistant')
+        .map(m => m.content)
+        .reverse();
+
+      for (const aMsg of assistantMessages) {
+        const compMatch = aMsg.match(/-\s+(?:Empresa|Nombre(?:\s+Comercial)?):\s+([^\n\(]+)/i);
+        if (compMatch && compMatch[1]) {
+          merged.targetCompany = compMatch[1].trim();
+          break;
+        }
+        const listMatch = aMsg.match(/1\.\s+([^\(\[\n—]+?)(?:\s+\(|\s+—|\s+\[|\n|$)/);
+        if (listMatch && listMatch[1]) {
+          merged.targetCompany = listMatch[1].trim();
           break;
         }
       }
@@ -1605,6 +1659,948 @@ export class WebchatActionExecutorService {
         helpdeskId: createdTicket.helpdesk_id,
       },
     };
+  }
+
+  // ─── 4. CLIENTES Y EMPRESAS ───────────────────────────────────────────────────
+
+  private parseClientCategory(raw?: string): ClientCategory | undefined {
+    if (!raw || typeof raw !== 'string') return undefined;
+    const norm = this.normalizeString(raw);
+    if (norm.includes('contacto')) return ClientCategory.CONTACTO;
+    if (norm.includes('cliente')) return ClientCategory.CLIENTE;
+    if (norm.includes('lead') || norm.includes('prospecto')) return ClientCategory.LEAD;
+    return undefined;
+  }
+
+  private formatProperName(value: string): string {
+    if (!value) return '';
+    return value
+      .trim()
+      .split(/\s+/)
+      .map(w => {
+        if (!w) return '';
+        if (w === w.toLowerCase() && /^[a-záéíóúñü]+$/i.test(w)) {
+          return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+        }
+        return w;
+      })
+      .join(' ');
+  }
+
+  private normalizeSpokenContactText(text: string): string {
+    if (!text || typeof text !== 'string') return text;
+    let result = text.trim();
+
+    if (/\barroba\b/i.test(result)) {
+      result = result
+        .replace(/\s+arroba\s+/gi, '@')
+        .replace(/(\S+)\s+punto\s+(\S+)/gi, '$1.$2')
+        .replace(/(\S+)\s+guion\s+bajo\s+(\S+)/gi, '$1_$2')
+        .replace(/(\S+)\s+guion\s+(\S+)/gi, '$1-$2');
+    }
+
+    const unitsAndTeens: Record<string, number> = {
+      cero: 0, un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
+      seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12,
+      trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17,
+      dieciocho: 18, diecinueve: 19, veinte: 20, veintiun: 21, veintiuno: 21,
+      veintidos: 22, veintitres: 23, veinticuatro: 24, veinticinco: 25,
+      veintiseis: 26, veintisiete: 27, veintiocho: 28, veintinueve: 29,
+    };
+    const tens: Record<string, number> = {
+      treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60,
+      setenta: 70, ochenta: 80, noventa: 90,
+    };
+    const hundreds: Record<string, number> = {
+      cien: 100, ciento: 100, doscientos: 200, doscientas: 200,
+      trescientos: 300, trescientas: 300, cuatrocientos: 400, cuatrocientas: 400,
+      quinientos: 500, quinientas: 500, seiscientos: 600, seiscientas: 600,
+      setecientos: 700, setecientas: 700, ochocientos: 800, ochocientas: 800,
+      novecientos: 900, novecientas: 900,
+    };
+
+    const normWord = (w: string) =>
+      w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+    const tokens = result.split(/\s+/);
+
+    const parseSubHundred = (idx: number): { val: string; nextIdx: number } | null => {
+      if (idx >= tokens.length) return null;
+      const w = normWord(tokens[idx]);
+      if (unitsAndTeens[w] !== undefined) {
+        return { val: String(unitsAndTeens[w]), nextIdx: idx + 1 };
+      }
+      if (tens[w] !== undefined) {
+        const base = tens[w];
+        if (idx + 2 < tokens.length && normWord(tokens[idx + 1]) === 'y') {
+          const u = normWord(tokens[idx + 2]);
+          if (unitsAndTeens[u] !== undefined && unitsAndTeens[u] >= 1 && unitsAndTeens[u] <= 9) {
+            return { val: String(base + unitsAndTeens[u]), nextIdx: idx + 3 };
+          }
+        }
+        return { val: String(base), nextIdx: idx + 1 };
+      }
+      return null;
+    };
+
+    const parseNumberGroup = (idx: number): { val: string; nextIdx: number } | null => {
+      if (idx >= tokens.length) return null;
+      const w = normWord(tokens[idx]);
+      if (/^\d+$/.test(w)) {
+        return { val: w, nextIdx: idx + 1 };
+      }
+      if (hundreds[w] !== undefined) {
+        const hVal = hundreds[w];
+        if (w === 'cien') {
+          return { val: '100', nextIdx: idx + 1 };
+        }
+        const sub = parseSubHundred(idx + 1);
+        if (sub) {
+          return { val: String(hVal + parseInt(sub.val, 10)), nextIdx: sub.nextIdx };
+        }
+        return { val: String(hVal), nextIdx: idx + 1 };
+      }
+      return parseSubHundred(idx);
+    };
+
+    const out: string[] = [];
+    let i = 0;
+    while (i < tokens.length) {
+      const groups: string[] = [];
+      let curr = i;
+      while (curr < tokens.length) {
+        const g = parseNumberGroup(curr);
+        if (!g) break;
+        groups.push(g.val);
+        curr = g.nextIdx;
+      }
+      const joined = groups.join('');
+      if (groups.length >= 2 && joined.length >= 7 && joined.length <= 15) {
+        out.push(joined);
+        i = curr;
+      } else {
+        out.push(tokens[i]);
+        i++;
+      }
+    }
+    return out.join(' ');
+  }
+
+  private splitFullName(rawName: string, rawLastName?: string): { nombre: string; apellido: string } {
+    const cleaned = (rawName || '')
+      .replace(/^["']|["']$/g, '')
+      .replace(/^(?:el\s+|la\s+|un\s+|una\s+|al\s+)?(?:cliente|contacto|prospecto|lead)\s+/i, '')
+      .trim();
+
+    const explicitLast = (rawLastName || '').replace(/^["']|["']$/g, '').trim();
+    if (explicitLast) {
+      return { nombre: this.formatProperName(cleaned), apellido: this.formatProperName(explicitLast) };
+    }
+
+    const parts = cleaned.split(/\s+/).filter(Boolean);
+    if (parts.length <= 1) {
+      return { nombre: this.formatProperName(cleaned), apellido: '' };
+    }
+    if (parts.length === 2) {
+      return { nombre: this.formatProperName(parts[0]), apellido: this.formatProperName(parts[1]) };
+    }
+    if (parts.length === 3) {
+      return { nombre: this.formatProperName(parts[0]), apellido: this.formatProperName(parts.slice(1).join(' ')) };
+    }
+    return {
+      nombre: this.formatProperName(parts.slice(0, 2).join(' ')),
+      apellido: this.formatProperName(parts.slice(2).join(' ')),
+
+    };
+  }
+
+  /**
+   * Crea un cliente/contacto en el CRM permitiendo guardado parcial (solo requiere el nombre).
+   * Respeta RBAC: los ejecutivos asignan automáticamente el registro a su propio usuario.
+   */
+  async handleCreateClient(params: any, user: User, originalQuestion?: string): Promise<WebchatResponse> {
+    const isExec = this.isExecutive(user.role);
+
+    // 1. Asignación de Ejecutivo (RBAC)
+    let targetExecutiveId = user.id;
+    let targetExecutiveName = user.username;
+
+    if (!isExec && (params.ejecutivo || params.ejecutivoId || params.user || params.userId)) {
+      const foundUser = await this.resolveUser(params.ejecutivo || params.ejecutivoId || params.user || params.userId);
+      if (foundUser) {
+        targetExecutiveId = foundUser.id;
+        targetExecutiveName = foundUser.username;
+      }
+    }
+
+    // 2. Nombre y Apellido (Único dato obligatorio: nombre; permite guardado con datos parciales)
+    let rawName = this.normalizeSpokenContactText(String(params.nombre || params.name || params.cliente || params.client || params.contacto || '')).trim();
+    const normQuestion = this.normalizeSpokenContactText(originalQuestion || '');
+    let embeddedEmail = '';
+    let embeddedPhone = '';
+
+    if (!rawName && normQuestion && !/^(?:crea(?:r)?|registra(?:r)?|da(?:r)?\s+de\s+alta|agrega(?:r)?|nuevo|nueva)\s+(?:un\s+|una\s+|el\s+|la\s+|al\s+)?(?:cliente|contacto|prospecto|lead)\s*$/i.test(normQuestion)) {
+      rawName = normQuestion
+        .replace(/^(?:crea(?:r)?|registra(?:r)?|da(?:r)?\s+de\s+alta|agrega(?:r)?|nuevo|nueva)\s+(?:un\s+|una\s+|el\s+|la\s+|al\s+)?(?:cliente|contacto|prospecto|lead)?\s*/i, '')
+        .trim();
+    }
+
+    const emailInName = rawName.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    if (emailInName) {
+      embeddedEmail = emailInName[0].trim();
+      rawName = rawName.replace(emailInName[0], '').trim();
+    }
+    const phoneInName = rawName.match(/\b(\d{7,15})\b/);
+    if (phoneInName && phoneInName[1]) {
+      embeddedPhone = phoneInName[1].trim();
+      rawName = rawName.replace(phoneInName[0], '').replace(/\b(tel[eé]fono|cel(?:ular)?|tel|n[uú]mero|correo|email)\b/gi, '').trim();
+    }
+    const rawLastName = (params.apellido || params.apellidos || params.lastName || '').trim();
+    const { nombre, apellido } = this.splitFullName(rawName, rawLastName);
+
+    if (!nombre || nombre.length < 2) {
+      return {
+        answer: `Para registrar al cliente o contacto, por favor indícame al menos su Nombre.\n\nTambién puedes compartir los siguientes datos opcionales (el registro puede guardarse aunque la información no esté completa):\n• Apellido\n• Correo electrónico\n• Teléfono\n• Puesto o cargo\n• Empresa\n• Categoría (Lead, Contacto o Cliente)`,
+      };
+    }
+
+    // 3. Campos opcionales
+    const correo = this.normalizeSpokenContactText(String(params.correo || params.email || embeddedEmail || '')).trim() || undefined;
+    const telefono = this.normalizeSpokenContactText(String(params.telefono || params.phone || params.celular || params.tel || embeddedPhone || '')).trim() || undefined;
+    const puesto = (params.puesto || params.cargo || params.position || '').trim() || undefined;
+    let empresa = (params.empresa || params.company || params.compania || params.cuenta || '').trim() || undefined;
+    const category = this.parseClientCategory(params.category || params.categoria || params.tipo) || ClientCategory.LEAD;
+
+    // 4. Validación de duplicados por correo o teléfono
+    if (correo) {
+      const existingEmail = await this.clientRepo.findOne({ where: { correo: ILike(correo) } }).catch(() => null);
+      if (existingEmail) {
+        const existingFullName = `${existingEmail.nombre} ${existingEmail.apellido || ''}`.trim();
+        return {
+          answer: `Ya existe un cliente registrado con el correo ${correo} (${existingFullName}). Si deseas actualizar su información, indícame qué datos quieres modificar.`,
+        };
+      }
+    }
+
+    if (telefono) {
+      const existingPhone = await this.clientsService.findByPhone(telefono).catch(() => null);
+      if (existingPhone) {
+        const existingFullName = `${existingPhone.nombre} ${existingPhone.apellido || ''}`.trim();
+        return {
+          answer: `Ya existe un cliente registrado con el teléfono ${telefono} (${existingFullName}). Si deseas actualizar sus datos, indícame qué cambios deseas realizar.`,
+        };
+      }
+    }
+
+    // 5. Resolución de Empresa (si se proporcionó nombre de empresa, vincula la existente o la crea en ClientsService)
+    let companyId: string | undefined = params.companyId && this.isValidUuid(params.companyId) ? params.companyId : undefined;
+    if (!companyId && empresa) {
+      const resolvedComp = await this.resolveCompany(empresa);
+      if (resolvedComp) {
+        companyId = resolvedComp.id;
+        empresa = resolvedComp.nombre;
+        this.logger.log(`[WebChat - createClient] Empresa existente encontrada: "${resolvedComp.nombre}" (ID: ${resolvedComp.id}). Se vinculará al nuevo contacto "${nombre} ${apellido}".`);
+      } else {
+        this.logger.log(`[WebChat - createClient] La empresa "${empresa}" no existe en el catálogo. Se creará automáticamente en BD y se vinculará al nuevo contacto "${nombre} ${apellido}".`);
+      }
+    }
+
+    // 6. Guardar el cliente en BD (incluso si faltan datos opcionales)
+    const createdClient = await this.clientsService.create({
+      nombre,
+      apellido: apellido || undefined,
+      correo,
+      telefono,
+      puesto,
+      empresa,
+      companyId,
+      category,
+      estatus: true,
+      ejecutivo_id: targetExecutiveId,
+    });
+
+    const fullName = `${createdClient.nombre} ${createdClient.apellido || ''}`.trim();
+    // 7. Identificar campos opcionales pendientes para informar amablemente al usuario
+    const companyDisplay = createdClient.empresa || empresa || 'Sin empresa asignada';
+    this.logger.log(`[WebChat - createClient] Contacto registrado: "${fullName}" (ID: ${createdClient.id}) | Empresa: "${companyDisplay}" (companyId: ${createdClient.companyId || companyId || 'N/A'}) | Ejecutivo: ${targetExecutiveName}.`);
+    // 7. Identificar campos opcionales pendientes para informar amablemente al usuario
+
+    // 7. Identificar campos opcionales pendientes para informar amablemente al usuario
+    const pendingFields: string[] = [];
+    if (!createdClient.apellido) pendingFields.push('Apellido');
+    if (!createdClient.correo) pendingFields.push('Correo electrónico');
+    if (!createdClient.telefono) pendingFields.push('Teléfono');
+    if (!createdClient.puesto) pendingFields.push('Puesto');
+    if (!createdClient.empresa && !createdClient.companyId) pendingFields.push('Empresa');
+
+    const pendingNote = pendingFields.length > 0
+      ? `\n\nNota: El cliente se guardó exitosamente con la información proporcionada. Si deseas completar los datos faltantes ahora o más adelante, puedes indicarme: ${pendingFields.join(', ')}.`
+      : '';
+
+    return {
+      answer: `Cliente Registrado Exitosamente\n\n- Nombre: ${fullName}\n- Categoría: ${createdClient.category || category}\n- Empresa: ${companyDisplay}\n- Correo: ${createdClient.correo || 'No especificado'}\n- Teléfono: ${createdClient.telefono || 'No especificado'}\n- Puesto: ${createdClient.puesto || 'No especificado'}\n- Ejecutivo: ${targetExecutiveName}${pendingNote}`,
+      data: [{
+        'ID': createdClient.id,
+        'Nombre': fullName,
+        'Categoría': createdClient.category || category,
+        'Empresa': companyDisplay,
+        'Correo': createdClient.correo || 'N/A',
+        'Teléfono': createdClient.telefono || 'N/A',
+        'Puesto': createdClient.puesto || 'N/A',
+        'Ejecutivo': targetExecutiveName,
+      }],
+      dashboardRedirect: {
+        tab: 'commercial',
+        executiveId: targetExecutiveId,
+      },
+    };
+  }
+
+  /**
+   * Modifica un cliente/contacto existente validando pertenencia (RBAC: ejecutivos solo modifican registros propios).
+   */
+  async handleModifyClient(
+    params: any,
+    user: User,
+    conversationHistory?: ConversationHistoryMessage[],
+  ): Promise<WebchatResponse> {
+    const isExec = this.isExecutive(user.role);
+
+    const id = params.id || params.clientId || params.clienteId;
+    const explicitTarget = params.targetClient || params.nombreOriginal || params.correoOriginal || params.cliente || params.client;
+    const searchHint = (explicitTarget || params.nombre || params.name || '').trim();
+
+    let client: Client | null = null;
+
+    if (id && this.isValidUuid(id)) {
+      client = await this.clientRepo.findOne({
+        where: { id },
+        relations: ['company', 'ejecutivo'],
+      }).catch(() => null);
+    }
+
+    if (!client && searchHint) {
+      const resolution = await this.resolveClientResolution(searchHint, user, isExec);
+      if (resolution.ambiguousCandidates.length > 1) {
+        const listText = resolution.ambiguousCandidates
+          .map((c, idx) => {
+            const cName = `${c.nombre} ${c.apellido || ''}`.trim();
+            const cComp = c.empresa || c.company?.nombre || 'Sin empresa';
+            const cEmail = c.correo ? ` — ${c.correo}` : '';
+            return `${idx + 1}. ${cName} (${cComp})${cEmail} [${c.category || 'Lead'}]`;
+          })
+          .join('\n');
+
+        return {
+          answer: `Encontré varios clientes que coinciden con "${searchHint}". ¿Cuál de ellos deseas actualizar?\n\n${listText}\n\nPor favor indícame el nombre completo o correo del cliente y el cambio que deseas aplicar.`,
+        };
+      }
+      client = resolution.item;
+    }
+
+    if (!client) {
+      return {
+        answer: searchHint
+          ? `No encontré ningún cliente o contacto que coincida con "${searchHint}". Por favor verifica el nombre o correo electrónico.`
+          : `Por favor indícame el nombre o correo del cliente que deseas actualizar y los datos que quieres modificar.`,
+      };
+    }
+
+    // Validación RBAC: Ejecutivo solo puede modificar sus propios registros
+    if (isExec && client.ejecutivo_id !== user.id) {
+      return {
+        answer: `Acceso Denegado: Solo tienes permitido modificar los clientes y contactos asignados a tu propia cuenta.`,
+      };
+    }
+
+    const updateDto: any = {};
+
+    // 1. Nuevo Nombre / Apellido
+    const explicitNewName = (params.nuevoNombre || params.newName || '').trim();
+    const explicitNewLastName = (params.nuevoApellido || params.newLastName || params.apellido || params.apellidos || '').trim();
+
+    if (explicitNewName) {
+      if (!explicitNewLastName && explicitNewName.includes(' ')) {
+        const split = this.splitFullName(explicitNewName);
+        updateDto.nombre = split.nombre;
+        if (split.apellido) updateDto.apellido = split.apellido;
+      } else {
+        updateDto.nombre = explicitNewName;
+      }
+    } else if (explicitTarget && params.nombre) {
+      const candidateNewName = String(params.nombre).trim();
+      const currentFull = `${client.nombre} ${client.apellido || ''}`.trim();
+      if (
+        candidateNewName &&
+        this.normalizeString(candidateNewName) !== this.normalizeString(client.nombre) &&
+        this.normalizeString(candidateNewName) !== this.normalizeString(currentFull)
+      ) {
+        if (!explicitNewLastName && candidateNewName.includes(' ')) {
+          const split = this.splitFullName(candidateNewName);
+          updateDto.nombre = split.nombre;
+          if (split.apellido) updateDto.apellido = split.apellido;
+        } else {
+          updateDto.nombre = candidateNewName;
+        }
+      }
+    }
+
+    if (explicitNewLastName && !updateDto.apellido) {
+      updateDto.apellido = explicitNewLastName;
+    }
+
+    // 2. Correo electrónico (validando unicidad)
+    const newEmail = (params.nuevoCorreo || params.newEmail || params.correo || params.email || '').trim();
+    if (newEmail && newEmail.toLowerCase() !== (client.correo || '').toLowerCase()) {
+      const dup = await this.clientRepo.findOne({ where: { correo: ILike(newEmail) } }).catch(() => null);
+      if (dup && dup.id !== client.id) {
+        const dupName = `${dup.nombre} ${dup.apellido || ''}`.trim();
+        return {
+          answer: `No es posible asignar el correo ${newEmail} porque ya está registrado para otro cliente (${dupName}).`,
+        };
+      }
+      updateDto.correo = newEmail;
+    }
+
+    // 3. Teléfono
+    const newPhone = (params.nuevoTelefono || params.newPhone || params.telefono || params.phone || params.celular || params.tel || '').trim();
+    if (newPhone && newPhone !== (client.telefono || '')) {
+      updateDto.telefono = newPhone;
+    }
+
+    // 4. Puesto / Cargo
+    const newPosition = (params.nuevoPuesto || params.newPosition || params.puesto || params.cargo || params.position || '').trim();
+    if (newPosition && newPosition !== (client.puesto || '')) {
+      updateDto.puesto = newPosition;
+    }
+
+    // 5. Empresa
+    const newCompanyStr = (params.nuevaEmpresa || params.newCompany || params.empresa || params.company || params.compania || params.cuenta || '').trim();
+    if (newCompanyStr) {
+      const resolvedComp = await this.resolveCompany(newCompanyStr);
+      if (resolvedComp) {
+        updateDto.companyId = resolvedComp.id;
+        updateDto.empresa = resolvedComp.nombre;
+        this.logger.log(`[WebChat - modifyClient] Empresa existente encontrada: "${resolvedComp.nombre}" (ID: ${resolvedComp.id}). Se vinculará al contacto "${client.nombre}".`);
+      } else {
+        this.logger.log(`[WebChat - modifyClient] La empresa "${newCompanyStr}" no existe en el catálogo. Se creará automáticamente en BD y se vinculará al contacto "${client.nombre}".`);
+        updateDto.empresa = newCompanyStr;
+        updateDto.ejecutivo_id = client.ejecutivo_id || user.id;
+      }
+      }
+
+    // 6. Categoría (Lead, Contacto, Cliente)
+    const newCat = this.parseClientCategory(params.nuevaCategoria || params.category || params.categoria || params.tipo);
+    if (newCat && newCat !== client.category) {
+      updateDto.category = newCat;
+    }
+
+    // 7. Estatus (Activo / Inactivo)
+    const rawStatus = params.estatus !== undefined ? params.estatus : (params.status !== undefined ? params.status : params.activo);
+    if (rawStatus !== undefined && rawStatus !== null) {
+      if (typeof rawStatus === 'boolean') {
+        updateDto.estatus = rawStatus;
+      } else {
+        const sNorm = this.normalizeString(String(rawStatus));
+        if (sNorm === 'true' || sNorm === 'activo' || sNorm === 'activa' || sNorm === '1') {
+          updateDto.estatus = true;
+        } else if (sNorm === 'false' || sNorm === 'inactivo' || sNorm === 'inactiva' || sNorm === '0') {
+          updateDto.estatus = false;
+        }
+      }
+    }
+
+    // 8. Reasignación de Ejecutivo (Solo Admin / SuperAdmin)
+    if (!isExec && (params.ejecutivo || params.nuevoEjecutivo || params.ejecutivoId)) {
+      const resolvedExec = await this.resolveUser(params.ejecutivo || params.nuevoEjecutivo || params.ejecutivoId);
+      if (resolvedExec) {
+        updateDto.ejecutivo_id = resolvedExec.id;
+      }
+    }
+
+    if (Object.keys(updateDto).length === 0) {
+      const currentFullName = `${client.nombre} ${client.apellido || ''}`.trim();
+      return {
+        answer: `Identifiqué al cliente ${currentFullName}, pero no detecté qué dato nuevo deseas asignarle. Por favor indícame qué campo quieres actualizar (nombre, apellido, correo, teléfono, puesto, empresa o categoría).`,
+      };
+    }
+
+    const updatedClient = await this.clientsService.update(client.id, updateDto);
+    const updatedFullName = `${updatedClient.nombre} ${updatedClient.apellido || ''}`.trim();
+    this.logger.log(`[WebChat - modifyClient] Contacto actualizado: "${updatedFullName}" (ID: ${updatedClient.id}) | Empresa: "${updatedClient.empresa || client.empresa || 'N/A'}" (companyId: ${updatedClient.companyId || updateDto.companyId || 'N/A'}).`);
+    const companyDisplay = updatedClient.empresa || client.empresa || client.company?.nombre || 'Sin empresa asignada';
+
+    return {
+      answer: `Cliente Actualizado con Éxito\n\n- Nombre: ${updatedFullName}\n- Categoría: ${updatedClient.category}\n- Empresa: ${companyDisplay}\n- Correo: ${updatedClient.correo || 'No especificado'}\n- Teléfono: ${updatedClient.telefono || 'No especificado'}\n- Puesto: ${updatedClient.puesto || 'No especificado'}`,
+      data: [{
+        'ID': updatedClient.id,
+        'Nombre': updatedFullName,
+        'Categoría': updatedClient.category,
+        'Empresa': companyDisplay,
+        'Correo': updatedClient.correo || 'N/A',
+        'Teléfono': updatedClient.telefono || 'N/A',
+        'Puesto': updatedClient.puesto || 'N/A',
+      }],
+      dashboardRedirect: {
+        tab: 'commercial',
+        executiveId: updatedClient.ejecutivo_id || user.id,
+      },
+    };
+  }
+
+  /**
+   * Crea una empresa/cuenta corporativa permitiendo guardado parcial (solo requiere el nombre).
+   * Respeta RBAC: los ejecutivos asignan automáticamente la empresa a su propio usuario.
+   */
+  async handleCreateCompany(params: any, user: User, originalQuestion?: string): Promise<WebchatResponse> {
+    const isExec = this.isExecutive(user.role);
+
+    // 1. Asignación de Ejecutivo (RBAC)
+    let targetExecutiveId = user.id;
+    let targetExecutiveName = user.username;
+
+    if (!isExec && (params.ejecutivo || params.ejecutivoId || params.user || params.userId)) {
+      const foundUser = await this.resolveUser(params.ejecutivo || params.ejecutivoId || params.user || params.userId);
+      if (foundUser) {
+        targetExecutiveId = foundUser.id;
+        targetExecutiveName = foundUser.username;
+      }
+    }
+
+    // 2. Nombre comercial (único campo requerido para guardar)
+    let rawName = this.normalizeSpokenContactText(String(params.nombre || params.empresa || params.company || params.name || params.cuenta || '')).trim();
+    const normQuestion = this.normalizeSpokenContactText(originalQuestion || '');
+    let embeddedEmail = '';
+    let embeddedPhone = '';
+
+    if (!rawName && normQuestion && !/^(?:crea(?:r)?|registra(?:r)?|da(?:r)?\s+de\s+alta|agrega(?:r)?|nueva|nuevo)\s+(?:una\s+|la\s+|a\s+la\s+)?(?:empresa|compañ[ií]a|cuenta(?:\s+corporativa)?)\s*$/i.test(normQuestion)) {
+      rawName = normQuestion
+        .replace(/^(?:crea(?:r)?|registra(?:r)?|da(?:r)?\s+de\s+alta|agrega(?:r)?|nueva|nuevo)\s+(?:una\s+|la\s+|a\s+la\s+)?(?:empresa|compañ[ií]a|cuenta(?:\s+corporativa)?)?\s*/i, '')
+        .trim();
+    }
+
+    const emailInName = rawName.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+    if (emailInName) {
+      embeddedEmail = emailInName[0].trim();
+      rawName = rawName.replace(emailInName[0], '').trim();
+    }
+    const phoneInName = rawName.match(/\b(\d{7,15})\b/);
+    if (phoneInName && phoneInName[1]) {
+      embeddedPhone = phoneInName[1].trim();
+      rawName = rawName.replace(phoneInName[0], '').replace(/\b(tel[eé]fono|cel(?:ular)?|tel|n[uú]mero|correo|email)\b/gi, '').trim();
+    }
+    const nombre = rawName
+      .replace(/^["']|["']$/g, '')
+      .replace(/^(?:la\s+|una\s+|a\s+la\s+)?(?:empresa|compañ[ií]a|cuenta(?:\s+corporativa)?)\s+/i, '')
+      .trim();
+
+    if (!nombre || nombre.length < 2) {
+      return {
+        answer: `Para registrar una nueva empresa, por favor indícame al menos su Nombre comercial o razón social.\n\nOpcionalmente también puedes compartir (el registro se guardará aunque no estén todos los datos):\n• Correo de contacto\n• Teléfono\n• Sitio web (Website)\n• Dirección`,
+      };
+    }
+
+    // 3. Verificar si ya existe una empresa con el mismo nombre
+    const existingCompany = await this.companyRepo.findOne({
+      where: { nombre: ILike(nombre) },
+    }).catch(() => null);
+
+    if (existingCompany) {
+      return {
+        answer: `La empresa ${existingCompany.nombre} ya se encuentra registrada en el CRM. Si deseas actualizar su correo, teléfono, sitio web o dirección, indícame los nuevos datos.`,
+      };
+    }
+
+    // 4. Campos opcionales
+    const correo = this.normalizeSpokenContactText(String(params.correo || params.email || embeddedEmail || '')).trim() || undefined;
+    const telefono = this.normalizeSpokenContactText(String(params.telefono || params.phone || params.celular || params.tel || embeddedPhone || '')).trim() || undefined;
+    const website = (params.website || params.web || params.sitioWeb || '').trim() || undefined;
+    const direccion = (params.direccion || params.address || params.ubicacion || '').trim() || undefined;
+
+    // 5. Crear Empresa en BD
+    const createdCompany = await this.companiesService.create({
+      nombre,
+      correo,
+      telefono,
+      website,
+      direccion,
+      estatus: true,
+      ejecutivo_id: targetExecutiveId,
+    });
+
+    // 6. Identificar campos opcionales pendientes para informar al usuario
+    const pendingFields: string[] = [];
+    if (!createdCompany.correo) pendingFields.push('Correo de contacto');
+    if (!createdCompany.telefono) pendingFields.push('Teléfono');
+    if (!createdCompany.website) pendingFields.push('Sitio web');
+    if (!createdCompany.direccion) pendingFields.push('Dirección');
+
+    const pendingNote = pendingFields.length > 0
+      ? `\n\nNota: La empresa se guardó exitosamente con la información proporcionada. Si deseas completar sus datos más adelante, puedes indicarme: ${pendingFields.join(', ')}.`
+      : '';
+
+    return {
+      answer: `Empresa Registrada Exitosamente\n\n- Empresa: ${createdCompany.nombre}\n- Correo: ${createdCompany.correo || 'No especificado'}\n- Teléfono: ${createdCompany.telefono || 'No especificado'}\n- Sitio Web: ${createdCompany.website || 'No especificado'}\n- Dirección: ${createdCompany.direccion || 'No especificada'}\n- Ejecutivo: ${targetExecutiveName}${pendingNote}`,
+      data: [{
+        'ID': createdCompany.id,
+        'Empresa': createdCompany.nombre,
+        'Correo': createdCompany.correo || 'N/A',
+        'Teléfono': createdCompany.telefono || 'N/A',
+        'Sitio Web': createdCompany.website || 'N/A',
+        'Dirección': createdCompany.direccion || 'N/A',
+        'Ejecutivo': targetExecutiveName,
+      }],
+      dashboardRedirect: {
+        tab: 'commercial',
+        executiveId: targetExecutiveId,
+      },
+    };
+  }
+
+  /**
+   * Modifica una empresa existente validando pertenencia (RBAC: ejecutivos solo modifican empresas propias).
+   */
+  async handleModifyCompany(
+    params: any,
+    user: User,
+    conversationHistory?: ConversationHistoryMessage[],
+  ): Promise<WebchatResponse> {
+    const isExec = this.isExecutive(user.role);
+
+    const id = params.id || params.companyId || params.empresaId;
+    const explicitTarget = params.targetCompany || params.nombreOriginal || params.empresa || params.company || params.cuenta;
+    const searchHint = (explicitTarget || params.nombre || params.name || '').trim();
+
+    let company: Company | null = null;
+
+    if (id && this.isValidUuid(id)) {
+      company = await this.companyRepo.findOne({
+        where: { id },
+        relations: ['ejecutivo'],
+      }).catch(() => null);
+    }
+
+    if (!company && searchHint) {
+      const resolution = await this.resolveCompanyResolution(searchHint, user, isExec);
+      if (resolution.ambiguousCandidates.length > 1) {
+        const listText = resolution.ambiguousCandidates
+          .map((comp, idx) => {
+            const cEmail = comp.correo ? ` — ${comp.correo}` : '';
+            const cPhone = comp.telefono ? ` (${comp.telefono})` : '';
+            return `${idx + 1}. ${comp.nombre}${cEmail}${cPhone}`;
+          })
+          .join('\n');
+
+        return {
+          answer: `Encontré varias empresas que coinciden con "${searchHint}". ¿Cuál de ellas deseas actualizar?\n\n${listText}\n\nPor favor indícame el nombre exacto de la empresa y el dato que deseas modificar.`,
+        };
+      }
+      company = resolution.item;
+    }
+
+    if (!company) {
+      return {
+        answer: searchHint
+          ? `No encontré ninguna empresa que coincida con "${searchHint}". Por favor verifica el nombre comercial.`
+          : `Por favor indícame el nombre de la empresa que deseas actualizar y los campos a modificar.`,
+      };
+    }
+
+    // Validación RBAC: Ejecutivo solo puede modificar sus propias empresas
+    if (isExec && company.ejecutivo_id !== user.id) {
+      return {
+        answer: `Acceso Denegado: Solo tienes permitido modificar las empresas asignadas a tu propia cuenta.`,
+      };
+    }
+
+    const updateDto: any = {};
+
+    // 1. Nuevo Nombre Comercial
+    const explicitNewName = (params.nuevoNombre || params.newName || '').trim();
+    if (explicitNewName && this.normalizeString(explicitNewName) !== this.normalizeString(company.nombre)) {
+      updateDto.nombre = explicitNewName;
+    } else if (explicitTarget && params.nombre) {
+      const candidateNewName = String(params.nombre).trim();
+      if (candidateNewName && this.normalizeString(candidateNewName) !== this.normalizeString(company.nombre)) {
+        updateDto.nombre = candidateNewName;
+      }
+    }
+
+    // 2. Correo
+    const newEmail = (params.nuevoCorreo || params.newEmail || params.correo || params.email || '').trim();
+    if (newEmail && newEmail.toLowerCase() !== (company.correo || '').toLowerCase()) {
+      updateDto.correo = newEmail;
+    }
+
+    // 3. Teléfono
+    const newPhone = (params.nuevoTelefono || params.newPhone || params.telefono || params.phone || params.celular || params.tel || '').trim();
+    if (newPhone && newPhone !== (company.telefono || '')) {
+      updateDto.telefono = newPhone;
+    }
+
+    // 4. Sitio Web
+    const newWebsite = (params.nuevoWebsite || params.newWebsite || params.website || params.web || params.sitioWeb || '').trim();
+    if (newWebsite && newWebsite !== (company.website || '')) {
+      updateDto.website = newWebsite;
+    }
+
+    // 5. Dirección
+    const newAddress = (params.nuevaDireccion || params.newAddress || params.direccion || params.address || params.ubicacion || '').trim();
+    if (newAddress && newAddress !== (company.direccion || '')) {
+      updateDto.direccion = newAddress;
+    }
+
+    // 6. Estatus
+    const rawStatus = params.estatus !== undefined ? params.estatus : (params.status !== undefined ? params.status : params.activo);
+    if (rawStatus !== undefined && rawStatus !== null) {
+      if (typeof rawStatus === 'boolean') {
+        updateDto.estatus = rawStatus;
+      } else {
+        const sNorm = this.normalizeString(String(rawStatus));
+        if (sNorm === 'true' || sNorm === 'activo' || sNorm === 'activa' || sNorm === '1') {
+          updateDto.estatus = true;
+        } else if (sNorm === 'false' || sNorm === 'inactivo' || sNorm === 'inactiva' || sNorm === '0') {
+          updateDto.estatus = false;
+        }
+      }
+    }
+
+    // 7. Reasignación de Ejecutivo (Solo Admin / SuperAdmin)
+    if (!isExec && (params.ejecutivo || params.nuevoEjecutivo || params.ejecutivoId)) {
+      const resolvedExec = await this.resolveUser(params.ejecutivo || params.nuevoEjecutivo || params.ejecutivoId);
+      if (resolvedExec) {
+        updateDto.ejecutivo_id = resolvedExec.id;
+      }
+    }
+
+    if (Object.keys(updateDto).length === 0) {
+      return {
+        answer: `Identifiqué a la empresa ${company.nombre}, pero no detecté qué campo deseas actualizar. Por favor indícame el nuevo nombre, correo, teléfono, sitio web o dirección.`,
+      };
+    }
+
+    const updatedCompany = await this.companiesService.update(company.id, updateDto);
+
+    return {
+      answer: `Empresa Actualizada con Éxito\n\n- Empresa: ${updatedCompany.nombre}\n- Correo: ${updatedCompany.correo || 'No especificado'}\n- Teléfono: ${updatedCompany.telefono || 'No especificado'}\n- Sitio Web: ${updatedCompany.website || 'No especificado'}\n- Dirección: ${updatedCompany.direccion || 'No especificada'}`,
+      data: [{
+        'ID': updatedCompany.id,
+        'Empresa': updatedCompany.nombre,
+        'Correo': updatedCompany.correo || 'N/A',
+        'Teléfono': updatedCompany.telefono || 'N/A',
+        'Sitio Web': updatedCompany.website || 'N/A',
+        'Dirección': updatedCompany.direccion || 'N/A',
+      }],
+      dashboardRedirect: {
+        tab: 'commercial',
+        executiveId: updatedCompany.ejecutivo_id || user.id,
+      },
+    };
+  }
+
+  /**
+   * Resuelve un cliente por nombre/correo/teléfono detectando ambigüedad y priorizando
+   * los registros propios cuando el usuario es Ejecutivo.
+   */
+  async resolveClientResolution(
+    searchHint: string,
+    user: User,
+    isExec: boolean,
+  ): Promise<{ item: Client | null; ambiguousCandidates: Client[] }> {
+    const clean = (searchHint || '').replace(/^["']|["']$/g, '').trim();
+    if (!clean) return { item: null, ambiguousCandidates: [] };
+
+    if (this.isValidUuid(clean)) {
+      const c = await this.clientRepo.findOne({ where: { id: clean }, relations: ['company', 'ejecutivo'] }).catch(() => null);
+      return { item: c, ambiguousCandidates: [] };
+    }
+
+    const cleanNorm = normalizeText(clean);
+    const words = cleanNorm.split(/\s+/).filter(w => w.length >= 2);
+    const nonStopWords = words.filter(w => !CRM_ENTITY_STOPWORDS.has(w));
+    const wordsToSearch = nonStopWords.length > 0 ? nonStopWords : words;
+
+    const candidateWhere: any[] = [
+      { nombre: ILike(`%${clean}%`) },
+      { apellido: ILike(`%${clean}%`) },
+      { correo: ILike(`%${clean}%`) },
+      { telefono: ILike(`%${clean}%`) },
+    ];
+
+    if (cleanNorm) {
+      candidateWhere.push(
+        { nombre: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${cleanNorm}%` }) },
+        { apellido: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${cleanNorm}%` }) },
+      );
+    }
+
+    for (const w of wordsToSearch) {
+      candidateWhere.push(
+        { nombre: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${w}%` }) },
+        { apellido: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${w}%` }) },
+        { nombre: ILike(`%${w}%`) },
+        { apellido: ILike(`%${w}%`) },
+      );
+    }
+
+    let candidates: Client[] = [];
+    try {
+      candidates = await this.clientRepo.find({
+        where: candidateWhere,
+        relations: ['company', 'ejecutivo'],
+        order: { nombre: 'ASC' },
+        take: 30,
+      });
+    } catch {
+      candidates = await this.clientRepo.find({
+        where: [
+          { nombre: ILike(`%${clean}%`) },
+          { apellido: ILike(`%${clean}%`) },
+          { correo: ILike(`%${clean}%`) },
+          ...wordsToSearch.map(w => ({ nombre: ILike(`%${w}%`) })),
+          ...wordsToSearch.map(w => ({ apellido: ILike(`%${w}%`) })),
+        ],
+        relations: ['company', 'ejecutivo'],
+        order: { nombre: 'ASC' },
+        take: 30,
+      }).catch(() => []);
+    }
+
+    if (candidates.length === 0) return { item: null, ambiguousCandidates: [] };
+
+    // Si es ejecutivo y hay candidatos propios que coinciden, priorizar el subconjunto propio;
+    // si solo existen candidatos de otros ejecutivos, conservarlos para disparar el mensaje explícito de Acceso Denegado.
+    const ownCandidates = isExec ? candidates.filter(c => c.ejecutivo_id === user.id) : candidates;
+    const pool = isExec && ownCandidates.length > 0 ? ownCandidates : candidates;
+
+    if (pool.length === 1) {
+      return { item: pool[0], ambiguousCandidates: [] };
+    }
+
+    const ranked = rankEntitiesByRelevance(
+      pool,
+      clean,
+      (c: Client) => [
+        `${c.nombre || ''} ${c.apellido || ''}`.trim(),
+        c.nombre,
+        c.apellido,
+        c.correo || '',
+        c.telefono || '',
+      ],
+    );
+
+    if (ranked.length === 0) {
+      return { item: pool[0], ambiguousCandidates: [] };
+    }
+
+    const best = ranked[0];
+    const second = ranked[1];
+
+    if (best && second) {
+      const diff = best.score - second.score;
+      if (diff < AMBIGUITY_MARGIN_SCORE && second.score >= 500) {
+        return {
+          item: null,
+          ambiguousCandidates: ranked.slice(0, 5).map(r => r.item),
+        };
+      }
+    }
+
+    return { item: best.item, ambiguousCandidates: [] };
+  }
+
+  /**
+   * Resuelve una empresa por nombre/correo detectando ambigüedad y priorizando
+   * las empresas propias cuando el usuario es Ejecutivo.
+   */
+  async resolveCompanyResolution(
+    searchHint: string,
+    user: User,
+    isExec: boolean,
+  ): Promise<{ item: Company | null; ambiguousCandidates: Company[] }> {
+    const clean = (searchHint || '').replace(/^["']|["']$/g, '').trim();
+    if (!clean) return { item: null, ambiguousCandidates: [] };
+
+    if (this.isValidUuid(clean)) {
+      const comp = await this.companyRepo.findOne({ where: { id: clean }, relations: ['ejecutivo'] }).catch(() => null);
+      return { item: comp, ambiguousCandidates: [] };
+    }
+
+    const cleanNorm = normalizeText(clean);
+    const words = cleanNorm.split(/\s+/).filter(w => w.length >= 2);
+    const nonStopWords = words.filter(w => !CRM_ENTITY_STOPWORDS.has(w));
+    const wordsToSearch = nonStopWords.length > 0 ? nonStopWords : words;
+
+    const candidateWhere: any[] = [
+      { nombre: ILike(`%${clean}%`) },
+      { correo: ILike(`%${clean}%`) },
+    ];
+
+    if (cleanNorm) {
+      candidateWhere.push(
+        { nombre: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${cleanNorm}%` }) },
+      );
+    }
+
+    for (const w of wordsToSearch) {
+      candidateWhere.push(
+        { nombre: Raw(alias => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${w}%` }) },
+        { nombre: ILike(`%${w}%`) },
+      );
+    }
+
+    let candidates: Company[] = [];
+    try {
+      candidates = await this.companyRepo.find({
+        where: candidateWhere,
+        relations: ['ejecutivo'],
+        order: { nombre: 'ASC' },
+        take: 30,
+      });
+    } catch {
+      candidates = await this.companyRepo.find({
+        where: [
+          { nombre: ILike(`%${clean}%`) },
+          ...wordsToSearch.map(w => ({ nombre: ILike(`%${w}%`) })),
+        ],
+        relations: ['ejecutivo'],
+        order: { nombre: 'ASC' },
+        take: 30,
+      }).catch(() => []);
+    }
+
+    if (candidates.length === 0) return { item: null, ambiguousCandidates: [] };
+
+    const ownCandidates = isExec ? candidates.filter(c => c.ejecutivo_id === user.id) : candidates;
+    const pool = isExec && ownCandidates.length > 0 ? ownCandidates : candidates;
+
+    if (pool.length === 1) {
+      return { item: pool[0], ambiguousCandidates: [] };
+    }
+
+    const ranked = rankEntitiesByRelevance(
+      pool,
+      clean,
+      (comp: Company) => [comp.nombre, comp.correo, comp.telefono, comp.website],
+    );
+
+    if (ranked.length === 0) {
+      return { item: pool[0], ambiguousCandidates: [] };
+    }
+
+    const best = ranked[0];
+    const second = ranked[1];
+
+    if (best && second) {
+      const diff = best.score - second.score;
+      if (diff < AMBIGUITY_MARGIN_SCORE && second.score >= 500) {
+        return {
+          item: null,
+          ambiguousCandidates: ranked.slice(0, 5).map(r => r.item),
+        };
+      }
+    }
+
+    return { item: best.item, ambiguousCandidates: [] };
   }
 
   // ─── 4. VERIFICACIÓN DE DISPONIBILIDAD (checkAvailability) ─────────────────────

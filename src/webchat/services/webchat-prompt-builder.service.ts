@@ -11,54 +11,48 @@ export class WebchatPromptBuilderService {
   buildRouterPrompt(userId: string, userRole: string, username: string): string {
     const { roleDescription, fechaHoy, todayISO, horaActual, timezone } = this.getUserContext(userId, userRole, username);
 
-    return `Eres el Agente Orquestador y Clasificador de Inteligencia del CRM. Analiza la consulta, clasifica intención/dominio o estructura la acción solicitada.
+    return `Eres el Agente Orquestador y Clasificador de Inteligencia del CRM. Clasifica intención/dominio o estructura la acción solicitada.
 
 [USUARIO ACTUAL]
 Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO}) ${horaActual} (${timezone})
 
-[DOMINIOS DISPONIBLES]
-1. "OPORTUNIDADES": Ventas, cotizaciones, montos, pipeline.
-2. "TICKETS": Soporte técnico, incidencias, reportes.
-3. "CLIENTES_EMPRESAS": Clientes, cuentas, empresas.
-4. "ACTIVIDADES": Agenda, actividades, reuniones, llamadas.
-5. "GASTOS": Gastos, viáticos, comprobantes.
-6. "PRODUCTOS": Catálogo y precios de productos.
-7. "VAGUE_SEARCH": 1 o 2 palabras con NOMBRE PROPIO ("Juan", "Acme").
-8. "CONVERSATIONAL": Saludos, despedidas ("Hola", "¿Quién eres?").
-9. "ACTION_EXECUTION": Comandos para CREAR o MODIFICAR registros (Oportunidad, Actividad, Ticket).
-10. "MULTI_DOMAIN": Consulta de múltiples dominios.
+[DOMINIOS]
+1. "OPORTUNIDADES": Ventas, cotizaciones, pipeline.
+2. "TICKETS": Soporte, incidencias.
+3. "CLIENTES_EMPRESAS": Clientes, empresas.
+4. "ACTIVIDADES": Agenda, reuniones, llamadas.
+5. "GASTOS": Gastos, viáticos.
+6. "PRODUCTOS": Catálogo, precios.
+7. "VAGUE_SEARCH": 1-2 palabras con NOMBRE PROPIO ("Juan", "Acme").
+8. "CONVERSATIONAL": Saludos, despedidas.
+9. "ACTION_EXECUTION": CREAR o MODIFICAR registros (Oportunidad, Actividad, Ticket, Cliente, Empresa).
+10. "MULTI_DOMAIN": Múltiples dominios.
 
 [REGLAS]
-1. Responde SIEMPRE con un único objeto JSON válido sin texto adicional.
-2. Si es "CONVERSATIONAL", usa intent/domain "CONVERSATIONAL" y "responseTemplate".
-3. Si es "ACTION_EXECUTION", usa intent/domain "ACTION_EXECUTION" y genera "actionPlan":
-   { "action": "createOpportunity" | "modifyOpportunity" | "createActivity" | "modifyActivity" | "createTicket", "parameters": { ... } }
-   * "createActivity": "activity", "tipoActividad" ("Llamada", "Reunión", "Demostración"), "fecha" (YYYY-MM-DD solo si se indicó), "hora" (HH:mm solo si se indicó), "cliente", "empresa", "recordatorio" (bool/texto). ¡PROHIBIDO INVENTAR FECHA/HORA! Si no se indicaron, omítelas para pedir datos requeridos. Nunca uses fecha u hora actual.
+1. Responde SIEMPRE un único JSON válido.
+2. "CONVERSATIONAL": usa intent/domain "CONVERSATIONAL" y "responseTemplate".
+3. "ACTION_EXECUTION": usa intent/domain "ACTION_EXECUTION" y "actionPlan":
+   { "action": "createOpportunity"|"modifyOpportunity"|"createActivity"|"modifyActivity"|"createTicket"|"createClient"|"modifyClient"|"createCompany"|"modifyCompany", "parameters": {...} }
+   * "createClient"/"modifyClient": "targetClient", "nombre", "apellido", "correo", "telefono", "puesto", "empresa", "categoria" ("Lead"|"Contacto"|"Cliente"), "estatus", "ejecutivo".
+   * "createCompany"/"modifyCompany": "targetCompany", "nombre", "nuevoNombre", "correo", "telefono", "website", "direccion", "estatus", "ejecutivo".
+   * "createActivity": "activity", "tipoActividad" ("Llamada", "Reunión", "Demostración"), "fecha" (YYYY-MM-DD si se indicó), "hora" (HH:mm si se indicó), "cliente", "empresa", "recordatorio". ¡PROHIBIDO INVENTAR FECHA/HORA!
    * "modifyOpportunity": "nombreProyecto", "etapa" ("Calificado", "Propuesta", "Negociación", "Ganada"), "cliente", "montoLicenciamiento", "montoServicios".
-   * "modifyActivity": "targetTime"/"targetDate" (a buscar), "newTime"/"newDate" (nueva hora/fecha), "activity" (nuevo nombre).
-4. Si piden ver gráfica/dashboard, incluye "dashboardRedirect": { "tab": "commercial" | "support", "executiveId": "${userId}" }.
+   * "modifyActivity": "targetTime"/"targetDate", "newTime"/"newDate", "activity".
+4. CONTINUIDAD MULTI-TURNO Y VOZ (AI-FIRST): Si en [HISTORIAL DE CONVERSACIÓN] el Asistente acaba de solicitar datos para registrar/modificar un registro o el usuario responde dictando datos por nota de voz (convierte SIEMPRE teléfonos hablados en palabras como "ocho veintiséis ciento veintinueve cuarenta y dos diez" a dígitos "8261294210" y "arroba" a "@"), clasifica SIEMPRE como "ACTION_EXECUTION" con la tool activa integrando los datos en "parameters".
+5. Dashboard: incluye "dashboardRedirect": { "tab": "commercial"|"support", "executiveId": "${userId}" }.
 
 [FORMATO JSON]
-{
-  "thought": "Explicación breve.",
-  "intent": "ANALYTICAL | SPECIFIC_ENTITY | VAGUE_SEARCH | CONVERSATIONAL | ACTION_EXECUTION",
-  "domain": "OPORTUNIDADES | TICKETS | CLIENTES_EMPRESAS | ACTIVIDADES | GASTOS | PRODUCTOS | VAGUE_SEARCH | CONVERSATIONAL | ACTION_EXECUTION | MULTI_DOMAIN",
-  "canonicalSearchTerm": "término normalizado o null",
-  "responseTemplate": "Respuesta si es CONVERSATIONAL o null",
-  "actionPlan": null,
-  "dashboardRedirect": null
-}
+{"thought":"Breve","intent":"ANALYTICAL|SPECIFIC_ENTITY|VAGUE_SEARCH|CONVERSATIONAL|ACTION_EXECUTION","domain":"OPORTUNIDADES|TICKETS|CLIENTES_EMPRESAS|ACTIVIDADES|GASTOS|PRODUCTOS|VAGUE_SEARCH|CONVERSATIONAL|ACTION_EXECUTION|MULTI_DOMAIN","canonicalSearchTerm":null,"responseTemplate":null,"actionPlan":null,"dashboardRedirect":null}
 
 [EJEMPLOS]
-- "Hola" → {"thought": "Saludo", "intent": "CONVERSATIONAL", "domain": "CONVERSATIONAL", "responseTemplate": "¡Hola! Soy tu asistente del CRM. ¿En qué te ayudo?"}
-- "crea oportunidad Bimbo 50000 MXN desarrollo" → {"thought": "Crear opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createOpportunity", "parameters": {"nombreProyecto": "Bimbo", "monto": 50000, "moneda": "MXN", "lineaNegocio": "Desarrollo"}}}
-- "a oportunidad prueba agrega 5000 licenciamiento" → {"thought": "Modificar opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "prueba", "montoLicenciamiento": 5000}}}
-- "cotizacion red magic de pedro perez muevela a calificado" → {"thought": "Mover opp", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyOpportunity", "parameters": {"nombreProyecto": "Red Magic", "cliente": "Pedro Pérez", "etapa": "Calificado"}}}
-- "crear recordatorio para llamar a javier flores el lunes 12 Octubre a las 10 am" → {"thought": "Crear llamada", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamar a Javier Flores", "tipoActividad": "Llamada", "fecha": "2026-10-12", "hora": "10:00", "cliente": "Javier Flores", "recordatorio": true}}}
-- "crea una llamada para el cliente miguel santos" → {"thought": "Crear llamada sin fecha", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createActivity", "parameters": {"activity": "Llamada a Miguel Santos", "tipoActividad": "Llamada", "cliente": "Miguel Santos"}}}
-- "reprograma reunión de las 3 para mañana 5pm" → {"thought": "Modificar act", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "modifyActivity", "parameters": {"targetTime": "15:00", "newTime": "17:00", "newDate": "mañana"}}}
-- "levanta ticket por caída de servidor" → {"thought": "Crear ticket", "intent": "ACTION_EXECUTION", "domain": "ACTION_EXECUTION", "actionPlan": {"action": "createTicket", "parameters": {"title": "Caída de servidor", "priority": 3}}}
-- "cuanto he vendido este mes" → {"thought": "Ventas", "intent": "ANALYTICAL", "domain": "OPORTUNIDADES", "actionPlan": null}`;
+- "Hola" → {"thought":"Saludo","intent":"CONVERSATIONAL","domain":"CONVERSATIONAL","responseTemplate":"¡Hola! ¿En qué te ayudo?"}
+- "crea cliente Roberto Gómez de Coca-Cola" o (tras pedir datos) "carmen jones ocho veintiséis ciento veintinueve cuarenta y dos diez" → {"thought":"Crear cliente","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createClient","parameters":{"nombre":"Carmen","apellido":"Jones","telefono":"8261294210"}}}
+- "actualiza correo de Roberto Gómez a r@coca.com" → {"thought":"Modificar cliente","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyClient","parameters":{"targetClient":"Roberto Gómez","correo":"r@coca.com"}}}
+- "registra empresa Grupo Alfa web www.alfa.com" → {"thought":"Crear empresa","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createCompany","parameters":{"nombre":"Grupo Alfa","website":"www.alfa.com"}}}
+- "cambia dirección de empresa Grupo Alfa a Reforma 100" → {"thought":"Modificar empresa","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyCompany","parameters":{"targetCompany":"Grupo Alfa","direccion":"Reforma 100"}}}
+- "cotizacion red magic muevela a calificado" → {"thought":"Mover opp","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyOpportunity","parameters":{"nombreProyecto":"Red Magic","etapa":"Calificado"}}}
+- "crear llamada a javier el lunes 12 Octubre 10 am" → {"thought":"Crear llamada","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createActivity","parameters":{"activity":"Llamar a Javier","tipoActividad":"Llamada","fecha":"2026-10-12","hora":"10:00","cliente":"Javier"}}}
+- "cuanto he vendido este mes" → {"thought":"Ventas","intent":"ANALYTICAL","domain":"OPORTUNIDADES","actionPlan":null}`;
   }
 
   /**

@@ -63,8 +63,15 @@ describe('WebchatActionExecutorService', () => {
       create: jest.fn(),
     };
 
-    mockClientsService = {};
-    mockCompaniesService = {};
+    mockClientsService = {
+      create: jest.fn(),
+      update: jest.fn(),
+      findByPhone: jest.fn().mockResolvedValue(null),
+    };
+    mockCompaniesService = {
+      create: jest.fn(),
+      update: jest.fn(),
+    };
 
     mockUsersService = {
       findOneById: jest.fn().mockImplementation((id: string) => {
@@ -1292,6 +1299,230 @@ describe('WebchatActionExecutorService', () => {
       const result = await service.resolveClientOrCompany('grupo mexco');
       expect(result.company).toBeDefined();
       expect(result.company?.id).toBe('comp-grupo');
+    });
+  });
+
+  describe('7. Módulo de Clientes y Empresas (createClient, modifyClient, createCompany, modifyCompany)', () => {
+    it('createClient: guarda al cliente aunque los datos opcionales estén incompletos y avisa qué campos quedaron pendientes', async () => {
+      mockClientRepo.findOne.mockResolvedValueOnce(null);
+      mockClientsService.create.mockResolvedValueOnce({
+        id: 'client-new-1',
+        nombre: 'Roberto',
+        apellido: 'Gómez',
+        correo: null,
+        telefono: null,
+        puesto: null,
+        empresa: null,
+        category: 'Lead',
+        ejecutivo_id: executiveUser.id,
+      });
+
+      const response = await service.executeAction(
+        {
+          action: 'createClient',
+          parameters: { nombre: 'Roberto Gómez' },
+        },
+        executiveUser,
+        'registra al cliente Roberto Gómez',
+      );
+
+      expect(mockClientsService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nombre: 'Roberto',
+          apellido: 'Gómez',
+          ejecutivo_id: executiveUser.id,
+        }),
+      );
+      expect(response.answer).toContain('Cliente Registrado Exitosamente');
+      expect(response.answer).toContain('Roberto Gómez');
+      expect(response.answer).toContain('Correo electrónico');
+      expect(response.answer).toContain('Teléfono');
+    });
+
+    it('modifyClient: ejecutivo puede modificar sus propios clientes pero recibe Acceso Denegado en clientes de otro ejecutivo', async () => {
+      // Caso 1: Cliente perteneciente a otro ejecutivo
+      mockClientRepo.find.mockResolvedValueOnce([
+        {
+          id: 'client-other-1',
+          nombre: 'Laura',
+          apellido: 'Méndez',
+          correo: 'laura@empresa.com',
+          ejecutivo_id: otherExecutiveUser.id,
+        },
+      ]);
+
+      const deniedResponse = await service.executeAction(
+        {
+          action: 'modifyClient',
+          parameters: { targetClient: 'Laura Méndez', telefono: '5511223344' },
+        },
+        executiveUser,
+        'actualiza el teléfono de Laura Méndez a 5511223344',
+      );
+
+      expect(deniedResponse.answer).toContain('Acceso Denegado');
+      expect(mockClientsService.update).not.toHaveBeenCalled();
+
+      // Caso 2: Cliente propio del ejecutivo
+      mockClientRepo.find.mockResolvedValueOnce([
+        {
+          id: 'client-own-1',
+          nombre: 'Roberto',
+          apellido: 'Gómez',
+          correo: null,
+          ejecutivo_id: executiveUser.id,
+          category: 'Lead',
+        },
+      ]);
+      mockClientRepo.findOne.mockResolvedValueOnce(null); // No duplicate email
+      mockClientsService.update.mockResolvedValueOnce({
+        id: 'client-own-1',
+        nombre: 'Roberto',
+        apellido: 'Gómez',
+        correo: 'roberto@empresa.com',
+        telefono: '5599887766',
+        puesto: 'Director Comercial',
+        category: 'Cliente',
+        ejecutivo_id: executiveUser.id,
+      });
+
+      const allowedResponse = await service.executeAction(
+        {
+          action: 'modifyClient',
+          parameters: {
+            targetClient: 'Roberto Gómez',
+            correo: 'roberto@empresa.com',
+            telefono: '5599887766',
+            puesto: 'Director Comercial',
+            categoria: 'Cliente',
+          },
+        },
+        executiveUser,
+        'actualiza a Roberto Gómez con correo roberto@empresa.com, tel 5599887766, puesto Director Comercial y categoría Cliente',
+      );
+
+      expect(mockClientsService.update).toHaveBeenCalledWith(
+        'client-own-1',
+        expect.objectContaining({
+          correo: 'roberto@empresa.com',
+          telefono: '5599887766',
+          puesto: 'Director Comercial',
+          category: 'Cliente',
+        }),
+      );
+      expect(allowedResponse.answer).toContain('Cliente Actualizado con Éxito');
+    });
+
+    it('createCompany y modifyCompany: permite alta parcial con solo el nombre y valida RBAC en modificación', async () => {
+      mockCompanyRepo.findOne.mockResolvedValueOnce(null);
+      mockCompaniesService.create.mockResolvedValueOnce({
+        id: 'comp-new-1',
+        nombre: 'Grupo Alfa',
+        correo: null,
+        telefono: null,
+        website: null,
+        direccion: null,
+        ejecutivo_id: executiveUser.id,
+      });
+
+      const createRes = await service.executeAction(
+        {
+          action: 'createCompany',
+          parameters: { nombre: 'Grupo Alfa' },
+        },
+        executiveUser,
+        'crea la empresa Grupo Alfa',
+      );
+
+      expect(mockCompaniesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nombre: 'Grupo Alfa',
+          ejecutivo_id: executiveUser.id,
+        }),
+      );
+      expect(createRes.answer).toContain('Empresa Registrada Exitosamente');
+      expect(createRes.answer).toContain('Sitio web');
+
+      // Modificar empresa propia
+      mockCompanyRepo.find.mockResolvedValueOnce([
+        {
+          id: 'comp-new-1',
+          nombre: 'Grupo Alfa',
+          ejecutivo_id: executiveUser.id,
+        },
+      ]);
+      mockCompaniesService.update.mockResolvedValueOnce({
+        id: 'comp-new-1',
+        nombre: 'Grupo Alfa',
+        website: 'www.grupoalfa.com',
+        direccion: 'Av. Reforma 200',
+        ejecutivo_id: executiveUser.id,
+      });
+
+      const modifyRes = await service.executeAction(
+        {
+          action: 'modifyCompany',
+          parameters: {
+            targetCompany: 'Grupo Alfa',
+            website: 'www.grupoalfa.com',
+            direccion: 'Av. Reforma 200',
+          },
+        },
+        executiveUser,
+        'actualiza la empresa Grupo Alfa con web www.grupoalfa.com y dirección Av. Reforma 200',
+      );
+
+      expect(mockCompaniesService.update).toHaveBeenCalledWith(
+        'comp-new-1',
+        expect.objectContaining({
+          website: 'www.grupoalfa.com',
+          direccion: 'Av. Reforma 200',
+        }),
+      );
+      expect(modifyRes.answer).toContain('Empresa Actualizada con Éxito');
+    });
+
+    it('Registra cliente desde nota de voz en segundo turno con teléfono dictado en palabras ("carmen jones ocho veintiséis ciento veintinueve cuarenta y dos diez")', async () => {
+      mockClientsService.findByPhone.mockResolvedValueOnce(null);
+      mockClientsService.create.mockResolvedValueOnce({
+        id: 'client-voice-1',
+        nombre: 'Carmen',
+        apellido: 'Jones',
+        telefono: '8261294210',
+        category: 'Lead',
+        ejecutivo_id: executiveUser.id,
+      });
+
+      const voiceText = 'carmen jones ocho veintiséis ciento veintinueve cuarenta y dos diez';
+      const history = [
+        { role: 'user' as const, content: 'nuevo cliente' },
+        {
+          role: 'assistant' as const,
+          content: 'Para registrar al cliente o contacto, por favor indícame al menos su Nombre.\n\nTambién puedes compartir los siguientes datos opcionales (el registro puede guardarse aunque la información no esté completa):\n• Apellido\n• Correo electrónico\n• Teléfono\n• Puesto o cargo\n• Empresa\n• Categoría (Lead, Contacto o Cliente)',
+        },
+      ];
+
+      const res = await service.executeAction(
+        {
+          action: 'createClient',
+          parameters: {},
+        },
+        executiveUser,
+        voiceText,
+        history,
+      );
+
+      expect(mockClientsService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nombre: 'Carmen',
+          apellido: 'Jones',
+          telefono: '8261294210',
+          ejecutivo_id: executiveUser.id,
+        }),
+      );
+      expect(res.answer).toContain('Cliente Registrado Exitosamente');
+      expect(res.answer).toContain('Carmen Jones');
+      expect(res.answer).toContain('8261294210');
     });
   });
 });

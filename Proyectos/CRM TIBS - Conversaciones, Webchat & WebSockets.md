@@ -265,3 +265,17 @@ Para homologar la experiencia de usuario con la conexión simple de Facebook e I
 * **Autorización de Salas en `ConversationsGateway`:** Los eventos `@SubscribeMessage('set_tenant')` y `@SubscribeMessage('join_tenant')` validan que el socket autenticado tenga rol `superadmin` o que su `tokenTenant` coincida con el `tenantSchema` solicitado.
 * **Protección de Datos Preexistentes en `receiveIncomingMessage` (`webchat`):** Al recibir metadatos `contactInfo` desde el widget público, solo se completan campos vacíos o nombres placeholder (`Visitante`) sin sobrescribir datos de clientes previamente verificados.
 * **Guardrails Anti-SQLi y Restricción Estricta a Tools:** Tanto `AiAgentOrchestratorService` como `WebchatService` bloquean payloads SQL/DDL/DML en la entrada y garantizan que todo impacto en base de datos ocurra exclusivamente dentro del catálogo de herramientas autorizadas y validadas con Zod/RBAC.
+
+
+### 4.3. Herramientas de Creación y Actualización de Clientes y Empresas en Webchat Interno (`createClient`, `modifyClient`, `createCompany`, `modifyCompany`)
+* **Alcance Exclusivo en Webchat Interno (`POST /api/webchat/query`):**
+  * Se integran las acciones `createClient`, `modifyClient`, `createCompany` y `modifyCompany` dentro de `WebchatActionExecutorService`, `WebchatPromptBuilderService` y `WebchatQueryPlannerService` bajo la política estricta de **Create, Read y Update** (sin eliminación de registros).
+* **Guardado con Datos Parciales (`createClient` y `createCompany`):**
+  * Aunque el asistente informa qué datos conforman el perfil completo (Cliente: `nombre`, `apellido`, `correo`, `telefono`, `puesto`, `empresa`, `category`; Empresa: `nombre`, `correo`, `telefono`, `website`, `direccion`), el registro se guarda inmediatamente en la base de datos siempre que se proporcione al menos el **Nombre**.
+  * Al confirmar el alta, el asistente notifica amablemente qué campos opcionales quedaron en blanco para que el usuario pueda completarlos en un turno posterior si así lo desea.
+* **Control de Acceso Basado en Roles (RBAC Comercial):**
+  * **Ejecutivos (`executive` / `ejecutivo`):** Al crear clientes o empresas, se asigna automáticamente `ejecutivo_id = user.id`. En actualizaciones (`modifyClient`, `modifyCompany`), los ejecutivos únicamente pueden modificar registros donde `ejecutivo_id === user.id`; de lo contrario, el motor bloquea la operación con mensaje explícito de *Acceso Denegado*.
+  * **Administradores y Superadministradores (`admin` / `superadmin`):** Pueden crear, reasignar y actualizar cualquier cliente o empresa del tenant.
+* **Validación de Unicidad y Continuidad Multi-Turno:**
+  * Verifica colisiones de correo electrónico (`correo` único en `clients`) y teléfono antes de insertar o actualizar, evitando errores de restricción SQL.
+  * `mergeHistoryContext` recupera automáticamente el cliente o empresa recién creado/listado en el turno previo cuando el usuario envía datos complementarios en el siguiente mensaje.

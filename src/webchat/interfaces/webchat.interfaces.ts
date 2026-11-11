@@ -45,7 +45,11 @@ export type WebchatActionType =
   | 'modifyOpportunity'
   | 'createActivity'
   | 'modifyActivity'
-  | 'createTicket';
+  | 'createTicket'
+  | 'createClient'
+  | 'modifyClient'
+  | 'createCompany'
+  | 'modifyCompany';
 
 export interface WebchatActionPlan {
   action: WebchatActionType;

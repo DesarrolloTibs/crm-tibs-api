@@ -102,6 +102,11 @@ export class WebchatService {
       }
 
       const userObj = fullUser || ({ id: userId, role: userRole as Role, username } as User);
+      // 1ra Opción: AI-First (el mensaje e historial van directo al LLM sin mutación heurística previa)
+      const multiTurnHint = '';
+
+
+
 
       // 1. Construir historial de conversación reciente para contexto
       let historyText = '';
@@ -116,7 +121,7 @@ export class WebchatService {
       const routerPrompt = this.promptBuilder.buildRouterPrompt(userId, userRole, username);
       const fullRouterPrompt = `${routerPrompt}
 
-${historyText ? `[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n` : ''}
+${historyText ? `[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n` : ''}${multiTurnHint}
 [CONSULTA DEL USUARIO]
 ${question}
 
@@ -128,7 +133,7 @@ Genera tu respuesta JSON:`;
       });
       this.logger.log(`[WebChat - Router Raw] ${rawRouterResponse.substring(0, 250)}`);
 
-      classification = this.queryPlanner.parseRouterClassification(rawRouterResponse, question);
+      classification = this.queryPlanner.parseRouterClassification(rawRouterResponse, question, conversationHistory);
       const isRouterAiFirst = !classification.thought?.includes('Recuperación');
       this.logger.log(`[WebChat - Router Classification] [${isRouterAiFirst ? 'AI-FIRST' : 'FALLBACK HEURISTICO'}] Domain: ${classification.domain} | Intent: ${classification.intent}${classification.actionPlan ? ` | Action: ${classification.actionPlan.action}` : ''}`);
 
@@ -154,7 +159,7 @@ Genera tu respuesta JSON:`;
       }
 
       // 5. Si el Orquestador determina BÚSQUEDA VAGA de 1 o 2 palabras aisladas (persona, empresa, marca)
-      if (classification.intent === 'VAGUE_SEARCH' || classification.domain === 'VAGUE_SEARCH' || this.entityMatcher.isVagueQuery(question)) {
+      if (classification.intent === 'VAGUE_SEARCH' || classification.domain === 'VAGUE_SEARCH' || (!isRouterAiFirst && this.entityMatcher.isVagueQuery(question))) {
         const vaguePlan: CubeQueryPlan = {
           intent: 'VAGUE_SEARCH',
           canonicalSearchTerm: classification.canonicalSearchTerm || question.trim(),
@@ -178,7 +183,7 @@ Genera tu respuesta JSON:`;
       );
       const fullSubAgentPrompt = `${subAgentPrompt}
 
-${historyText ? `[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n` : ''}
+${historyText ? `[HISTORIAL DE CONVERSACIÓN]\n${historyText}\n` : ''}${multiTurnHint}
 [CONSULTA DEL USUARIO]
 ${question}
 
