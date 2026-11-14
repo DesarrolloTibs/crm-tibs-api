@@ -38,5 +38,6 @@ import { UsersModule } from '../users/users.module';
     ],
     controllers: [ExpensesController],
     providers: [ExpensesService],
+    exports: [ExpensesService],
 })
 export class ExpensesModule { }

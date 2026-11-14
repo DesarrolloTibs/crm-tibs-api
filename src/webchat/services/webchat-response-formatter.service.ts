@@ -34,29 +34,28 @@ export class WebchatResponseFormatterService {
 
     // 1. Verificación directa en anotaciones de Cube.dev
     if (annotation) {
-      if (annotation.measures && annotation.measures[key]?.format === 'currency') {
-        return true;
-      }
-      if (annotation.dimensions && annotation.dimensions[key]?.format === 'currency') {
-        return true;
-      }
       const cleanKey = key.split('.').pop() || key;
-      if (annotation.measures && annotation.measures[cleanKey]?.format === 'currency') {
+      const measureMeta = annotation.measures?.[key] || annotation.measures?.[cleanKey];
+      const dimMeta = annotation.dimensions?.[key] || annotation.dimensions?.[cleanKey];
+      const meta = measureMeta || dimMeta;
+
+      if (meta?.format === 'currency') {
         return true;
       }
-      if (annotation.dimensions && annotation.dimensions[cleanKey]?.format === 'currency') {
-        return true;
+      if (meta && (meta.type === 'string' || meta.type === 'time' || meta.type === 'boolean')) {
+        return false;
       }
     }
 
     const lower = key.toLowerCase();
     const colName = lower.split('.').pop() || lower;
 
-    // Descartar campos que contienen identificadores técnicos o métricas no monetarias
+    // Descartar identificadores, fechas, métricas no monetarias y columnas de texto
     if (
       colName === 'id' ||
       colName.endsWith('id') ||
       colName.includes('count') ||
+      colName.includes('conteo') ||
       colName.includes('numero') ||
       colName.includes('cantidad') ||
       colName.includes('folio') ||
@@ -66,12 +65,31 @@ export class WebchatResponseFormatterService {
       colName.includes('estatus') ||
       colName.includes('type') ||
       colName.includes('priority') ||
-      colName.includes('ticketnumber')
+      colName.includes('ticketnumber') ||
+      colName.includes('concepto') ||
+      colName.includes('receipturl') ||
+      colName.includes('descripcion') ||
+      colName.includes('description') ||
+      colName.includes('nombre') ||
+      colName.includes('apellido') ||
+      colName.includes('titulo') ||
+      colName.includes('actividad') ||
+      colName.includes('username') ||
+      colName.includes('correo') ||
+      colName.includes('email') ||
+      colName.includes('telefono') ||
+      colName.includes('website') ||
+      colName.includes('direccion') ||
+      colName.includes('moneda') ||
+      colName.includes('unidadmedida') ||
+      colName.includes('observaciones') ||
+      colName.includes('tipoincidencia') ||
+      colName.includes('notasresolucion')
     ) {
       return false;
     }
 
-    // Patrones monetarios estándar del CRM
+    // Evaluar patrones monetarios exclusivamente sobre el nombre de columna (nunca sobre el prefijo del cubo, ej. "Gastos.concepto")
     return (
       colName.includes('monto') ||
       colName.includes('precio') ||
@@ -80,14 +98,7 @@ export class WebchatResponseFormatterService {
       colName.includes('servicios') ||
       colName.includes('costo') ||
       colName.includes('ingreso') ||
-      colName.includes('gasto') ||
-      lower.includes('monto') ||
-      lower.includes('precio') ||
-      lower.includes('licenciamiento') ||
-      lower.includes('servicios') ||
-      lower.includes('costo') ||
-      lower.includes('ingreso') ||
-      lower.includes('gasto')
+      colName.includes('gasto')
     );
   }
 
@@ -132,6 +143,20 @@ export class WebchatResponseFormatterService {
     } catch {
       return String(val);
     }
+  }
+
+  /**
+   * Formatea una columna DATE sin componente horario (ej. "2026-11-13T00:00:00.000" -> "13/11/2026")
+   * evitando desplazamientos de zona horaria (-6h UTC) al renderizar fechas calendario.
+   */
+  formatDateOnly(val: any): string {
+    if (!val) return '';
+    const strVal = String(val).trim();
+    const isoMatch = strVal.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) {
+      return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+    }
+    return strVal;
   }
 
   /**
@@ -197,6 +222,13 @@ export class WebchatResponseFormatterService {
       ) {
         return true;
       }
+      // Excluir Gastos.montoSum si ya existe Gastos.monto en la fila para no duplicar montos en gastos individuales
+      if (
+        (lower === 'gastos.montosum' || lower === 'montosum') &&
+        (row['Gastos.monto'] !== undefined || row['monto'] !== undefined)
+      ) {
+        return true;
+      }
       return false;
     };
 
@@ -218,6 +250,24 @@ export class WebchatResponseFormatterService {
         }
 
         if (isExcluded(key, row)) continue;
+
+        // Columnas de Gastos: evitar prefijo "Gastos." en texto/fecha para prevenir falsos positivos de moneda y desfase horario
+        if (lower === 'gastos.concepto') {
+          cleanRow['Concepto'] = val ?? '—';
+          continue;
+        }
+        if (lower === 'gastos.monto') {
+          cleanRow['Monto'] = val;
+          continue;
+        }
+        if (lower === 'oportunidades.estimatedclosuredate') {
+          cleanRow['Fecha estimada de cierre'] = val ? this.formatDateOnly(val) : '—';
+          continue;
+        }
+        if (lower === 'gastos.fecha') {
+          cleanRow['Fecha registro'] = val ? this.formatDateOnly(val) : '—';
+          continue;
+        }
 
         // Normalizar fechas UTC agregando 'Z' si viene en formato ISO sin zona horaria
         if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val) && !val.endsWith('Z') && !val.includes('+')) {
@@ -291,6 +341,25 @@ export class WebchatResponseFormatterService {
     return data
       .map((row, idx) => {
         const rowCurrency = row['Oportunidades.moneda'] || row['moneda'] || 'MXN';
+
+        // 0. Gastos
+        const conceptoGasto = row['Gastos.concepto'] || row['concepto'];
+        if (conceptoGasto) {
+          const montoVal = row['Gastos.monto'] ?? row['monto'] ?? row['Gastos.montoSum'] ?? row['montoSum'];
+          const montoStr =
+            montoVal !== undefined && montoVal !== null && montoVal !== ''
+              ? ` — ${this.formatCurrency(montoVal, 'MXN')}`
+              : '';
+          const rawFecha = row['Gastos.fecha'] || row['fecha'];
+          const fechaStr = rawFecha ? ` (${this.formatDateOnly(rawFecha)})` : '';
+          const clienteRel =
+            row['Clientes.nombreCompleto'] ||
+            (row['Clientes.nombre'] ? `${row['Clientes.nombre']} ${row['Clientes.apellido'] || ''}`.trim() : '');
+          const oppRel = row['Oportunidades.nombreProyecto'] || '';
+          const relStr = oppRel ? ` [Oportunidad: ${oppRel}]` : clienteRel ? ` [Cliente: ${clienteRel}]` : '';
+          const responsable = row['Usuarios.username'] ? ` — Responsable: ${row['Usuarios.username']}` : '';
+          return `${idx + 1}. ${conceptoGasto}${montoStr}${fechaStr}${relStr}${responsable}`;
+        }
 
         // 1. Oportunidades
         const nombreProyecto = row['Oportunidades.nombreProyecto'] || row['nombreProyecto'];
@@ -468,13 +537,18 @@ export class WebchatResponseFormatterService {
 
     for (const row of cubeData) {
       const rowCurrency = row['Oportunidades.moneda'] || row['moneda'] || 'MXN';
+      const hasExpenseDetailMonto = row['Gastos.monto'] !== undefined || row['monto'] !== undefined;
       for (const [key, val] of Object.entries(row)) {
+        const lowerKey = key.toLowerCase();
+        if (hasExpenseDetailMonto && (lowerKey === 'gastos.montosum' || lowerKey === 'montosum')) {
+          continue;
+        }
         if (this.isCurrencyField(key, annotation)) {
           const num = typeof val === 'number' ? val : parseFloat(String(val || 0));
           if (!isNaN(num)) {
             totalMonto += num;
             hasMonto = true;
-            if (key.toLowerCase().includes('mxn')) {
+            if (lowerKey.includes('mxn')) {
               detectedCurrency = 'MXN';
             } else if (rowCurrency && rowCurrency.toUpperCase() === 'USD' && cubeData.length === 1) {
               detectedCurrency = 'USD';
@@ -493,6 +567,7 @@ export class WebchatResponseFormatterService {
       : entityType === 'Clientes' ? (count === 1 ? 'cliente' : 'clientes')
       : entityType === 'Empresas' ? (count === 1 ? 'empresa' : 'empresas')
       : entityType === 'Productos' ? (count === 1 ? 'producto' : 'productos')
+      : entityType === 'Gastos' ? (count === 1 ? 'gasto' : 'gastos')
       : (count === 1 ? 'registro' : 'registros');
 
     if (hasMonto && totalMonto > 0) {
@@ -802,7 +877,8 @@ export class WebchatResponseFormatterService {
 
     if (template) {
       if (template.includes('{')) {
-        let header = this.interpolateTemplateRow(data[0], template, annotation);
+        const headerRow = this.buildMultiRowTemplateContext(data, template, annotation);
+        let header = this.interpolateTemplateRow(headerRow, template, annotation);
 
         // Detectar si hay un empate en el primer lugar
         const firstCount = data[0]['Oportunidades.count'] ?? data[0]['count'] ?? data[0]['Tickets.count'] ?? data[0]['Actividades.count'];
@@ -827,5 +903,70 @@ export class WebchatResponseFormatterService {
     }
 
     return listContent;
+  }
+
+  /**
+   * Cuando un query de detalle devuelve múltiples filas pero el responseTemplate
+   * interpola únicamente medidas agregadas (ej. {Gastos.montoSum}), consolida el total
+   * de todas las filas en lugar de tomar solo data[0].
+   */
+  private buildMultiRowTemplateContext(
+    data: any[],
+    template: string,
+    annotation?: CubeAnnotation,
+  ): Record<string, any> {
+    const firstRow = data[0] || {};
+    const placeholders = Array.from(template.matchAll(/\{([a-zA-Z0-9_.]*)\}/g)).map(m => m[1]);
+    if (placeholders.length === 0) return firstRow;
+
+    const isMeasureOrGenericToken = (token: string): boolean => {
+      if (!token) return true;
+      if (/^\d+$/.test(token)) return true;
+      const lower = token.toLowerCase();
+      if (['total', 'count', 'cantidad', 'resultado', 'valor', 'monto', 'numero', 'conteo'].includes(lower)) {
+        return true;
+      }
+      const matchedKey = Object.keys(firstRow).find(
+        k => k === token || (k.split('.').pop() || k) === token,
+      );
+      if (!matchedKey) return true;
+      const keyLower = matchedKey.toLowerCase();
+      return (
+        keyLower.endsWith('sum') ||
+        keyLower.endsWith('avg') ||
+        keyLower.endsWith('promedio') ||
+        keyLower.endsWith('max') ||
+        keyLower.endsWith('min') ||
+        keyLower === 'count' ||
+        keyLower.endsWith('.count') ||
+        this.isCurrencyField(matchedKey, annotation)
+      );
+    };
+
+    if (!placeholders.every(isMeasureOrGenericToken)) {
+      return firstRow;
+    }
+
+    const aggregated: Record<string, any> = { ...firstRow };
+    for (const key of Object.keys(firstRow)) {
+      const keyLower = key.toLowerCase();
+      const nums = data
+        .map(r => (typeof r[key] === 'number' ? r[key] : parseFloat(String(r[key] ?? ''))))
+        .filter(n => !isNaN(n));
+
+      if (nums.length === 0) continue;
+
+      if (keyLower.endsWith('sum') || keyLower === 'count' || keyLower.endsWith('.count')) {
+        aggregated[key] = nums.reduce((acc, n) => acc + n, 0);
+      } else if (keyLower.endsWith('avg') || keyLower.endsWith('promedio')) {
+        aggregated[key] = nums.reduce((acc, n) => acc + n, 0) / nums.length;
+      } else if (keyLower.endsWith('max')) {
+        aggregated[key] = Math.max(...nums);
+      } else if (keyLower.endsWith('min')) {
+        aggregated[key] = Math.min(...nums);
+      }
+    }
+
+    return aggregated;
   }
 }

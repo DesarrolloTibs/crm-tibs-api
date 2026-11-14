@@ -16,6 +16,7 @@ import { TicketsModule } from '../tickets/tickets.module';
 import { ClientsModule } from '../clients/clients.module';
 import { CompaniesModule } from '../companies/companies.module';
 import { UsersModule } from '../users/users.module';
+import { ExpensesModule } from '../expenses/expenses.module';
 import { Stage } from '../stages/entities/stage.entity';
 import { TicketStage } from '../tickets/entities/ticket-stage.entity';
 import { BusinessLineOption } from '../opportunities/entities/business-line-option.entity';
@@ -29,6 +30,7 @@ import { Opportunity } from '../opportunities/entities/opportunity.entity';
 import { Activity } from '../activities/entities/activity.entity';
 import { Ticket } from '../tickets/entities/ticket.entity';
 import { Product } from '../products/entities/product.entity';
+import { Expense } from '../expenses/entities/expense.entity';
 
 @Module({
   imports: [
@@ -46,6 +48,7 @@ import { Product } from '../products/entities/product.entity';
       Activity,
       Ticket,
       Product,
+      Expense,
     ]),
     ConversationsModule,
     OpportunitiesModule,
@@ -54,6 +57,7 @@ import { Product } from '../products/entities/product.entity';
     ClientsModule,
     CompaniesModule,
     UsersModule,
+    ExpensesModule,
   ],
   controllers: [WebchatController],
   providers: [

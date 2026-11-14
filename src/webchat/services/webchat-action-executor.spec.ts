@@ -24,6 +24,8 @@ describe('WebchatActionExecutorService', () => {
   let mockTicketRepo: any;
   let mockProductRepo: any;
   let mockStageRepo: any;
+  let mockExpensesService: any;
+  let mockExpenseRepo: any;
 
   const adminUser: User = {
     id: '11111111-1111-1111-1111-111111111111',
@@ -67,6 +69,10 @@ describe('WebchatActionExecutorService', () => {
       create: jest.fn(),
       update: jest.fn(),
       findByPhone: jest.fn().mockResolvedValue(null),
+    };
+    mockExpensesService = {
+      create: jest.fn(),
+      update: jest.fn(),
     };
     mockCompaniesService = {
       create: jest.fn(),
@@ -175,6 +181,10 @@ describe('WebchatActionExecutorService', () => {
       find: jest.fn().mockResolvedValue([]),
     };
 
+    mockExpenseRepo = {
+      find: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue(null),
+    };
     mockStageRepo = {
       findOne: jest.fn().mockImplementation((args: any) => {
         if (args?.where?.id === 'stage-calificado-uuid') {
@@ -221,6 +231,8 @@ describe('WebchatActionExecutorService', () => {
       mockTicketRepo,
       mockProductRepo,
       mockStageRepo,
+      mockExpensesService,
+      mockExpenseRepo,
     );
   });
 
@@ -1523,6 +1535,428 @@ describe('WebchatActionExecutorService', () => {
       expect(res.answer).toContain('Cliente Registrado Exitosamente');
       expect(res.answer).toContain('Carmen Jones');
       expect(res.answer).toContain('8261294210');
+    });
+  });
+
+  describe('8. Módulo de Gastos (createExpense, modifyExpense)', () => {
+    it('debe crear gasto vinculado a Cliente mediante executeAction (incluyendo monto hablado en español)', async () => {
+      mockClientRepo.find.mockResolvedValue([
+        {
+          id: 'cli-expense-1',
+          nombre: 'Carlos',
+          apellido: 'Ruiz',
+          usuario_id: executiveUser.id,
+        },
+      ]);
+      mockExpensesService.create.mockResolvedValue({
+        id: 'exp-created-1',
+        concepto: 'Comida con cliente',
+        monto: 500,
+        fecha: '2026-11-13',
+        client_id: 'cli-expense-1',
+      });
+
+      const res = await service.executeAction(
+        {
+          action: 'createExpense',
+          parameters: {
+            concepto: 'Comida con cliente',
+            monto: 'quinientos pesos',
+            cliente: 'Carlos Ruiz',
+          },
+        },
+        executiveUser,
+        'registra gasto de quinientos pesos de comida con cliente Carlos Ruiz',
+        [],
+      );
+
+      expect(mockExpensesService.create).toHaveBeenCalledWith(
+        {
+          fecha: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+          concepto: 'Comida con cliente',
+          monto: 500,
+          client_id: 'cli-expense-1',
+          opportunity_id: null,
+        },
+        expect.objectContaining({ id: executiveUser.id }),
+      );
+      expect(res.answer).toContain('Gasto Registrado Exitosamente');
+      expect(res.answer).toContain('Carlos Ruiz');
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe crear gasto vinculado a Oportunidad interpretando fecha relativa "ayer"', async () => {
+      mockOpportunityRepo.createQueryBuilder.mockImplementation(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([
+          {
+            id: 'opp-expense-1',
+            nombre_proyecto: 'Red Magic',
+            ejecutivo_id: executiveUser.id,
+          },
+        ]),
+        getOne: jest.fn().mockResolvedValue({
+          id: 'opp-expense-1',
+          nombre_proyecto: 'Red Magic',
+          ejecutivo_id: executiveUser.id,
+        }),
+      }));
+      mockExpensesService.create.mockResolvedValue({
+        id: 'exp-created-2',
+        concepto: 'Vuelo',
+        monto: 2500,
+        fecha: '2026-11-12',
+        opportunity_id: 'opp-expense-1',
+      });
+
+      const res = await service.handleCreateExpense(
+        {
+          concepto: 'Vuelo',
+          monto: 2500,
+          fecha: 'ayer',
+          oportunidad: 'Red Magic',
+        },
+        executiveUser,
+        [],
+        'registra gasto de 2500 de vuelo para la oportunidad Red Magic de ayer',
+      );
+
+      const expectedYesterday = (service as any).addDaysToYYYYMMDD(
+        (service as any).getTodayInTzYYYYMMDD(),
+        -1,
+      );
+
+      expect(mockExpensesService.create).toHaveBeenCalledWith(
+        {
+          fecha: expectedYesterday,
+          concepto: 'Vuelo',
+          monto: 2500,
+          client_id: null,
+          opportunity_id: 'opp-expense-1',
+        },
+        expect.objectContaining({ id: executiveUser.id }),
+      );
+      expect(res.answer).toContain('Gasto Registrado Exitosamente');
+      expect(res.answer).toContain('Red Magic');
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe rechazar regla XOR si se envían Cliente y Oportunidad al mismo tiempo', async () => {
+      const res = await service.handleCreateExpense(
+        {
+          concepto: 'Cena',
+          monto: 800,
+          cliente: 'Carlos',
+          oportunidad: 'Red Magic',
+        },
+        executiveUser,
+        [],
+      );
+
+      expect(mockExpensesService.create).not.toHaveBeenCalled();
+      expect(res.answer).toContain('únicamente a un cliente O a una oportunidad');
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe soportar flujo multi-turno XOR: Turno 1 pregunta vínculo y Turno 2 responde con nombre suelto', async () => {
+      const turn1 = await service.handleCreateExpense(
+        {
+          concepto: 'Comida',
+          monto: 500,
+        },
+        executiveUser,
+        [],
+        'registra gasto de 500 de comida',
+      );
+
+      expect(mockExpensesService.create).not.toHaveBeenCalled();
+      expect(turn1.answer).toContain('Todo gasto debe asociarse a un cliente o a una oportunidad');
+      expect(turn1.answer).not.toContain('*');
+
+      mockClientRepo.find.mockResolvedValue([]);
+      mockOpportunityRepo.createQueryBuilder.mockImplementation(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([
+          {
+            id: 'opp-red-magic',
+            nombre_proyecto: 'Red Magic',
+            ejecutivo_id: executiveUser.id,
+          },
+        ]),
+        getOne: jest.fn().mockResolvedValue(null),
+      }));
+      mockExpensesService.create.mockResolvedValue({
+        id: 'exp-multiturn-1',
+        concepto: 'Comida',
+        monto: 500,
+        fecha: '2026-11-13',
+        opportunity_id: 'opp-red-magic',
+      });
+
+      const history = [
+        { role: 'user' as const, content: 'registra gasto de 500 de comida' },
+        { role: 'assistant' as const, content: turn1.answer },
+      ];
+
+      const turn2 = await service.handleCreateExpense({}, executiveUser, history, 'Red Magic');
+
+      expect(mockExpensesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          concepto: 'Comida',
+          monto: 500,
+          client_id: null,
+          opportunity_id: 'opp-red-magic',
+        }),
+        expect.objectContaining({ id: executiveUser.id }),
+      );
+      expect(turn2.answer).toContain('Gasto Registrado Exitosamente');
+      expect(turn2.answer).not.toContain('*');
+    });
+
+    it('debe permitir al Admin asignar el gasto a otro ejecutivo', async () => {
+      mockClientRepo.find.mockResolvedValue([
+        {
+          id: 'cli-admin-1',
+          nombre: 'Laura',
+          apellido: 'Mendez',
+          usuario_id: otherExecutiveUser.id,
+        },
+      ]);
+      mockExpensesService.create.mockResolvedValue({
+        id: 'exp-admin-1',
+        concepto: 'Hospedaje',
+        monto: 1800,
+        fecha: '2026-11-13',
+        client_id: 'cli-admin-1',
+      });
+
+      const res = await service.handleCreateExpense(
+        {
+          concepto: 'Hospedaje',
+          monto: 1800,
+          cliente: 'Laura Mendez',
+          ejecutivo: otherExecutiveUser.username,
+        },
+        adminUser,
+        [],
+      );
+
+      expect(mockExpensesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          concepto: 'Hospedaje',
+          monto: 1800,
+          client_id: 'cli-admin-1',
+          opportunity_id: null,
+        }),
+        expect.objectContaining({ id: otherExecutiveUser.id }),
+      );
+      expect(res.answer).toContain(otherExecutiveUser.username);
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe aclarar que una Empresa no puede vincularse directamente y sugerir sus clientes', async () => {
+      mockClientRepo.find.mockImplementation((opts: any) => {
+        if (opts && opts.where && !Array.isArray(opts.where) && opts.where.companyId === 'comp-alfa-1') {
+          return Promise.resolve([
+          {
+            id: 'cli-alfa-1',
+            nombre: 'Ana',
+            apellido: 'López',
+            correo: 'ana@alfa.com',
+            companyId: 'comp-alfa-1',
+            ejecutivo_id: executiveUser.id,
+          }]);
+        }
+        return Promise.resolve([]);
+      });
+      mockCompanyRepo.find.mockResolvedValue([
+        { id: 'comp-alfa-1', nombre: 'Grupo Alfa' },
+      ]);
+
+      const res = await service.handleCreateExpense(
+        {
+          concepto: 'Taxis',
+          monto: 400,
+          cliente: 'Grupo Alfa',
+        },
+        executiveUser,
+        [],
+      );
+
+      expect(mockExpensesService.create).not.toHaveBeenCalled();
+      expect(res.answer).toContain('no se vinculan directamente a empresas');
+      expect(res.answer).toContain('Ana López');
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe denegar modificación RBAC cuando un ejecutivo intenta editar gasto de otro usuario', async () => {
+      mockExpenseRepo.find.mockResolvedValue([
+        {
+          id: 'exp-other-1',
+          concepto: 'Comida',
+          monto: 500,
+          fecha: '2026-11-10',
+          usuario_id: otherExecutiveUser.id,
+          client_id: 'cli-1',
+        },
+      ]);
+
+      const res = await service.handleModifyExpense(
+        {
+          targetExpense: 'Comida',
+          monto: 900,
+        },
+        executiveUser,
+        [],
+        'cambia el monto del gasto de comida a 900',
+      );
+
+      expect(mockExpensesService.update).not.toHaveBeenCalled();
+      expect(res.answer).toContain('Acceso Denegado');
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe manejar ambigüedad de gastos y selección multi-turno "el 2" conservando el nuevo monto', async () => {
+      const exp1 = {
+        id: 'exp-amb-1',
+        concepto: 'Comida',
+        monto: 500,
+        fecha: '2026-11-10',
+        usuario_id: executiveUser.id,
+        client_id: 'cli-1',
+        client: { id: 'cli-1', nombre: 'Carlos', apellido: 'Ruiz' },
+      };
+      const exp2 = {
+        id: 'exp-amb-2',
+        concepto: 'Comida',
+        monto: 300,
+        fecha: '2026-11-12',
+        usuario_id: executiveUser.id,
+        opportunity_id: 'opp-1',
+        opportunity: { id: 'opp-1', nombre_proyecto: 'Red Magic' },
+      };
+
+      mockExpenseRepo.find.mockResolvedValue([exp1, exp2]);
+
+      const turn1 = await service.handleModifyExpense(
+        { targetExpense: 'Comida', monto: 650 },
+        executiveUser,
+        [],
+        'cambia el monto del gasto de comida a 650',
+      );
+
+      expect(mockExpensesService.update).not.toHaveBeenCalled();
+      expect(turn1.answer).toContain('Encontré varios gastos que coinciden');
+      expect(turn1.answer).toContain('1. Comida');
+      expect(turn1.answer).toContain('2. Comida');
+      expect(turn1.answer).not.toContain('*');
+
+      mockExpensesService.update.mockResolvedValue({
+        ...exp2,
+        monto: 650,
+      });
+
+      const history = [
+        { role: 'user' as const, content: 'cambia el monto del gasto de comida a 650' },
+        { role: 'assistant' as const, content: turn1.answer },
+      ];
+
+      const turn2 = await service.handleModifyExpense({}, executiveUser, history, 'el 2');
+
+      expect(mockExpensesService.update).toHaveBeenCalledWith('exp-amb-2', {
+        monto: 650,
+      });
+      expect(turn2.answer).toContain('Gasto Actualizado Exitosamente');
+      expect(turn2.answer).not.toContain('*');
+    });
+
+    it('debe reasignar relación XOR de Cliente a Oportunidad nulificando client_id', async () => {
+      mockExpenseRepo.find.mockResolvedValue([
+        {
+          id: 'exp-rel-1',
+          concepto: 'Gasolina',
+          monto: 450,
+          fecha: '2026-11-11',
+          usuario_id: executiveUser.id,
+          client_id: 'cli-1',
+          client: { id: 'cli-1', nombre: 'Carlos', apellido: 'Ruiz' },
+        },
+      ]);
+      mockOpportunityRepo.createQueryBuilder.mockImplementation(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([
+          {
+            id: 'opp-red-magic',
+            nombre_proyecto: 'Red Magic',
+            ejecutivo_id: executiveUser.id,
+          },
+        ]),
+        getOne: jest.fn().mockResolvedValue(null),
+      }));
+      mockExpensesService.update.mockResolvedValue({
+        id: 'exp-rel-1',
+        concepto: 'Gasolina',
+        monto: 450,
+        fecha: '2026-11-11',
+        client_id: null,
+        opportunity_id: 'opp-red-magic',
+        opportunity: { id: 'opp-red-magic', nombre_proyecto: 'Red Magic' },
+      });
+
+      const res = await service.handleModifyExpense(
+        {
+          targetExpense: 'Gasolina',
+          oportunidad: 'Red Magic',
+        },
+        executiveUser,
+        [],
+        'reasigna el gasto de gasolina a la oportunidad Red Magic',
+      );
+
+      expect(mockExpensesService.update).toHaveBeenCalledWith('exp-rel-1', {
+        opportunity_id: 'opp-red-magic',
+        client_id: null,
+      });
+      expect(res.answer).toContain('Gasto Actualizado Exitosamente');
+      expect(res.answer).toContain('Red Magic');
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe bloquear peticiones destructivas de eliminación sobre gastos y bloquear acciones fuera del catálogo (como consultExpense)', async () => {
+      const delRes = await service.executeAction(
+        { action: 'modifyExpense', parameters: { targetExpense: 'Comida' } },
+        adminUser,
+        'elimina el gasto de comida',
+        [],
+      );
+      expect(mockExpensesService.update).not.toHaveBeenCalled();
+      expect(delRes.answer).toContain('no tiene permitido eliminar registros');
+
+      const readToolRes = await service.executeAction(
+        { action: 'consultExpense' as any, parameters: {} },
+        adminUser,
+        'consulta mis gastos',
+        [],
+      );
+      expect(readToolRes.answer).toContain('La acción solicitada no está permitida');
     });
   });
 });

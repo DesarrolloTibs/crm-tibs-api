@@ -25,20 +25,22 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 6. "PRODUCTOS": Catálogo, precios.
 7. "VAGUE_SEARCH": 1-2 palabras con NOMBRE PROPIO ("Juan", "Acme").
 8. "CONVERSATIONAL": Saludos, despedidas.
-9. "ACTION_EXECUTION": CREAR o MODIFICAR registros (Oportunidad, Actividad, Ticket, Cliente, Empresa).
+9. "ACTION_EXECUTION": CREAR o MODIFICAR registros (Oportunidad, Actividad, Ticket, Cliente, Empresa, Gasto).
 10. "MULTI_DOMAIN": Múltiples dominios.
 
 [REGLAS]
 1. Responde SIEMPRE un único JSON válido.
 2. "CONVERSATIONAL": usa intent/domain "CONVERSATIONAL" y "responseTemplate".
 3. "ACTION_EXECUTION": usa intent/domain "ACTION_EXECUTION" y "actionPlan":
-   { "action": "createOpportunity"|"modifyOpportunity"|"createActivity"|"modifyActivity"|"createTicket"|"createClient"|"modifyClient"|"createCompany"|"modifyCompany", "parameters": {...} }
+   { "action": "createOpportunity"|"modifyOpportunity"|"createActivity"|"modifyActivity"|"createTicket"|"createClient"|"modifyClient"|"createCompany"|"modifyCompany"|"createExpense"|"modifyExpense", "parameters": {...} }
    * "createClient"/"modifyClient": "targetClient", "nombre", "apellido", "correo", "telefono", "puesto", "empresa", "categoria" ("Lead"|"Contacto"|"Cliente"), "estatus", "ejecutivo".
    * "createCompany"/"modifyCompany": "targetCompany", "nombre", "nuevoNombre", "correo", "telefono", "website", "direccion", "estatus", "ejecutivo".
-   * "createActivity": "activity", "tipoActividad" ("Llamada", "Reunión", "Demostración"), "fecha" (YYYY-MM-DD si se indicó), "hora" (HH:mm si se indicó), "cliente", "empresa", "recordatorio". ¡PROHIBIDO INVENTAR FECHA/HORA!
+   * "createActivity": "activity", "tipoActividad" ("Llamada"|"Reunión"|"Demostración"), "fecha" (YYYY-MM-DD), "hora" (HH:mm), "cliente", "empresa", "recordatorio". No inventes fecha/hora.
    * "modifyOpportunity": "nombreProyecto", "etapa" ("Calificado", "Propuesta", "Negociación", "Ganada"), "cliente", "montoLicenciamiento", "montoServicios".
    * "modifyActivity": "targetTime"/"targetDate", "newTime"/"newDate", "activity".
-4. CONTINUIDAD MULTI-TURNO Y VOZ (AI-FIRST): Si en [HISTORIAL DE CONVERSACIÓN] el Asistente acaba de solicitar datos para registrar/modificar un registro o el usuario responde dictando datos por nota de voz (convierte SIEMPRE teléfonos hablados en palabras como "ocho veintiséis ciento veintinueve cuarenta y dos diez" a dígitos "8261294210" y "arroba" a "@"), clasifica SIEMPRE como "ACTION_EXECUTION" con la tool activa integrando los datos en "parameters".
+   * "createExpense": "concepto", "monto", "fecha" (YYYY-MM-DD), "cliente" O "oportunidad" (XOR: solo uno), "ejecutivo".
+   * "modifyExpense": "targetExpense"|"targetFecha"|"targetMonto", "concepto", "monto", "fecha", "cliente" O "oportunidad".
+4. MULTI-TURNO Y VOZ: Si [HISTORIAL] pidió datos o el usuario dicta voz (convierte teléfonos en palabras "ocho veintiséis..."→"826...", "arroba"→"@"), responde "ACTION_EXECUTION" integrando "parameters".
 5. Dashboard: incluye "dashboardRedirect": { "tab": "commercial"|"support", "executiveId": "${userId}" }.
 
 [FORMATO JSON]
@@ -46,12 +48,14 @@ Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO})
 
 [EJEMPLOS]
 - "Hola" → {"thought":"Saludo","intent":"CONVERSATIONAL","domain":"CONVERSATIONAL","responseTemplate":"¡Hola! ¿En qué te ayudo?"}
-- "crea cliente Roberto Gómez de Coca-Cola" o (tras pedir datos) "carmen jones ocho veintiséis ciento veintinueve cuarenta y dos diez" → {"thought":"Crear cliente","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createClient","parameters":{"nombre":"Carmen","apellido":"Jones","telefono":"8261294210"}}}
-- "actualiza correo de Roberto Gómez a r@coca.com" → {"thought":"Modificar cliente","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyClient","parameters":{"targetClient":"Roberto Gómez","correo":"r@coca.com"}}}
-- "registra empresa Grupo Alfa web www.alfa.com" → {"thought":"Crear empresa","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createCompany","parameters":{"nombre":"Grupo Alfa","website":"www.alfa.com"}}}
-- "cambia dirección de empresa Grupo Alfa a Reforma 100" → {"thought":"Modificar empresa","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyCompany","parameters":{"targetCompany":"Grupo Alfa","direccion":"Reforma 100"}}}
-- "cotizacion red magic muevela a calificado" → {"thought":"Mover opp","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyOpportunity","parameters":{"nombreProyecto":"Red Magic","etapa":"Calificado"}}}
-- "crear llamada a javier el lunes 12 Octubre 10 am" → {"thought":"Crear llamada","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createActivity","parameters":{"activity":"Llamar a Javier","tipoActividad":"Llamada","fecha":"2026-10-12","hora":"10:00","cliente":"Javier"}}}
+- "carmen jones ocho veintiséis ciento veintinueve cuarenta y dos diez" → {"thought":"Crear","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createClient","parameters":{"nombre":"Carmen","apellido":"Jones","telefono":"8261294210"}}}
+- "cambia correo Roberto a r@coca.com" → {"thought":"Mod","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyClient","parameters":{"targetClient":"Roberto","correo":"r@coca.com"}}}
+- "registra empresa Alfa web alfa.com" → {"thought":"Crear","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createCompany","parameters":{"nombre":"Alfa","website":"alfa.com"}}}
+- "cambia dirección Alfa a Reforma 100" → {"thought":"Mod","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyCompany","parameters":{"targetCompany":"Alfa","direccion":"Reforma 100"}}}
+- "red magic a calificado" → {"thought":"Opp","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyOpportunity","parameters":{"nombreProyecto":"Red Magic","etapa":"Calificado"}}}
+- "llamada a javier 12 oct 10 am" → {"thought":"Act","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createActivity","parameters":{"activity":"Llamar a Javier","tipoActividad":"Llamada","fecha":"2026-10-12","hora":"10:00","cliente":"Javier"}}}
+- "gasto 500 comida cliente Carlos" → {"thought":"Gasto","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createExpense","parameters":{"concepto":"Comida","monto":500,"cliente":"Carlos"}}}
+- "cambia monto gasto comida a 650" → {"thought":"ModGasto","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyExpense","parameters":{"targetExpense":"Comida","monto":650}}}
 - "cuanto he vendido este mes" → {"thought":"Ventas","intent":"ANALYTICAL","domain":"OPORTUNIDADES","actionPlan":null}`;
   }
 

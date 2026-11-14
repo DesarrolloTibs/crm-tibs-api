@@ -176,6 +176,14 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
   * Soporta índices posicionales (`{0}`, `{1}`) y alias semánticos comunes (`{total}`, `{count}`, `{cantidad}`, `{resultado}`, `{valor}`, `{monto}`).
   * Limpia cualquier llave residual no resuelta (`/\Rule\{[a-zA-Z0-9_.]*\}/g`) para evitar que se muestren corchetes `{}` en la interfaz de usuario.
 
+* **Protección de Moneda y Normalización de Tablas/Listas de Gastos (`isCurrencyField`, `cleanTableDataForFrontend`, `formatDateOnly`):**
+  * [`isCurrencyField`](src/webchat/services/webchat-response-formatter.service.ts#L32) evalúa las heurísticas monetarias exclusivamente sobre `colName` (sin considerar el prefijo del cubo como `Gastos.`) y descarta campos anotados como `string`/`time`/`boolean` o columnas descriptivas (`concepto`, `receiptUrl`, `descripcion`, `nombre`, `username`, etc.), evitando que cadenas de texto se formateen como `$0.00 MXN`.
+  * [`formatDateOnly`](src/webchat/services/webchat-response-formatter.service.ts#L152) transforma columnas `DATE` calendario (ej. `Gastos.fecha`) directamente a `DD/MM/YYYY` sin aplicar desplazamiento horario UTC (`-6h`).
+  * [`cleanTableDataForFrontend`](src/webchat/services/webchat-response-formatter.service.ts#L166) omite `Gastos.montoSum` cuando la fila ya incluye `Gastos.monto`, y normaliza las claves visibles (`Gastos.concepto` -> `Concepto`, `Gastos.monto` -> `Monto`, `Gastos.fecha` -> `Fecha registro`), evitando además colisiones con heurísticas del frontend (`WebChat.tsx`).
+  * [`formatDataRowsAsList`](src/webchat/services/webchat-response-formatter.service.ts#L334) y [`generateSmartSummary`](src/webchat/services/webchat-response-formatter.service.ts#L465) incorporan formato dedicado para `Gastos`, exclusión de doble conteo entre `Gastos.monto` y `Gastos.montoSum`, y etiquetas singular/plural (`gasto`/`gastos`).
+* **Consolidación Multi-Fila en `simpleFormat` (`buildMultiRowTemplateContext`):**
+  * Cuando una consulta analítica con detalle devuelve múltiples filas (`data.length > 1`) pero `responseTemplate` solo interpola placeholders de medidas agregadas o tokens genéricos (como `{Gastos.montoSum}`), [`buildMultiRowTemplateContext`](src/webchat/services/webchat-response-formatter.service.ts#L909) suma/agrega los valores numéricos de todas las filas en lugar de utilizar únicamente `data[0]`.
+
 ### 5.9. Ejecución de Acciones: Agendamiento de Actividades, Días Relativos y Recordatorios (`WebchatActionExecutorService`)
 * **Resolución Temporal Inmune a Substring Matches (`parseNaturalDate`):**
   * `pasado mañana` se evalúa strictly antes que `mañana` para evitar que la coincidencia por subcadena colapse una cita a +1 día en vez de +2 días.
@@ -279,3 +287,18 @@ Para homologar la experiencia de usuario con la conexión simple de Facebook e I
 * **Validación de Unicidad y Continuidad Multi-Turno:**
   * Verifica colisiones de correo electrónico (`correo` único en `clients`) y teléfono antes de insertar o actualizar, evitando errores de restricción SQL.
   * `mergeHistoryContext` recupera automáticamente el cliente o empresa recién creado/listado en el turno previo cuando el usuario envía datos complementarios en el siguiente mensaje.
+
+### 4.4. Herramientas de Creación y Modificación de Gastos en Webchat Interno (`createExpense`, `modifyExpense`)
+* **Política Estricta Create / Update (Lecturas en Capa Semántica Cube.dev):**
+  * El Webchat Interno (`POST /api/webchat/query`) incorpora únicamente las acciones mutables `createExpense` y `modifyExpense` dentro de `WebchatActionType`, `WebchatPromptBuilderService`, `WebchatQueryPlannerService` y `WebchatActionExecutorService`, delegando mediante `ExpensesModule` (`exports: [ExpensesService]`) y el repositorio `Expense` inyectados en `WebchatModule`.
+  * Las consultas analíticas o de lectura sobre gastos continúan atendiéndose exclusivamente por la capa semántica (`Cube.dev` en dominio `GASTOS`), sin agregar tool de lectura ni permitir eliminación de registros (`WebchatService` y `WebchatActionExecutorService` bloquean operaciones destructivas y acciones no autorizadas como `consultExpense`).
+* **Validación Estricta XOR (`client_id` XOR `opportunity_id`) y Continuidad Multi-Turno:**
+  * Todo gasto debe vincularse exactamente a **un Cliente (`client_id`)** o a **una Oportunidad (`opportunity_id`)**, nunca a ambos ni a ninguno, en concordancia con `ExpensesService.create()` y `ExpensesService.update()`.
+  * Si el usuario envía ambos vínculos simultáneamente, el ejecutor rechaza la operación explicando la regla XOR. Si omite el vínculo o envía el nombre de una **Empresa**, solicita clarificación en el siguiente turno (sugiriendo hasta 5 contactos vinculados vía `clients.companyId` con filtro `ejecutivo_id` para ejecutivos) y recupera `concepto`, `monto` y `fecha` mediante `mergeHistoryContext`.
+  * Al reasignar un gasto existente (`modifyExpense`) entre Cliente y Oportunidad, nulifica explícitamente la columna contraria (`null`) antes de llamar a `expensesService.update()`.
+* **Control de Acceso Basado en Roles (RBAC):**
+  * **Ejecutivos (`executive` / `ejecutivo`):** Registran gastos bajo su propio `user.id` y únicamente pueden modificar gastos donde `expense.usuario_id === user.id`; de lo contrario, el sistema responde con *Acceso Denegado*.
+  * **Administradores y Superadministradores (`admin` / `superadmin`):** Pueden asignar `createExpense` a otro usuario mediante `ejecutivo` y modificar gastos de cualquier colaborador.
+* **Desambiguación, Voz en Español y Fechas Relativas:**
+  * Búsqueda tolerante a acentos (`public.f_unaccent_immutable`) y ranking semántico (`rankEntitiesByRelevance`) con desambiguación numerada y selección multi-turno por índice (`"el 1"`, `"el 2"`).
+  * Soporte de montos hablados en español (`parseSpokenSpanishNumber`, ej. *"quinientos pesos"* → `500`), extracción heurística priorizada en `WebchatQueryPlannerService` (`gasto`/`viático`/`reembolso` evaluado antes de `oportunidad`) y fechas relativas calculadas en la zona horaria del tenant (`America/Mexico_City`: `hoy`, `ayer`, `anteayer`, `hace N días`, días de la semana y `DD de mes`).

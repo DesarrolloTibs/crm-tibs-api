@@ -87,6 +87,15 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(formatterService.isCurrencyField('Tickets.ticketNumber')).toBe(false);
       expect(formatterService.isCurrencyField('Oportunidades.createdAt')).toBe(false);
       expect(formatterService.isCurrencyField('Etapas.stageType')).toBe(false);
+      expect(formatterService.isCurrencyField('Gastos.concepto')).toBe(false);
+      expect(formatterService.isCurrencyField('Gastos.fecha')).toBe(false);
+      expect(formatterService.isCurrencyField('Gastos.receiptUrl')).toBe(false);
+      expect(
+        formatterService.isCurrencyField('Gastos.concepto', {
+          dimensions: { 'Gastos.concepto': { type: 'string' } },
+        }),
+      ).toBe(false);
+      expect(formatterService.isCurrencyField('Gastos.monto')).toBe(true);
     });
 
     it('should format numbers correctly as Mexican Pesos (MXN) and US Dollars (USD)', () => {
@@ -244,6 +253,71 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(clean[0]['Oportunidades.cuentaOCliente']).toBe('Acme Corp');
       expect(clean[0]['Oportunidades.montoTotal']).toBe(75000);
       expect(clean[0]['Oportunidades.moneda']).toBe('USD');
+
+      const withClosure = formatterService.cleanTableDataForFrontend([
+        {
+          'Oportunidades.nombreProyecto': 'Expansión Norte',
+          'Oportunidades.estimatedClosureDate': '2026-11-20T00:00:00.000',
+        },
+      ]);
+      expect(withClosure[0]['Fecha estimada de cierre']).toBe('20/11/2026');
+      expect(withClosure[0]['Oportunidades.estimatedClosureDate']).toBeUndefined();
+    });
+
+    it('should sanitize Gastos table columns avoiding currency false positives, duplicate montoSum and UTC date shift', () => {
+      const rawData = [
+        {
+          'Gastos.id': 'exp-uuid-1',
+          'Gastos.concepto': 'Visita técnica',
+          'Gastos.monto': '3000.00',
+          'Gastos.fecha': '2026-11-13T00:00:00.000',
+          'Gastos.montoSum': '3000.00',
+        },
+      ];
+
+      const clean = formatterService.cleanTableDataForFrontend(rawData);
+      expect(clean).toHaveLength(1);
+      expect(clean[0]['Gastos.id']).toBeUndefined();
+      expect(clean[0]['Gastos.montoSum']).toBeUndefined();
+      expect(clean[0]['Concepto']).toBe('Visita técnica');
+      expect(clean[0]['Monto']).toBe('3000.00');
+      expect(clean[0]['Fecha registro']).toBe('13/11/2026');
+    });
+
+    it('should sum multi-row Gastos.montoSum in simpleFormat header and format expense list cleanly', async () => {
+      const cubeData = [
+        {
+          'Gastos.id': 'exp-1',
+          'Gastos.concepto': 'Visita técnica',
+          'Gastos.monto': '60000.00',
+          'Gastos.fecha': '2026-11-13T00:00:00.000',
+          'Gastos.montoSum': '60000.00',
+        },
+        {
+          'Gastos.id': 'exp-2',
+          'Gastos.concepto': 'Comida con cliente',
+          'Gastos.monto': '3000.00',
+          'Gastos.fecha': '2026-11-12T00:00:00.000',
+          'Gastos.montoSum': '3000.00',
+        },
+      ];
+      const plan: CubeQueryPlan = {
+        intent: 'ANALYTICAL',
+        detectedEntity: 'Gastos',
+        responseTemplate: 'El total de gastos registrados este mes es de {Gastos.montoSum}.',
+      };
+
+      const result = await formatterService.formatResults('¿Cuánto he gastado este mes?', cubeData, plan);
+      expect(result).toContain('El total de gastos registrados este mes es de $63,000.00 MXN.');
+      expect(result).toContain('1. Visita técnica — $60,000.00 MXN (13/11/2026)');
+      expect(result).toContain('2. Comida con cliente — $3,000.00 MXN (12/11/2026)');
+      expect(result).not.toContain('$0.00 MXN');
+
+      const summary = formatterService.generateSmartSummary([cubeData[1]], 'mis gastos', {
+        intent: 'ANALYTICAL',
+        detectedEntity: 'Gastos',
+      });
+      expect(summary).toBe('Se encontraron 1 gasto con un monto total de $3,000.00 MXN.');
     });
   });
 

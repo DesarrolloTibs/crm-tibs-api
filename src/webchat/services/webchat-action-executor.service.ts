@@ -16,6 +16,7 @@ import { TicketsService } from '../../tickets/tickets.service';
 import { ClientsService } from '../../clients/clients.service';
 import { CompaniesService } from '../../companies/companies.service';
 import { UsersService } from '../../users/users.service';
+import { ExpensesService } from '../../expenses/expenses.service';
 import { User } from '../../users/entities/user.entity';
 import { Role } from '../../role.enum';
 import { BusinessLineOption } from '../../opportunities/entities/business-line-option.entity';
@@ -30,6 +31,7 @@ import { Stage } from '../../stages/entities/stage.entity';
 import { Activity } from '../../activities/entities/activity.entity';
 import { Ticket } from '../../tickets/entities/ticket.entity';
 import { Product } from '../../products/entities/product.entity';
+import { Expense } from '../../expenses/entities/expense.entity';
 import { WebchatActionPlan, WebchatResponse, ConversationHistoryMessage } from '../interfaces/webchat.interfaces';
 
 @Injectable()
@@ -67,6 +69,9 @@ export class WebchatActionExecutorService {
     private readonly productRepo: Repository<Product>,
     @InjectRepository(Stage)
     private readonly stageRepo: Repository<Stage>,
+    private readonly expensesService: ExpensesService,
+    @InjectRepository(Expense)
+    private readonly expenseRepo: Repository<Expense>,
   ) {}
 
   /**
@@ -127,11 +132,13 @@ export class WebchatActionExecutorService {
       'modifyClient',
       'createCompany',
       'modifyCompany',
+      'createExpense',
+      'modifyExpense',
     ]);
     if (!actionPlan?.action || !allowedActions.has(actionPlan.action)) {
       this.logger.warn(`[WebChat - Action Executor] Acción bloqueada por no pertenecer al catálogo de tools permitidas: '${(actionPlan as any)?.action}'`);
       return {
-        answer: `La acción solicitada no está permitida. Únicamente puedo ejecutar operaciones autorizadas sobre Clientes, Empresas, Oportunidades, Actividades y Tickets.`,
+        answer: `La acción solicitada no está permitida. Únicamente puedo ejecutar operaciones autorizadas sobre Clientes, Empresas, Oportunidades, Actividades, Tickets y Gastos.`,
       };
     }
 
@@ -145,7 +152,7 @@ export class WebchatActionExecutorService {
         `[WebChat - Action Executor] Petición con impacto a BD fuera del alcance de tools bloqueada para usuario ${user.username}: "${originalQuestion}"`,
       );
       return {
-        answer: 'Por seguridad, el asistente no tiene permitido eliminar registros ni modificar usuarios, roles, permisos o configuraciones de sistema. Solo puedo crear o actualizar Clientes, Empresas, Oportunidades, Actividades y Tickets.',
+        answer: 'Por seguridad, el asistente no tiene permitido eliminar registros ni modificar usuarios, roles, permisos o configuraciones de sistema. Solo puedo crear o actualizar Clientes, Empresas, Oportunidades, Actividades, Tickets y Gastos.',
       };
     }
 
@@ -182,6 +189,10 @@ export class WebchatActionExecutorService {
         return this.handleCreateCompany(params, user, originalQuestion);
       case 'modifyCompany':
         return this.handleModifyCompany(params, user, conversationHistory);
+      case 'createExpense':
+        return this.handleCreateExpense(params, user, conversationHistory, originalQuestion);
+      case 'modifyExpense':
+        return this.handleModifyExpense(params, user, conversationHistory, originalQuestion);
       default:
         return {
           answer: `No reconozco la acción '${(actionPlan as any).action}'. ¿Podrías indicarme qué deseas realizar?`,
@@ -375,6 +386,185 @@ export class WebchatActionExecutorService {
         if (listMatch && listMatch[1]) {
           merged.targetCompany = listMatch[1].trim();
           break;
+        }
+      }
+    }
+
+    if (action === 'createExpense' || action === 'modifyExpense') {
+      const assistantMessages = conversationHistory
+        .filter((m) => m.role === 'assistant')
+        .map((m) => m.content)
+        .reverse();
+      const lastAssistantMsg = assistantMessages[0] || '';
+      const rawCurrentInput = (merged.__rawUserInput || '').toString().trim();
+      delete merged.__rawUserInput;
+
+      const pickMatch = rawCurrentInput.match(/^\s*(?:el|la|opci[oó]n|n[uú]mero|#)?\s*(\d+)\s*$/i);
+      const pickNumber = pickMatch ? parseInt(pickMatch[1], 10) : null;
+
+      if (pickNumber && pickNumber > 0 && lastAssistantMsg) {
+        const optionRegex = new RegExp(`(?:^|\\n)\\s*${pickNumber}\\.\\s+\\*{0,2}([^\\n]+)`, 'i');
+        const lineMatch = lastAssistantMsg.match(optionRegex);
+        if (lineMatch && lineMatch[1]) {
+          const pickedFullLine = lineMatch[1].trim();
+          const pickedName = pickedFullLine
+            .split(/\s+—\s+|\s+\(|\s+\[|\s+\|\s+/)[0]
+            .replace(/\*{1,2}/g, '')
+            .trim();
+
+          if (/se encontraron m[uú]ltiples clientes posibles para asociar el gasto/i.test(lastAssistantMsg)) {
+            merged.cliente = pickedName;
+          } else if (/se encontraron m[uú]ltiples oportunidades posibles para asociar el gasto/i.test(lastAssistantMsg)) {
+            merged.oportunidad = pickedName;
+          } else if (action === 'modifyExpense' && /encontr[eé] varios gastos que coinciden/i.test(lastAssistantMsg)) {
+            merged.targetExpense = pickedName;
+            const amountInLine = pickedFullLine.match(/\$([\d,]+(?:\.\d{1,2})?)/);
+            if (amountInLine && amountInLine[1]) {
+              merged.targetMonto = Number(amountInLine[1].replace(/,/g, ''));
+            }
+            const dateInLine = pickedFullLine.match(/Fecha:\s*(\d{4}-\d{2}-\d{2})/i);
+            if (dateInLine && dateInLine[1]) {
+              merged.targetFecha = dateInLine[1];
+            }
+          }
+        }
+      }
+
+      if (action === 'createExpense') {
+        if (!merged.concepto) {
+          const conceptFromAssistant =
+            lastAssistantMsg.match(/[-•]\s*\*{0,2}Concepto:\*{0,2}\s*([^\n]+)/i) ||
+            lastAssistantMsg.match(/del gasto de \*{0,2}"([^"]+)"\*{0,2}/i);
+          if (conceptFromAssistant && conceptFromAssistant[1]) {
+            merged.concepto = conceptFromAssistant[1].replace(/\*{1,2}/g, '').trim();
+          }
+        }
+        if (merged.monto === undefined || merged.monto === null || merged.monto === '') {
+          const amountFromAssistant =
+            lastAssistantMsg.match(/[-•]\s*\*{0,2}Monto:\*{0,2}\s*\$?([\d,]+(?:\.\d{1,2})?)/i) ||
+            lastAssistantMsg.match(/del gasto por \*{0,2}\$?([\d,]+(?:\.\d{1,2})?)/i);
+          if (amountFromAssistant && amountFromAssistant[1]) {
+            merged.monto = Number(amountFromAssistant[1].replace(/,/g, ''));
+          }
+        }
+        if (!merged.fecha) {
+          const dateFromAssistant = lastAssistantMsg.match(/[-•]\s*\*{0,2}Fecha:\*{0,2}\s*(\d{4}-\d{2}-\d{2})/i);
+          if (dateFromAssistant && dateFromAssistant[1]) {
+            merged.fecha = dateFromAssistant[1].trim();
+          }
+        }
+
+        const isAwaitingAssociation =
+          /todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades) posibles para asociar el gasto/i.test(
+            lastAssistantMsg,
+          );
+
+        for (const msg of userMessages) {
+          if (merged.monto === undefined || merged.monto === null || merged.monto === '') {
+            const parsedFromHistory = this.extractAmountFromSentence(msg);
+            if (parsedFromHistory !== null) {
+              merged.monto = parsedFromHistory;
+            }
+          }
+          if (!merged.fecha) {
+            const dateFromHistory = this.extractDateTokenFromText(msg);
+            if (dateFromHistory) {
+              merged.fecha = dateFromHistory;
+            }
+          }
+          if (!merged.concepto) {
+            const cleanedHistConcept = this.extractConceptFromExpenseSentence(msg);
+            if (cleanedHistConcept) {
+              merged.concepto = cleanedHistConcept;
+            }
+          }
+          if (
+            !isAwaitingAssociation &&
+            !merged.cliente &&
+            !merged.clientName &&
+            !merged.client_id &&
+            !merged.oportunidad &&
+            !merged.opportunity &&
+            !merged.opportunity_id
+          ) {
+            const oppHist = msg.match(
+              /\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de\s+\$?\d|monto|fecha|hoy|ayer)|$|[,.])/i,
+            );
+            if (oppHist && oppHist[1]) {
+              merged.oportunidad = oppHist[1].trim();
+            } else {
+              const cliHist = msg.match(
+                /\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de\s+\$?\d|monto|fecha|hoy|ayer)|$|[,.])/i,
+              );
+              if (cliHist && cliHist[1]) {
+                merged.cliente = cliHist[1].trim();
+              }
+            }
+          }
+        }
+      }
+
+      if (action === 'modifyExpense') {
+        if (!merged.targetExpense && !merged.targetConcepto && !merged.expenseId) {
+          const identifiedMatch =
+            lastAssistantMsg.match(/Identifiqu[eé] el gasto \*{0,2}"?([^"*\n(]+?)"?\*{0,2}\s*\(/i) ||
+            lastAssistantMsg.match(/Gasto Registrado Exitosamente[\s\S]*?[-•]\s*\*{0,2}Concepto:\*{0,2}\s*([^\n]+)/i);
+          if (identifiedMatch && identifiedMatch[1]) {
+            merged.targetExpense = identifiedMatch[1].replace(/\*{1,2}/g, '').trim();
+          }
+        }
+
+        const hasExplicitChange =
+          merged.monto !== undefined ||
+          merged.concepto !== undefined ||
+          merged.nuevoConcepto !== undefined ||
+          merged.fecha !== undefined ||
+          merged.nuevaFecha !== undefined ||
+          merged.cliente !== undefined ||
+          merged.oportunidad !== undefined;
+
+        if (!hasExplicitChange && pickNumber) {
+          for (const msg of userMessages) {
+            if (merged.monto === undefined) {
+              const modAmountMatch =
+                msg.match(/\b(?:monto(?:\s+a)?|a|por)\s+\$?\s*([\d,]+(?:\.\d{1,2})?)\b/i) ||
+                msg.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/i);
+              if (modAmountMatch && modAmountMatch[1]) {
+                merged.monto = Number(modAmountMatch[1].replace(/,/g, ''));
+              }
+            }
+            if (!merged.nuevaFecha && !merged.fecha) {
+              const modDateMatch = msg.match(
+                /\b(?:fecha\s+(?:a|por|para|=)\s*|a\s+)(hoy|ayer|anteayer|antier|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|\d{1,2}\s+de\s+[a-záéíóú]+(?:\s+de\s+\d{4})?)\b/i,
+              );
+              if (modDateMatch && modDateMatch[1]) {
+                merged.fecha = modDateMatch[1].trim();
+              }
+            }
+            if (!merged.nuevoConcepto) {
+              const modConceptMatch = msg.match(
+                /\b(?:nuevo\s+concepto|concepto\s+(?:a|por|=))\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:y\s+monto|monto|fecha|cliente|oportunidad)|$|[,.])/i,
+              );
+              if (modConceptMatch && modConceptMatch[1]) {
+                merged.nuevoConcepto = modConceptMatch[1].trim();
+              }
+            }
+            if (!merged.cliente && !merged.oportunidad) {
+              const modOppMatch = msg.match(
+                /\b(?:a\s+la\s+|al?\s+|para\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:y\s+|monto|concepto|fecha)|$|[,.])/i,
+              );
+              if (modOppMatch && modOppMatch[1]) {
+                merged.oportunidad = modOppMatch[1].trim();
+              } else {
+                const modCliMatch = msg.match(
+                  /\b(?:al?\s+|para\s+el\s+)cliente\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:y\s+|monto|concepto|fecha)|$|[,.])/i,
+                );
+                if (modCliMatch && modCliMatch[1]) {
+                  merged.cliente = modCliMatch[1].trim();
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -2664,6 +2854,938 @@ export class WebchatActionExecutorService {
       suggestedSlots,
       message: 'El horario propuesto tiene conflicto con otra actividad.',
     };
+  }
+
+  // ============================================================================
+  // 8. MÓDULO DE GASTOS (CREATE & MODIFY EN WEBCHAT INTERNO - LECTURA VIA CUBE)
+  // ============================================================================
+
+  private getTodayInTzYYYYMMDD(): string {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: this.getTimezone(),
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const year = parts.find((p) => p.type === 'year')?.value || String(new Date().getFullYear());
+    const month = parts.find((p) => p.type === 'month')?.value || String(new Date().getMonth() + 1).padStart(2, '0');
+    const day = parts.find((p) => p.type === 'day')?.value || String(new Date().getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  private addDaysToYYYYMMDD(ymd: string, deltaDays: number): string {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const utc = new Date(Date.UTC(y, m - 1, d + deltaDays));
+    const yy = utc.getUTCFullYear();
+    const mm = String(utc.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(utc.getUTCDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }
+
+  private formatExpenseDateDisplay(fecha: Date | string | null | undefined): string {
+    if (!fecha) return this.getTodayInTzYYYYMMDD();
+    if (typeof fecha === 'string') {
+      const m = fecha.match(/^(\d{4}-\d{2}-\d{2})/);
+      return m ? m[1] : fecha;
+    }
+    if (fecha instanceof Date && !Number.isNaN(fecha.getTime())) {
+      return fecha.toISOString().slice(0, 10);
+    }
+    return String(fecha);
+  }
+
+  private extractDateTokenFromText(text: string): string | null {
+    if (!text) return null;
+    const match = text.match(
+      /\b(?:fecha(?:\s+(?:del|a|para|en|:))?\s*)?(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|hoy|ayer|anteayer|antier|hace\s+\d+\s+d[ií]as?|\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+de\s+\d{4})?|(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+pasado)\b/i,
+    );
+    return match && match[1] ? match[1].trim() : null;
+  }
+
+  private resolveExpenseDateInput(rawDate?: string | null): string | null {
+    if (!rawDate || !String(rawDate).trim()) return null;
+    const clean = this.normalizeString(String(rawDate));
+    const todayYmd = this.getTodayInTzYYYYMMDD();
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+      return clean;
+    }
+
+    const slashMatch = clean.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (slashMatch) {
+      const dd = slashMatch[1].padStart(2, '0');
+      const mm = slashMatch[2].padStart(2, '0');
+      const yyyy = slashMatch[3];
+      if (Number(mm) >= 1 && Number(mm) <= 12 && Number(dd) >= 1 && Number(dd) <= 31) {
+        return `${yyyy}-${mm}-${dd}`;
+      }
+    }
+
+    if (clean === 'hoy' || clean === 'el dia de hoy') {
+      return todayYmd;
+    }
+    if (clean === 'ayer') {
+      return this.addDaysToYYYYMMDD(todayYmd, -1);
+    }
+    if (clean === 'anteayer' || clean === 'antier') {
+      return this.addDaysToYYYYMMDD(todayYmd, -2);
+    }
+
+    const agoMatch = clean.match(/^hace\s+(\d+)\s+dias?$/);
+    if (agoMatch) {
+      const n = parseInt(agoMatch[1], 10);
+      if (!Number.isNaN(n) && n >= 0) {
+        return this.addDaysToYYYYMMDD(todayYmd, -n);
+      }
+    }
+
+    const months: Record<string, number> = {
+      enero: 1,
+      febrero: 2,
+      marzo: 3,
+      abril: 4,
+      mayo: 5,
+      junio: 6,
+      julio: 7,
+      agosto: 8,
+      septiembre: 9,
+      setiembre: 9,
+      octubre: 10,
+      noviembre: 11,
+      diciembre: 12,
+    };
+    const monthMatch = clean.match(/^(\d{1,2})\s+de\s+([a-z]+)(?:\s+de\s+(\d{4}))?$/);
+    if (monthMatch && months[monthMatch[2]]) {
+      const day = Number(monthMatch[1]);
+      const month = months[monthMatch[2]];
+      const year = monthMatch[3] ? Number(monthMatch[3]) : Number(todayYmd.slice(0, 4));
+      if (day >= 1 && day <= 31) {
+        return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      }
+    }
+
+    const weekdays: Record<string, number> = {
+      domingo: 0,
+      lunes: 1,
+      martes: 2,
+      miercoles: 3,
+      jueves: 4,
+      viernes: 5,
+      sabado: 6,
+    };
+    const weekdayMatch = clean.match(/^(?:el\s+)?(domingo|lunes|martes|miercoles|jueves|viernes|sabado)(?:\s+pasado)?$/);
+    if (weekdayMatch && weekdays[weekdayMatch[1]] !== undefined) {
+      const targetDow = weekdays[weekdayMatch[1]];
+      const [y, m, d] = todayYmd.split('-').map(Number);
+      const todayDow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+      let diff = todayDow - targetDow;
+      if (diff <= 0) diff += 7;
+      return this.addDaysToYYYYMMDD(todayYmd, -diff);
+    }
+
+    return null;
+  }
+
+  private parseSpokenSpanishNumber(raw: string): number | null {
+    if (!raw) return null;
+    const normalized = this.normalizeString(raw)
+      .replace(/[,$]/g, '')
+      .replace(/\b(?:pesos|mxn|usd|dolares|de|y)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) return null;
+    if (/^\d+(?:\.\d{1,2})?$/.test(normalized)) {
+      return Number(normalized);
+    }
+
+    const wordMap: Record<string, number> = {
+      cero: 0,
+      un: 1,
+      uno: 1,
+      una: 1,
+      dos: 2,
+      tres: 3,
+      cuatro: 4,
+      cinco: 5,
+      seis: 6,
+      siete: 7,
+      ocho: 8,
+      nueve: 9,
+      diez: 10,
+      once: 11,
+      doce: 12,
+      trece: 13,
+      catorce: 14,
+      quince: 15,
+      dieciseis: 16,
+      diecisiete: 17,
+      dieciocho: 18,
+      diecinueve: 19,
+      veinte: 20,
+      veintiun: 21,
+      veintiuno: 21,
+      veintiuna: 21,
+      veintidos: 22,
+      veintitres: 23,
+      veinticuatro: 24,
+      veinticinco: 25,
+      veintiseis: 26,
+      veintisiete: 27,
+      veintiocho: 28,
+      veintinueve: 29,
+      treinta: 30,
+      cuarenta: 40,
+      cincuenta: 50,
+      sesenta: 60,
+      setenta: 70,
+      ochenta: 80,
+      noventa: 90,
+      cien: 100,
+      ciento: 100,
+      doscientos: 200,
+      doscientas: 200,
+      trescientos: 300,
+      trescientas: 300,
+      cuatrocientos: 400,
+      cuatrocientas: 400,
+      quinientos: 500,
+      quinientas: 500,
+      seiscientos: 600,
+      seiscientas: 600,
+      setecientos: 700,
+      setecientas: 700,
+      ochocientos: 800,
+      ochocientas: 800,
+      novecientos: 900,
+      novecientas: 900,
+    };
+
+    const tokens = normalized.split(' ');
+    let current = 0;
+    let total = 0;
+    let matchedWord = false;
+
+    for (const tok of tokens) {
+      if (tok === 'mil') {
+        matchedWord = true;
+        total += (current || 1) * 1000;
+        current = 0;
+      } else if (tok === 'millon' || tok === 'millones') {
+        matchedWord = true;
+        total += (current || 1) * 1000000;
+        current = 0;
+      } else if (wordMap[tok] !== undefined) {
+        matchedWord = true;
+        current += wordMap[tok];
+      }
+    }
+
+    if (!matchedWord) return null;
+    return total + current;
+  }
+
+  private extractAmountFromSentence(text: string): number | null {
+    if (!text) return null;
+    const m =
+      text.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+      text.match(/\bmonto(?:\s+de)?\s*:?\s*\$?\s*([\d,]+(?:\.\d{1,2})?)\b/i) ||
+      text.match(
+        /\b(?:de|por|a)\s+\$?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)?\b(?!\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b)/i,
+      ) ||
+      text.match(/\b([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)\b/i);
+
+    if (m && m[1]) {
+      const n = Number(m[1].replace(/,/g, ''));
+      if (!Number.isNaN(n) && n > 0) return n;
+    }
+
+    const spokenPhraseMatch = text.match(
+      /\b(?:por|de|monto(?:\s+de)?)\s+((?:(?:un[oa]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieci\w+|veinti?\w+|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien(?:to)?|doscient[oa]s|trescient[oa]s|cuatrocient[oa]s|quinient[oa]s|seiscient[oa]s|setecient[oa]s|ochocient[oa]s|novecient[oa]s|mil|mill[oó]n|millones)(?:\s+(?:y\s+)?)){1,6})(?=\s+(?:pesos|mxn|usd|en|para|con|el|la|hoy|ayer)|$|[,.])/i,
+    );
+    if (spokenPhraseMatch && spokenPhraseMatch[1]) {
+      const parsedSpoken = this.parseSpokenSpanishNumber(spokenPhraseMatch[1]);
+      if (parsedSpoken !== null && parsedSpoken > 0) return parsedSpoken;
+    }
+
+    return null;
+  }
+
+  private extractConceptFromExpenseSentence(text: string): string | null {
+    if (!text) return null;
+    if (!/\b(crea(?:r)?|registra(?:r)?|apunta(?:r)?|anota(?:r)?|carga(?:r)?|captura(?:r)?|agrega(?:r)?|genera(?:r)?|gastos?|vi[aá]ticos?|reembolsos?)\b/i.test(text)) {
+      return null;
+    }
+    const explicit = text.match(
+      /\bconcepto\s*:?\s*["']?([^,.;"'\n]+?)["']?(?=\s+(?:monto|por\s+\$?\d|de\s+\$?\d|fecha|hoy|ayer|cliente|oportunidad)|$|[,.])/i,
+    );
+    if (explicit && explicit[1]) {
+      return explicit[1].trim();
+    }
+    const cleaned = text
+      .replace(
+        /^(?:crea(?:r)?|registra(?:r)?|apunta(?:r)?|anota(?:r)?|carga(?:r)?|captura(?:r)?|agrega(?:r)?|genera(?:r)?)\s+(?:un\s+|unos\s+)?(?:nuevo\s+)?(?:gastos?|vi[aá]ticos?|reembolsos?)\s*(?:de|por|en)?\s*/i,
+        '',
+      )
+      .replace(/\$?\s*[\d,]+(?:\.\d{1,2})?\s*(?:pesos|mxn|usd|d[oó]lares)?/gi, ' ')
+      .replace(/\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+|en\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+[^,.;]+/gi, ' ')
+      .replace(/\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+[^,.;]+/gi, ' ')
+      .replace(/\b(?:para\s+el\s+|asignad[oa]\s+(?:a|al)\s+)?ejecutivo\s+[^,.;]+/gi, ' ')
+      .replace(
+        /\b(?:fecha(?:\s+(?:del|a|para|en|:))?\s*)?(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|hoy|ayer|anteayer|antier|hace\s+\d+\s+d[ií]as?|\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+de\s+\d{4})?|(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+pasado)\b/gi,
+        ' ',
+      )
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^(?:de|por|en|con|para|y)\s+/i, '')
+      .replace(/\s+(?:de|por|en|con|para|a|del|al|y)$/i, '')
+      .trim();
+
+    return cleaned.length >= 2 ? cleaned : null;
+  }
+
+  private parseExpenseAmount(rawVal: any, fallbackText?: string): number | null {
+    if (rawVal !== undefined && rawVal !== null && rawVal !== '') {
+      if (typeof rawVal === 'number' && !Number.isNaN(rawVal)) {
+        return rawVal;
+      }
+      const rawStr = String(rawVal).trim();
+      const cleanedNumStr = rawStr
+        .replace(/[,$]/g, '')
+        .replace(/\b(?:pesos|mxn|usd|d[oó]lares)\b/gi, '')
+        .trim();
+      if (/^-?\d+(?:\.\d{1,2})?$/.test(cleanedNumStr)) {
+        return Number(cleanedNumStr);
+      }
+      const parsedWord = this.parseSpokenSpanishNumber(rawStr);
+      if (parsedWord !== null) {
+        return parsedWord;
+      }
+      const numFromHelper = this.parseNumeric(rawVal);
+      if (numFromHelper !== undefined && numFromHelper !== null && !Number.isNaN(numFromHelper)) {
+        return numFromHelper;
+      }
+    }
+
+    if (fallbackText) {
+      return this.extractAmountFromSentence(fallbackText);
+    }
+
+    return null;
+  }
+
+  private async resolveExpenseAssociation(options: {
+    clientHint?: string;
+    oppHint?: string;
+    empresaHint?: string;
+    bareTurn2Hint?: string;
+    user: User;
+    isExec: boolean;
+  }): Promise<{
+    status: 'resolved' | 'xor_violation' | 'ambiguous' | 'not_found' | 'company_not_supported';
+    client?: Client;
+    opportunity?: Opportunity;
+    answer?: string;
+  }> {
+    const { clientHint, oppHint, empresaHint, bareTurn2Hint, user, isExec } = options;
+
+    if (clientHint && oppHint) {
+      return {
+        status: 'xor_violation',
+        answer:
+          '⚠️ Por regla de negocio del CRM, cada gasto debe asociarse únicamente a un cliente O a una oportunidad, nunca a ambos al mismo tiempo.\n\nPor favor indícame solo uno de los dos (el cliente o la oportunidad) para asociar el gasto.',
+      };
+    }
+
+    const resolveCompanyClarification = async (companyNameHint: string) => {
+      const companyEntity = await this.resolveCompany(companyNameHint);
+      if (!companyEntity) return null;
+
+      const companyClients = await this.clientRepo.find({
+        where: isExec ? { companyId: companyEntity.id, ejecutivo_id: user.id } : { companyId: companyEntity.id },
+        take: 5,
+      });
+
+      const listStr =
+        companyClients.length > 0
+          ? `\n\nClientes disponibles en "${companyEntity.nombre}" para asociar el gasto:\n` +
+            companyClients
+              .map((c, idx) => `${idx + 1}. ${`${c.nombre || ''} ${c.apellido || ''}`.trim()}${c.correo ? ` (${c.correo})` : ''}`)
+              .join('\n')
+          : '';
+
+      return {
+        status: 'company_not_supported' as const,
+        answer: `🏢 Identifiqué la empresa "${companyEntity.nombre}", pero los gastos en el CRM no se vinculan directamente a empresas sino a un cliente o a una oportunidad.${listStr}\n\nPor favor indícame el cliente o la oportunidad exacta para asociar el gasto.`,
+      };
+    };
+
+    if (oppHint) {
+      const oppRes = await this.resolveOpportunityResolution(oppHint, user, isExec);
+      if (oppRes.ambiguousCandidates.length > 1) {
+        const list = oppRes.ambiguousCandidates
+          .map((o, idx) => `${idx + 1}. ${o.nombre_proyecto}`)
+          .join('\n');
+        return {
+          status: 'ambiguous',
+          answer: `🤔 Se encontraron múltiples oportunidades posibles para asociar el gasto:\n\n${list}\n\nResponde con el número de la opción o el nombre exacto de la oportunidad.`,
+        };
+      }
+      if (oppRes.item) {
+        return { status: 'resolved', opportunity: oppRes.item };
+      }
+      return {
+        status: 'not_found',
+        answer: `⚠️ No encontré ninguna oportunidad que coincida con "${oppHint}"${isExec ? ' bajo tu asignación' : ''}.\n\n¿Podrías verificar el nombre de la oportunidad o indicarme el cliente para asociar el gasto?`,
+      };
+    }
+
+    if (clientHint) {
+      const clientRes = await this.resolveClientResolution(clientHint, user, isExec);
+      if (clientRes.ambiguousCandidates.length > 1) {
+        const list = clientRes.ambiguousCandidates
+          .map((c, idx) => `${idx + 1}. ${`${c.nombre || ''} ${c.apellido || ''}`.trim()}${c.correo ? ` (${c.correo})` : ''}`)
+          .join('\n');
+        return {
+          status: 'ambiguous',
+          answer: `🤔 Se encontraron múltiples clientes posibles para asociar el gasto:\n\n${list}\n\nResponde con el número de la opción o el nombre completo del cliente.`,
+        };
+      }
+      if (clientRes.item) {
+        return { status: 'resolved', client: clientRes.item };
+      }
+      const companyClarif = await resolveCompanyClarification(clientHint);
+      if (companyClarif) return companyClarif;
+
+      return {
+        status: 'not_found',
+        answer: `⚠️ No encontré ningún cliente que coincida con "${clientHint}"${isExec ? ' bajo tu asignación' : ''}.\n\n¿Podrías verificar el nombre o indicarme la oportunidad para asociar el gasto?`,
+      };
+    }
+
+    if (empresaHint) {
+      const companyClarif = await resolveCompanyClarification(empresaHint);
+      if (companyClarif) return companyClarif;
+      const clientFallback = await this.resolveClientResolution(empresaHint, user, isExec);
+      if (clientFallback.item) {
+        return { status: 'resolved', client: clientFallback.item };
+      }
+    }
+
+    if (bareTurn2Hint) {
+      const [clientRes, oppRes] = await Promise.all([
+        this.resolveClientResolution(bareTurn2Hint, user, isExec),
+        this.resolveOpportunityResolution(bareTurn2Hint, user, isExec),
+      ]);
+
+      if (clientRes.item && oppRes.item) {
+        return {
+          status: 'ambiguous',
+          answer: `🤔 "${bareTurn2Hint}" coincide tanto con un cliente (${`${clientRes.item.nombre || ''} ${clientRes.item.apellido || ''}`.trim()}) como con una oportunidad (${oppRes.item.nombre_proyecto}).\n\n¿A cuál deseas asociar el gasto? Indícame "cliente ${clientRes.item.nombre}" u "oportunidad ${oppRes.item.nombre_proyecto}".`,
+        };
+      }
+      if (clientRes.ambiguousCandidates.length > 1 && !oppRes.item) {
+        const list = clientRes.ambiguousCandidates
+          .map((c, idx) => `${idx + 1}. ${`${c.nombre || ''} ${c.apellido || ''}`.trim()}${c.correo ? ` (${c.correo})` : ''}`)
+          .join('\n');
+        return {
+          status: 'ambiguous',
+          answer: `🤔 Se encontraron múltiples clientes posibles para asociar el gasto:\n\n${list}\n\nResponde con el número de la opción o el nombre completo del cliente.`,
+        };
+      }
+      if (oppRes.ambiguousCandidates.length > 1 && !clientRes.item) {
+        const list = oppRes.ambiguousCandidates
+          .map((o, idx) => `${idx + 1}. ${o.nombre_proyecto}`)
+          .join('\n');
+        return {
+          status: 'ambiguous',
+          answer: `🤔 Se encontraron múltiples oportunidades posibles para asociar el gasto:\n\n${list}\n\nResponde con el número de la opción o el nombre exacto de la oportunidad.`,
+        };
+      }
+      if (clientRes.item) {
+        return { status: 'resolved', client: clientRes.item };
+      }
+      if (oppRes.item) {
+        return { status: 'resolved', opportunity: oppRes.item };
+      }
+
+      const companyClarif = await resolveCompanyClarification(bareTurn2Hint);
+      if (companyClarif) return companyClarif;
+
+      return {
+        status: 'not_found',
+        answer: `⚠️ No encontré ningún cliente ni oportunidad que coincida con "${bareTurn2Hint}" para asociar el gasto.\n\nPor favor indícame el nombre exacto del cliente o de la oportunidad.`,
+      };
+    }
+
+    return { status: 'not_found' };
+  }
+
+  private async resolveExpenseResolution(options: {
+    expenseId?: string;
+    conceptHint?: string;
+    targetFecha?: string | null;
+    targetMonto?: number | null;
+    user: User;
+    isExec: boolean;
+  }): Promise<{ item: Expense | null; ambiguousCandidates: Expense[] }> {
+    const { expenseId, conceptHint, targetFecha, targetMonto, user, isExec } = options;
+
+    if (expenseId && this.isValidUuid(expenseId)) {
+      const exact = await this.expenseRepo.findOne({
+        where: { id: expenseId },
+        relations: ['client', 'opportunity'],
+      });
+      return { item: exact || null, ambiguousCandidates: [] };
+    }
+
+    const cleanConcept = (conceptHint || '').trim();
+    const cleanNorm = this.normalizeString(cleanConcept);
+    const words = cleanNorm.split(/\s+/).filter((w) => w.length >= 2);
+
+    const whereConditions: any[] = [];
+    if (cleanNorm) {
+      whereConditions.push({
+        concepto: Raw((alias) => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${cleanNorm}%` }),
+      });
+      for (const w of words) {
+        whereConditions.push({
+          concepto: Raw((alias) => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${w}%` }),
+        });
+      }
+    } else if (targetFecha) {
+      whereConditions.push({ fecha: targetFecha as any });
+    } else if (targetMonto !== null && targetMonto !== undefined) {
+      whereConditions.push({ monto: targetMonto });
+    }
+
+    if (whereConditions.length === 0) {
+      return { item: null, ambiguousCandidates: [] };
+    }
+
+    const allCandidates = await this.expenseRepo.find({
+      where: whereConditions,
+      relations: ['client', 'opportunity'],
+      order: { createdAt: 'DESC' },
+      take: 25,
+    });
+
+    if (allCandidates.length === 0) {
+      return { item: null, ambiguousCandidates: [] };
+    }
+
+    // Prioridad RBAC: si el ejecutivo tiene coincidencias propias, trabajamos primero sobre sus propios gastos;
+    // solo exponemos coincidencias ajenas si no tiene propias, para que handleModifyExpense devuelva Acceso Denegado explícito.
+    const ownCandidates = isExec ? allCandidates.filter((e) => e.usuario_id === user.id) : allCandidates;
+    let workingSet = ownCandidates.length > 0 ? ownCandidates : allCandidates;
+
+    if (targetFecha) {
+      const byDate = workingSet.filter((e) => this.formatExpenseDateDisplay(e.fecha) === targetFecha);
+      if (byDate.length > 0) workingSet = byDate;
+    }
+    if (targetMonto !== null && targetMonto !== undefined) {
+      const byAmount = workingSet.filter((e) => Math.abs(Number(e.monto) - targetMonto) < 0.01);
+      if (byAmount.length > 0) workingSet = byAmount;
+    }
+
+    if (workingSet.length === 1) {
+      return { item: workingSet[0], ambiguousCandidates: [] };
+    }
+
+    if (cleanConcept) {
+      const ranked = rankEntitiesByRelevance(workingSet, cleanConcept, (e: Expense) => [
+        e.concepto,
+        e.client ? `${e.client.nombre || ''} ${e.client.apellido || ''}`.trim() : null,
+        e.opportunity ? e.opportunity.nombre_proyecto : null,
+      ]);
+
+      if (ranked.length === 1) {
+        return { item: ranked[0].item, ambiguousCandidates: [] };
+      }
+
+      if (ranked.length > 1) {
+        const topScore = ranked[0].score;
+        const secondScore = ranked[1].score;
+        if (topScore >= secondScore + 1500) {
+          return { item: ranked[0].item, ambiguousCandidates: [] };
+        }
+        const tied = ranked
+          .filter((r) => r.score >= topScore - 1500)
+          .slice(0, 6)
+          .map((r) => r.item);
+        if (tied.length > 1) {
+          return { item: null, ambiguousCandidates: tied };
+        }
+        return { item: tied[0], ambiguousCandidates: [] };
+      }
+    }
+
+    return { item: null, ambiguousCandidates: workingSet.slice(0, 6) };
+  }
+
+  async handleCreateExpense(
+    params: any,
+    user: User,
+    conversationHistory: ConversationHistoryMessage[] = [],
+    originalQuestion: string = '',
+  ): Promise<WebchatResponse> {
+    const isExec = this.isExecutive(user.role);
+    const mergedParams = this.mergeHistoryContext(
+      'createExpense',
+      { ...params, __rawUserInput: originalQuestion },
+      conversationHistory,
+    );
+
+    // 1. Asignación de responsable (RBAC: Ejecutivo siempre bajo su propio ID; Admin/Superadmin puede asignar)
+    let assignedExecutiveUser: User | null = null;
+    let targetExecutiveName = user.username || user.email || 'Usuario';
+
+    if (!isExec && (mergedParams.ejecutivo || mergedParams.ejecutivoId || mergedParams.usuario || mergedParams.usuarioId || mergedParams.responsable)) {
+      const execSearch =
+        mergedParams.ejecutivo || mergedParams.ejecutivoId || mergedParams.usuario || mergedParams.usuarioId || mergedParams.responsable;
+      const foundUser = await this.resolveUser(execSearch);
+      if (foundUser) {
+        assignedExecutiveUser = foundUser;
+        targetExecutiveName = foundUser.username || foundUser.email || foundUser.id;
+      }
+    }
+
+    // 2. Validar concepto y monto
+    let concepto = (mergedParams.concepto || mergedParams.concept || mergedParams.descripcion || '').toString().trim();
+    if (/^\s*\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(concepto)) {
+      concepto = '';
+    }
+
+    const monto = this.parseExpenseAmount(mergedParams.monto ?? mergedParams.amount ?? mergedParams.importe, originalQuestion);
+    const fechaYmd =
+      this.resolveExpenseDateInput(mergedParams.fecha || mergedParams.date) || this.getTodayInTzYYYYMMDD();
+
+    if (!concepto && (monto === null || monto === undefined)) {
+      return {
+        answer:
+          '⚠️ Para registrar el gasto necesito al menos el concepto, el monto y el cliente u oportunidad al que pertenece.\n\nPor ejemplo: "Registra gasto de comida por $500 para el cliente Carlos"',
+      };
+    }
+
+    if (!concepto) {
+      return {
+        answer: `¿Cuál es el concepto del gasto por $${Number(monto).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN?\n\n(Nota: Fecha registrada: ${fechaYmd}. Ejemplo: "Comida con cliente", "Gasolina", "Vuelo")`,
+      };
+    }
+
+    if (monto === null || monto === undefined || Number.isNaN(monto) || monto <= 0) {
+      const detail =
+        monto !== null && monto <= 0
+          ? '⚠️ El monto del gasto debe ser mayor a $0.'
+          : '';
+      return {
+        answer: `${detail ? detail + '\n\n' : ''}¿Cuál es el monto del gasto de "${concepto}"? (ej. "$500 pesos")`,
+      };
+    }
+
+    // 3. Resolución estricta de relación XOR (Cliente XOR Oportunidad)
+    const rawClientHint = (mergedParams.cliente || mergedParams.clientName || mergedParams.contacto || '').toString().trim() || undefined;
+    const rawOppHint = (mergedParams.oportunidad || mergedParams.opportunity || mergedParams.proyecto || mergedParams.cotizacion || '').toString().trim() || undefined;
+    const rawEmpresaHint = (mergedParams.empresa || mergedParams.company || '').toString().trim() || undefined;
+
+    const lastAssistant =
+      conversationHistory
+        .filter((m) => m.role === 'assistant')
+        .map((m) => m.content)
+        .reverse()[0] || '';
+    const isAwaitingAssociationReply =
+      /todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades) posibles|para asociar el gasto/i.test(
+        lastAssistant,
+      );
+
+    let bareTurn2Hint: string | undefined;
+    if (!rawClientHint && !rawOppHint && !rawEmpresaHint && isAwaitingAssociationReply && originalQuestion.trim()) {
+      const strippedReply = originalQuestion
+        .trim()
+        .replace(/^(?:para|al?|con|el|la|es|en)\s+/i, '')
+        .trim();
+      if (
+        strippedReply.length >= 2 &&
+        !/^\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?$/i.test(strippedReply)
+      ) {
+        bareTurn2Hint = strippedReply;
+      }
+    }
+
+    if (!rawClientHint && !rawOppHint && !rawEmpresaHint && !bareTurn2Hint) {
+      return {
+        answer: `⚠️ Todo gasto debe asociarse a un cliente o a una oportunidad (no ambos).\n\nTengo anotado:\n- Concepto: ${concepto}\n- Monto: $${monto.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN\n- Fecha: ${fechaYmd}\n\n¿A qué cliente o oportunidad deseas asociar este gasto?`,
+      };
+    }
+
+    const effectiveLookupUser = assignedExecutiveUser || user;
+    const assoc = await this.resolveExpenseAssociation({
+      clientHint: rawClientHint,
+      oppHint: rawOppHint,
+      empresaHint: rawEmpresaHint,
+      bareTurn2Hint,
+      user: effectiveLookupUser,
+      isExec,
+    });
+
+    if (assoc.status !== 'resolved') {
+      return {
+        answer:
+          assoc.answer ||
+          `¿A qué cliente o oportunidad deseas asociar este gasto de "${concepto}"?`,
+      };
+    }
+
+    // 4. Persistencia mediante ExpensesService.create (respeta validación XOR + tenant sync)
+    try {
+      const effectiveCreator: any = assignedExecutiveUser
+        ? {
+            id: assignedExecutiveUser.id,
+            userId: assignedExecutiveUser.id,
+            username: assignedExecutiveUser.username,
+            email: assignedExecutiveUser.email,
+            role: assignedExecutiveUser.role,
+          }
+        : {
+            ...user,
+            id: user.id || (user as any).userId,
+            userId: (user as any).userId || user.id,
+          };
+
+      const createDto: any = {
+        fecha: fechaYmd,
+        concepto,
+        monto,
+        client_id: assoc.client ? assoc.client.id : null,
+        opportunity_id: assoc.opportunity ? assoc.opportunity.id : null,
+      };
+
+      const saved = await this.expensesService.create(createDto, effectiveCreator);
+
+      const linkedLabel = assoc.client
+        ? `Cliente: ${`${assoc.client.nombre || ''} ${assoc.client.apellido || ''}`.trim()}`
+        : `Oportunidad: ${assoc.opportunity?.nombre_proyecto}`;
+
+      this.logger.log(`[WebChat - Action Executor] Gasto creado: "${concepto}" ($${monto}) por ${targetExecutiveName}`);
+
+      return {
+        answer: `✅ Gasto Registrado Exitosamente\n\n- Concepto: ${saved.concepto || concepto}\n- Monto: $${Number(saved.monto ?? monto).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN\n- Fecha: ${this.formatExpenseDateDisplay(saved.fecha || fechaYmd)}\n- Asociado a: ${linkedLabel}\n- Responsable: ${targetExecutiveName}\n\nSi necesitas ajustar el monto, la fecha o reasignarlo, solo pídemelo.`,
+      };
+    } catch (error) {
+      this.logger.error(`[WebChat - Action Executor] Error creando gasto:`, error);
+      return {
+        answer: `❌ Ocurrió un error al registrar el gasto: ${error.message || 'Verifica los datos ingresados e inténtalo nuevamente.'}`,
+      };
+    }
+  }
+
+  async handleModifyExpense(
+    params: any,
+    user: User,
+    conversationHistory: ConversationHistoryMessage[] = [],
+    originalQuestion: string = '',
+  ): Promise<WebchatResponse> {
+    const isExec = this.isExecutive(user.role);
+    const mergedParams = this.mergeHistoryContext(
+      'modifyExpense',
+      { ...params, __rawUserInput: originalQuestion },
+      conversationHistory,
+    );
+
+    const hasExplicitConceptChange =
+      Boolean(mergedParams.nuevoConcepto || mergedParams.newConcepto) ||
+      /\b(nuevo\s+concepto|concepto\s+(?:a|por|=)|cambia(?:r)?\s+(?:el\s+)?concepto|actualiza(?:r)?\s+(?:el\s+)?concepto|modifica(?:r)?\s+(?:el\s+)?concepto|corrige(?:r)?\s+(?:el\s+)?concepto|renombra(?:r)?)\b/i.test(
+        originalQuestion || '',
+      );
+
+    const newAmountCandidate = this.parseExpenseAmount(
+      mergedParams.monto ?? mergedParams.amount ?? mergedParams.nuevoMonto ?? mergedParams.newMonto,
+    );
+    const rawDateInput = mergedParams.nuevaFecha || mergedParams.newFecha || mergedParams.fecha || mergedParams.date;
+    const rawNewClientHint = (mergedParams.cliente || mergedParams.nuevoCliente || mergedParams.clientName || '').toString().trim() || undefined;
+    const rawNewOppHint = (mergedParams.oportunidad || mergedParams.nuevaOportunidad || mergedParams.opportunity || mergedParams.proyecto || '').toString().trim() || undefined;
+
+    const rawExplicitTarget = (
+      mergedParams.targetExpense ||
+      mergedParams.targetConcepto ||
+      mergedParams.conceptoOriginal ||
+      ''
+    )
+      .toString()
+      .trim();
+
+    let searchConcept = rawExplicitTarget;
+    if (
+      !searchConcept &&
+      mergedParams.concepto &&
+      !hasExplicitConceptChange &&
+      (newAmountCandidate !== null || Boolean(rawDateInput) || Boolean(rawNewClientHint) || Boolean(rawNewOppHint))
+    ) {
+      searchConcept = String(mergedParams.concepto).trim();
+    }
+
+    let targetFecha = this.resolveExpenseDateInput(mergedParams.targetFecha || mergedParams.originalDate);
+    let targetMonto = this.parseExpenseAmount(mergedParams.targetMonto ?? mergedParams.originalAmount);
+
+    if (searchConcept && !targetFecha && /^(hoy|ayer|anteayer|antier|\d{4}-\d{2}-\d{2})$/i.test(searchConcept)) {
+      targetFecha = this.resolveExpenseDateInput(searchConcept);
+      searchConcept = '';
+    }
+    if (searchConcept && targetMonto === null && /^\$?\d+(?:[.,]\d{1,2})?$/.test(searchConcept)) {
+      targetMonto = this.parseExpenseAmount(searchConcept);
+      searchConcept = '';
+    }
+
+    const expenseId = (mergedParams.expenseId || mergedParams.id || '').toString().trim() || undefined;
+
+    if (!expenseId && !searchConcept && !targetFecha && targetMonto === null) {
+      return {
+        answer:
+          '⚠️ Indícame qué gasto deseas modificar (por ejemplo su concepto, fecha o monto original) junto con el cambio que quieres realizar.',
+      };
+    }
+
+    const resolution = await this.resolveExpenseResolution({
+      expenseId,
+      conceptHint: searchConcept || undefined,
+      targetFecha,
+      targetMonto,
+      user,
+      isExec,
+    });
+
+    if (resolution.ambiguousCandidates.length > 1) {
+      const list = resolution.ambiguousCandidates
+        .map((e, idx) => {
+          const relLabel = e.client
+            ? `Cliente: ${`${e.client.nombre || ''} ${e.client.apellido || ''}`.trim()}`
+            : e.opportunity
+              ? `Oportunidad: ${e.opportunity.nombre_proyecto}`
+              : 'Sin vínculo';
+          return `${idx + 1}. ${e.concepto} — $${Number(e.monto).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN | Fecha: ${this.formatExpenseDateDisplay(e.fecha)} | ${relLabel}`;
+        })
+        .join('\n');
+
+      return {
+        answer: `🤔 Encontré varios gastos que coinciden con "${searchConcept || targetFecha || targetMonto}". ¿Cuál deseas modificar?\n\n${list}\n\nResponde con el número de la opción (ej. "el 1"), o especifica su fecha o monto original.`,
+      };
+    }
+
+    const targetExpense = resolution.item;
+    if (!targetExpense) {
+      return {
+        answer: `⚠️ No encontré un gasto que coincida con "${searchConcept || targetFecha || targetMonto}". Verifica el concepto o la fecha e inténtalo de nuevo.`,
+      };
+    }
+
+    // Validación RBAC (Ejecutivo solo puede modificar gastos registrados por sí mismo)
+    if (isExec && targetExpense.usuario_id && targetExpense.usuario_id !== user.id) {
+      this.logger.warn(
+        `[WebChat - Action Executor] Acceso denegado a ${user.username} intentando modificar gasto ajeno ${targetExpense.id}`,
+      );
+      return {
+        answer: `Acceso Denegado: No tienes permisos para modificar el gasto "${targetExpense.concepto}" porque fue registrado por otro usuario.`,
+      };
+    }
+
+    // Construir campos de actualización (UpdateExpenseDto)
+    const updateDto: Record<string, any> = {};
+
+    const newConceptVal = (
+      mergedParams.nuevoConcepto ||
+      mergedParams.newConcepto ||
+      (hasExplicitConceptChange ? mergedParams.concepto : '') ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newConceptVal && newConceptVal !== targetExpense.concepto) {
+      updateDto.concepto = newConceptVal;
+    }
+
+    if (newAmountCandidate !== null && !Number.isNaN(newAmountCandidate)) {
+      if (newAmountCandidate <= 0) {
+        return {
+          answer: '⚠️ El nuevo monto del gasto debe ser mayor a $0.',
+        };
+      }
+      updateDto.monto = newAmountCandidate;
+    }
+
+    const isSameDateAsTarget =
+      mergedParams.fecha &&
+      !mergedParams.nuevaFecha &&
+      !mergedParams.newFecha &&
+      targetFecha &&
+      this.resolveExpenseDateInput(mergedParams.fecha) === targetFecha &&
+      !newAmountCandidate &&
+      !newConceptVal &&
+      !rawNewClientHint &&
+      !rawNewOppHint;
+
+    if (rawDateInput && !isSameDateAsTarget) {
+      const resolvedNewDate = this.resolveExpenseDateInput(rawDateInput);
+      if (resolvedNewDate) {
+        updateDto.fecha = resolvedNewDate;
+      }
+    }
+
+    let resolvedAssocLabel: string | null = null;
+    if (rawNewClientHint || rawNewOppHint) {
+      const assoc = await this.resolveExpenseAssociation({
+        clientHint: rawNewClientHint,
+        oppHint: rawNewOppHint,
+        user,
+        isExec,
+      });
+      if (assoc.status !== 'resolved') {
+        return {
+          answer:
+            assoc.answer ||
+            '⚠️ No pude identificar el nuevo cliente u oportunidad para reasignar el gasto.',
+        };
+      }
+      if (assoc.client) {
+        updateDto.client_id = assoc.client.id;
+        updateDto.opportunity_id = null;
+        resolvedAssocLabel = `Cliente: ${`${assoc.client.nombre || ''} ${assoc.client.apellido || ''}`.trim()}`;
+      } else if (assoc.opportunity) {
+        updateDto.opportunity_id = assoc.opportunity.id;
+        updateDto.client_id = null;
+        resolvedAssocLabel = `Oportunidad: ${assoc.opportunity.nombre_proyecto}`;
+      }
+    }
+
+    if (Object.keys(updateDto).length === 0) {
+      return {
+        answer: `Identifiqué el gasto "${targetExpense.concepto}" ($${Number(targetExpense.monto).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN — ${this.formatExpenseDateDisplay(targetExpense.fecha)}), pero no detecté qué campo deseas actualizar.\n\nPor favor indícame qué cambio deseas aplicar (ej. "cambia el monto a 650", "cambia la fecha a ayer", "cambia el concepto a ...", o "reasígnalo al cliente ...").`,
+      };
+    }
+
+    try {
+      const updated = await this.expensesService.update(targetExpense.id, updateDto);
+
+      const finalClient = updated.client || (updateDto.client_id ? undefined : targetExpense.client);
+      const finalOpp = updated.opportunity || (updateDto.opportunity_id ? undefined : targetExpense.opportunity);
+
+      const assocText =
+        resolvedAssocLabel ||
+        (finalClient
+          ? `Cliente: ${`${finalClient.nombre || ''} ${finalClient.apellido || ''}`.trim()}`
+          : finalOpp
+            ? `Oportunidad: ${finalOpp.nombre_proyecto}`
+            : 'Sin cambio en asociación');
+
+      this.logger.log(`[WebChat - Action Executor] Gasto actualizado: "${targetExpense.id}" por ${user.username}`);
+
+      return {
+        answer: `✅ Gasto Actualizado Exitosamente\n\n- Concepto: ${updated.concepto || updateDto.concepto || targetExpense.concepto}\n- Monto: $${Number(updated.monto ?? updateDto.monto ?? targetExpense.monto).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN\n- Fecha: ${this.formatExpenseDateDisplay(updated.fecha || updateDto.fecha || targetExpense.fecha)}\n- Asociado a: ${assocText}`,
+      };
+    } catch (error) {
+      this.logger.error(`[WebChat - Action Executor] Error modificando gasto:`, error);
+      return {
+        answer: `❌ No pude actualizar el gasto: ${error.message || 'Verifica los datos e inténtalo nuevamente.'}`,
+      };
+    }
   }
 
   private normalizeString(str?: string | null): string {

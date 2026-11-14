@@ -158,10 +158,34 @@ export class WebchatQueryPlannerService {
       return 'modifyOpportunity';
     }
 
+    if (
+      /para registrar el gasto necesito|¿cu[aá]l es el \*{0,2}(?:concepto|monto)|todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|los gastos en el crm no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades) posibles para asociar el gasto|para asociar el gasto/i.test(
+        lastAssistant,
+      )
+    ) {
+      return 'createExpense';
+    }
+    if (
+      /encontr[eé] varios gastos que coinciden|ind[ií]came qu[eé] gasto deseas (?:modificar|actualizar)|identifiqu[eé] el gasto .* pero no detect[eé] qu[eé] campo|no encontr[eé] un gasto que coincida/i.test(
+        lastAssistant,
+      )
+    ) {
+      return 'modifyExpense';
+    }
+
     const hasComplementaryContactData =
       /\b\d{7,15}\b/.test(qNorm) ||
       /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(qNorm) ||
       /\b(tel[eé]fono|cel(?:ular)?|correo|email|puesto|cargo|empresa|categor[ií]a|web(?:site)?|sitio\s+web|direcci[oó]n)\b/i.test(qNorm);
+
+    const hasComplementaryExpenseData =
+      !/^(cu[aá]nt|qu[eé]\s+gastos|lista|muestra|dame|ver|reporte|resumen)/i.test(qNorm) &&
+      (/\b(monto|concepto|fecha|ayer|anteayer|antier|cliente|oportunidad|proyecto)\b/i.test(qNorm) ||
+        /^\s*\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(qNorm));
+
+    if (hasComplementaryExpenseData && /Gasto Registrado Exitosamente/i.test(lastAssistant)) {
+      return 'modifyExpense';
+    }
 
     if (hasComplementaryContactData && /Cliente Registrado Exitosamente/i.test(lastAssistant)) {
       return 'modifyClient';
@@ -219,9 +243,13 @@ export class WebchatQueryPlannerService {
       actionType === 'createClient' ||
       actionType === 'modifyClient' ||
       actionType === 'createCompany' ||
-      actionType === 'modifyCompany'
+      actionType === 'modifyCompany' ||
+      actionType === 'createExpense' ||
+      actionType === 'modifyExpense'
     ) {
-      const basic = Object.keys(params).length === 0 ? this.extractBasicActionParams(normalizedQuestion, actionType) : {};
+      const shouldExtractBasic =
+        Object.keys(params).length === 0 || actionType === 'createExpense' || actionType === 'modifyExpense';
+      const basic = shouldExtractBasic ? this.extractBasicActionParams(normalizedQuestion, actionType) : {};
       for (const [k, v] of Object.entries(basic)) {
         if (v !== undefined && v !== '' && (params[k] === undefined || params[k] === null || params[k] === '')) {
           params[k] = v;
@@ -380,7 +408,7 @@ export class WebchatQueryPlannerService {
     const q = (question || '').toLowerCase().trim();
 
     // Verbos de acción imperativos
-    const actionRegex = /^(crea|crear|genera|generar|registra|registrar|da\s+de\s+alta|dar\s+de\s+alta|agrega|agregar|agenda|agendar|programa|programar|modifica|modificar|actualiza|actualizar|edita|editar|cambia|cambiar|levanta|levantar|abre|abrir|pon|poner|asigna|asignar|mueve|muevela|mover|pasa|pasala|pasar|traslada|trasladar)\b/i;
+    const actionRegex = /^(crea|crear|genera|generar|registra|registrar|apunta|apuntar|anota|anotar|carga|cargar|captura|capturar|da\s+de\s+alta|dar\s+de\s+alta|agrega|agregar|agenda|agendar|programa|programar|modifica|modificar|actualiza|actualizar|corrige|corregir|reasigna|reasignar|edita|editar|cambia|cambiar|levanta|levantar|abre|abrir|pon|poner|asigna|asignar|mueve|muevela|mover|pasa|pasala|pasar|traslada|trasladar)\b/i;
     if (actionRegex.test(q)) {
       return 'ACTION_EXECUTION';
     }
@@ -388,7 +416,7 @@ export class WebchatQueryPlannerService {
     if (q.includes('ticket') || q.includes('incidencia') || q.includes('soporte') || q.includes('folio')) {
       return 'TICKETS';
     }
-    if (q.includes('gasto') || q.includes('viático') || q.includes('viatico') || q.includes('comprobante')) {
+    if (q.includes('gasto') || q.includes('gastado') || q.includes('viático') || q.includes('viatico') || q.includes('reembolso') || q.includes('comprobante')) {
       return 'GASTOS';
     }
     if (q.includes('actividad') || q.includes('agenda') || q.includes('reunion') || q.includes('reunión') || q.includes('llamada') || q.includes('evento')) {
@@ -421,6 +449,8 @@ export class WebchatQueryPlannerService {
     | 'modifyClient'
     | 'createCompany'
     | 'modifyCompany'
+    | 'createExpense'
+    | 'modifyExpense'
     | null {
     const q = (question || '').toLowerCase();
     const isModify =
@@ -432,13 +462,24 @@ export class WebchatQueryPlannerService {
       q.includes('mueve') ||
       q.includes('pasa') ||
       q.includes('traslada') ||
-      q.includes('completa');
+      q.includes('completa') ||
+      q.includes('corrige') ||
+      q.includes('corregir') ||
+      q.includes('reasigna');
 
     if (q.includes('actividad') || q.includes('reunion') || q.includes('reunión') || q.includes('llamada') || q.includes('cita') || q.includes('agenda') || q.includes('programa')) {
       return isModify ? 'modifyActivity' : 'createActivity';
     }
     if (q.includes('ticket') || q.includes('incidencia') || q.includes('soporte') || q.includes('reporte') || q.includes('falla')) {
       return 'createTicket';
+    }
+    if (
+      /\b(gasto|gastos|vi[aá]tico|vi[aá]ticos|reembolso|reembolsos)\b/i.test(q) &&
+      !/^(?:crea|crear|genera|generar|modifica|modificar|actualiza|actualizar|cambia|cambiar|mueve|muevela|pasa|pasala)\s+(?:una?\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\b/i.test(
+        q,
+      )
+    ) {
+      return isModify ? 'modifyExpense' : 'createExpense';
     }
     if (q.includes('oportunidad') || q.includes('cotizacion') || q.includes('cotización') || q.includes('proyecto') || q.includes('venta') || q.includes('monto')) {
       return isModify ? 'modifyOpportunity' : 'createOpportunity';
@@ -619,6 +660,108 @@ export class WebchatQueryPlannerService {
             params.targetCompany = cleanedComp;
           } else {
             params.nombre = cleanedComp;
+          }
+        }
+      }
+    } else if (actionType === 'createExpense' || actionType === 'modifyExpense') {
+      const cleanedRaw = q.trim();
+      if (/^\s*\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(cleanedRaw)) {
+        params.monto = Number(cleanedRaw.replace(/[^\d.]/g, ''));
+      }
+
+      const amountMatch =
+        cleanedRaw.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+        cleanedRaw.match(/\bmonto(?:\s+de)?\s*:?\s*\$?\s*([\d,]+(?:\.\d{1,2})?)\b/i) ||
+        cleanedRaw.match(
+          /\b(?:de|por|a)\s+\$?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)?\b(?!\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b)/i,
+        ) ||
+        cleanedRaw.match(/\b([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)\b/i);
+
+      if (amountMatch && amountMatch[1]) {
+        const parsedAmount = Number(amountMatch[1].replace(/,/g, ''));
+        if (!Number.isNaN(parsedAmount) && parsedAmount > 0) {
+          params.monto = parsedAmount;
+        }
+      }
+
+      const dateMatch = cleanedRaw.match(
+        /\b(?:fecha(?:\s+(?:del|a|para|en|:))?\s*)?(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|hoy|ayer|anteayer|antier|hace\s+\d+\s+d[ií]as?|\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+de\s+\d{4})?|(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+pasado)\b/i,
+      );
+      if (dateMatch && dateMatch[1]) {
+        params.fecha = dateMatch[1].trim();
+      }
+
+      const oppMatch = cleanedRaw.match(
+        /\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+|en\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de|monto|fecha|hoy|ayer|anteayer|antier|el\s+\d|con\s+(?:el\s+)?cliente|para\s+el\s+ejecutivo|asignad[oa])|$|[,.])/i,
+      );
+      if (oppMatch && oppMatch[1]) {
+        params.oportunidad = oppMatch[1].trim();
+      }
+
+      const clientMatch = cleanedRaw.match(
+        /\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de\s+\$?\d|monto|fecha|hoy|ayer|anteayer|antier|el\s+\d|para\s+(?:la\s+)?oportunidad|asignad[oa]|ejecutivo)|$|[,.])/i,
+      );
+      if (clientMatch && clientMatch[1]) {
+        params.cliente = clientMatch[1].trim();
+      }
+
+      const execMatch = cleanedRaw.match(
+        /\b(?:para\s+el\s+|asignad[oa]\s+(?:a|al)\s+)?ejecutivo\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de|monto|fecha|hoy|ayer|cliente|oportunidad)|$|[,.])/i,
+      );
+      if (execMatch && execMatch[1]) {
+        params.ejecutivo = execMatch[1].trim();
+      }
+
+      if (actionType === 'modifyExpense') {
+        const targetMatch = cleanedRaw.match(
+          /\b(?:el\s+|del\s+|los\s+)?(?:gastos?|vi[aá]ticos?|reembolsos?)\s+(?:de\s+|del\s+)?["']?([^,.;"'\n]+?)["']?(?=\s+(?:a\s+\$?\d|a\s+hoy|a\s+ayer|por\s+\$?\d|para\s+(?:el\s+cliente|la\s+oportunidad)|al\s+cliente|a\s+la\s+oportunidad|monto|concepto|fecha|con\s+(?:nuevo|el))|$|[,.])/i,
+        );
+        if (targetMatch && targetMatch[1]) {
+          const candidateTarget = targetMatch[1]
+            .replace(/\b(?:que\s+(?:era|cost[oó]|fue)|de\s+\$?\d+(?:[.,]\d{1,2})?)\b/gi, '')
+            .trim();
+          if (candidateTarget && !/^(hoy|ayer|anteayer|antier|\d+)$/i.test(candidateTarget)) {
+            params.targetExpense = candidateTarget;
+          }
+        }
+
+        const newConceptMatch = cleanedRaw.match(
+          /\bconcepto\s+(?:a|por|=)\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:y\s+monto|monto|fecha|cliente|oportunidad)|$|[,.])/i,
+        );
+        if (newConceptMatch && newConceptMatch[1]) {
+          params.concepto = newConceptMatch[1].trim();
+        }
+      } else {
+        const conceptMatch = cleanedRaw.match(
+          /\bconcepto\s*:?\s*["']?([^,.;"'\n]+?)["']?(?=\s+(?:monto|por\s+\$?\d|de\s+\$?\d|fecha|hoy|ayer|cliente|oportunidad)|$|[,.])/i,
+        );
+        if (conceptMatch && conceptMatch[1]) {
+          params.concepto = conceptMatch[1].trim();
+        } else if (
+          /\b(crea(?:r)?|registra(?:r)?|apunta(?:r)?|anota(?:r)?|carga(?:r)?|captura(?:r)?|agrega(?:r)?|genera(?:r)?|gastos?|vi[aá]ticos?|reembolsos?)\b/i.test(
+            cleanedRaw,
+          )
+        ) {
+          const extractedConcept = cleanedRaw
+            .replace(
+              /^(?:crea(?:r)?|registra(?:r)?|apunta(?:r)?|anota(?:r)?|carga(?:r)?|captura(?:r)?|agrega(?:r)?|genera(?:r)?)\s+(?:un\s+|unos\s+)?(?:nuevo\s+)?(?:gastos?|vi[aá]ticos?|reembolsos?)\s*(?:de|por|en)?\s*/i,
+              '',
+            )
+            .replace(/\$?\s*[\d,]+(?:\.\d{1,2})?\s*(?:pesos|mxn|usd|d[oó]lares)?/gi, ' ')
+            .replace(/\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+|en\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+[^,.;]+/gi, ' ')
+            .replace(/\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+[^,.;]+/gi, ' ')
+            .replace(/\b(?:para\s+el\s+|asignad[oa]\s+(?:a|al)\s+)?ejecutivo\s+[^,.;]+/gi, ' ')
+            .replace(
+              /\b(?:fecha(?:\s+(?:del|a|para|en|:))?\s*)?(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|hoy|ayer|anteayer|antier|hace\s+\d+\s+d[ií]as?|\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+de\s+\d{4})?|(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+pasado)\b/gi,
+              ' ',
+            )
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/^(?:de|por|en|con|para|y)\s+/i, '')
+            .replace(/\s+(?:de|por|en|con|para|a|del|al|y)$/i, '')
+            .trim();
+          if (extractedConcept && extractedConcept.length >= 2) {
+            params.concepto = extractedConcept;
           }
         }
       }
