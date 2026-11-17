@@ -60,8 +60,7 @@ export class ExpensesController {
         @Param('id') id: string,
         @UploadedFile() file: Express.Multer.File,
     ) {
-        const receiptUrl = `/${file.path.replace(/\\/g, '/')}`;
-        return this.expensesService.uploadReceipt(id, receiptUrl);
+        return this.expensesService.uploadReceiptFile(id, file);
     }
 
     @Delete(':id/receipt')
@@ -76,9 +75,6 @@ export class ExpensesController {
         @Param('id') id: string,
         @Res() res: Response,
     ) {
-        const filePath = await this.expensesService.getReceiptPath(id);
-        const normalizedPath = filePath.replace(/\\/g, '/');
-        const absolutePath = join(process.cwd(), normalizedPath);
-        return res.sendFile(absolutePath);
+        return this.expensesService.downloadReceipt(id, res);
     }
 }

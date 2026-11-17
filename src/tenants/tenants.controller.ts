@@ -84,8 +84,7 @@ export class TenantsController {
     if (!file) {
       throw new Error('Archivo de imagen no proporcionado');
     }
-    const logoUrl = `/${file.path.replace(/\\/g, '/')}`;
-    return this.tenantsService.updateLogo(id, logoUrl);
+    return this.tenantsService.uploadLogoFile(id, file);
   }
 
   @Get(':id/consumption')

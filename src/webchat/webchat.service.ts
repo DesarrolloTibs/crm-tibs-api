@@ -97,7 +97,7 @@ export class WebchatService {
           `[WebChat - Security Guardrail] Intento de inyección SQL o comando de BD bloqueado para usuario ${userId} (${username}).`,
         );
         return {
-          answer: 'Por políticas de seguridad, no se permite ejecutar comandos SQL ni instrucciones directas sobre la base de datos. Todas las operaciones deben realizarse mediante consultas en lenguaje natural o las herramientas autorizadas del CRM (Clientes, Empresas, Oportunidades, Actividades, Tickets y Gastos).',
+          answer: 'Por políticas de seguridad, no se permite ejecutar comandos SQL ni instrucciones directas sobre la base de datos. Todas las operaciones deben realizarse mediante consultas en lenguaje natural o las herramientas autorizadas del CRM (Clientes, Empresas, Oportunidades, Actividades, Tickets, Productos y Gastos).',
         };
       }
 

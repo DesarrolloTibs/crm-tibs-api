@@ -105,13 +105,6 @@ export class UsersController {
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    // El objeto 'file' está disponible gracias a Multer.
-    // Su propiedad 'path' contiene la ruta donde se guardó el archivo.
-    // Ahora pasamos el ID del usuario y la ruta del archivo al servicio.
-    // Nota: Multer guarda la ruta con barras invertidas en Windows.
-    // 1. Normalizamos las barras a '/'
-    // 2. Nos aseguramos de que la ruta comience con '/' para que sea una URL relativa válida.
-    const imageUrl = `/${file.path.replace(/\\/g, '/')}`;
-    return this.usersService.updateProfileImage(id, imageUrl);
+    return this.usersService.uploadProfileImageFile(id, file);
   }
 }

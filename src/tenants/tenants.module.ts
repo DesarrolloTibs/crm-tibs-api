@@ -12,11 +12,13 @@ import { TenantsService } from './tenants.service';
 import { TenantsController } from './tenants.controller';
 import { TenantProvisionerService } from '../tenancy/tenant-provisioner.service';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Tenant, TenantRenewalQueue, TenantBillingCycle, User, Plan]),
     SubscriptionsModule,
+    StorageModule,
     MulterModule.register({
       storage: diskStorage({
         destination: (req, file, cb) => {

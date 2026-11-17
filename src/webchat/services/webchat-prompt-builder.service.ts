@@ -11,52 +11,33 @@ export class WebchatPromptBuilderService {
   buildRouterPrompt(userId: string, userRole: string, username: string): string {
     const { roleDescription, fechaHoy, todayISO, horaActual, timezone } = this.getUserContext(userId, userRole, username);
 
-    return `Eres el Agente Orquestador y Clasificador de Inteligencia del CRM. Clasifica intención/dominio o estructura la acción solicitada.
-
-[USUARIO ACTUAL]
-Nombre: ${username} | Rol: ${roleDescription} | Fecha: ${fechaHoy} (${todayISO}) ${horaActual} (${timezone})
-
-[DOMINIOS]
-1. "OPORTUNIDADES": Ventas, cotizaciones, pipeline.
-2. "TICKETS": Soporte, incidencias.
-3. "CLIENTES_EMPRESAS": Clientes, empresas.
-4. "ACTIVIDADES": Agenda, reuniones, llamadas.
-5. "GASTOS": Gastos, viáticos.
-6. "PRODUCTOS": Catálogo, precios.
-7. "VAGUE_SEARCH": 1-2 palabras con NOMBRE PROPIO ("Juan", "Acme").
-8. "CONVERSATIONAL": Saludos, despedidas.
-9. "ACTION_EXECUTION": CREAR o MODIFICAR registros (Oportunidad, Actividad, Ticket, Cliente, Empresa, Gasto).
-10. "MULTI_DOMAIN": Múltiples dominios.
-
+    return `Eres el Agente Orquestador y Clasificador del CRM. Clasifica intención/dominio o estructura la acción.
+[USUARIO] ${username} | ${roleDescription} | ${fechaHoy} (${todayISO}) ${horaActual} (${timezone})
+[DOMINIOS] 1."OPORTUNIDADES" 2."TICKETS" 3."CLIENTES_EMPRESAS" 4."ACTIVIDADES" 5."GASTOS" 6."PRODUCTOS" 7."VAGUE_SEARCH" 8."CONVERSATIONAL" 9."ACTION_EXECUTION" 10."MULTI_DOMAIN"
 [REGLAS]
 1. Responde SIEMPRE un único JSON válido.
-2. "CONVERSATIONAL": usa intent/domain "CONVERSATIONAL" y "responseTemplate".
-3. "ACTION_EXECUTION": usa intent/domain "ACTION_EXECUTION" y "actionPlan":
-   { "action": "createOpportunity"|"modifyOpportunity"|"createActivity"|"modifyActivity"|"createTicket"|"createClient"|"modifyClient"|"createCompany"|"modifyCompany"|"createExpense"|"modifyExpense", "parameters": {...} }
-   * "createClient"/"modifyClient": "targetClient", "nombre", "apellido", "correo", "telefono", "puesto", "empresa", "categoria" ("Lead"|"Contacto"|"Cliente"), "estatus", "ejecutivo".
-   * "createCompany"/"modifyCompany": "targetCompany", "nombre", "nuevoNombre", "correo", "telefono", "website", "direccion", "estatus", "ejecutivo".
-   * "createActivity": "activity", "tipoActividad" ("Llamada"|"Reunión"|"Demostración"), "fecha" (YYYY-MM-DD), "hora" (HH:mm), "cliente", "empresa", "recordatorio". No inventes fecha/hora.
-   * "modifyOpportunity": "nombreProyecto", "etapa" ("Calificado", "Propuesta", "Negociación", "Ganada"), "cliente", "montoLicenciamiento", "montoServicios".
-   * "modifyActivity": "targetTime"/"targetDate", "newTime"/"newDate", "activity".
-   * "createExpense": "concepto", "monto", "fecha" (YYYY-MM-DD), "cliente" O "oportunidad" (XOR: solo uno), "ejecutivo".
-   * "modifyExpense": "targetExpense"|"targetFecha"|"targetMonto", "concepto", "monto", "fecha", "cliente" O "oportunidad".
-4. MULTI-TURNO Y VOZ: Si [HISTORIAL] pidió datos o el usuario dicta voz (convierte teléfonos en palabras "ocho veintiséis..."→"826...", "arroba"→"@"), responde "ACTION_EXECUTION" integrando "parameters".
-5. Dashboard: incluye "dashboardRedirect": { "tab": "commercial"|"support", "executiveId": "${userId}" }.
-
-[FORMATO JSON]
-{"thought":"Breve","intent":"ANALYTICAL|SPECIFIC_ENTITY|VAGUE_SEARCH|CONVERSATIONAL|ACTION_EXECUTION","domain":"OPORTUNIDADES|TICKETS|CLIENTES_EMPRESAS|ACTIVIDADES|GASTOS|PRODUCTOS|VAGUE_SEARCH|CONVERSATIONAL|ACTION_EXECUTION|MULTI_DOMAIN","canonicalSearchTerm":null,"responseTemplate":null,"actionPlan":null,"dashboardRedirect":null}
-
+2. "CONVERSATIONAL": intent/domain "CONVERSATIONAL" y "responseTemplate".
+3. "ACTION_EXECUTION": intent/domain "ACTION_EXECUTION" y "actionPlan": {"action":"createOpportunity"|"modifyOpportunity"|"createActivity"|"modifyActivity"|"createTicket"|"modifyTicket"|"createClient"|"modifyClient"|"createCompany"|"modifyCompany"|"createExpense"|"modifyExpense"|"createProduct"|"modifyProduct","parameters":{...}}
+   * Client: targetClient,nombre,apellido,correo,telefono,puesto,empresa,categoria("Lead"|"Contacto"|"Cliente"),estatus,ejecutivo.
+   * Company: targetCompany,nombre,nuevoNombre,correo,telefono,website,direccion,estatus,ejecutivo.
+   * Activity: activity,tipoActividad("Llamada"|"Reunión"|"Demostración"),fecha(YYYY-MM-DD),hora(HH:mm),targetTime/targetDate,newTime/newDate,cliente,empresa,recordatorio. No inventes fecha/hora.
+   * Opportunity: nombreProyecto,etapa("Calificado","Propuesta","Negociación","Ganada"),cliente,empresa,monto,montoLicenciamiento,montoServicios.
+   * Ticket: targetTicket(folio/asunto),title,description,tipo_incidencia,priority(1..3),etapa,notasResolucion,cliente,responsable.
+   * Product: targetProduct,nombre,nuevoNombre,precioBase,unidadMedida,descripcion,observaciones,status. No inventes nombres genéricos ("Nuevo Producto"); si no dio nombre, omite "nombre".
+   * Expense: targetExpense|targetFecha|targetMonto,concepto,monto,fecha(YYYY-MM-DD),cliente O oportunidad(XOR),ejecutivo.
+4. MULTI-TURNO/VOZ: Si [HISTORIAL] pidió datos o dicta voz ("arroba"→"@", números→dígitos), usa "ACTION_EXECUTION".
+5. Dashboard: "dashboardRedirect":{"tab":"commercial"|"support","executiveId":"${userId}"}.
+[JSON] {"thought":"Breve","intent":"ANALYTICAL|SPECIFIC_ENTITY|VAGUE_SEARCH|CONVERSATIONAL|ACTION_EXECUTION","domain":"...","canonicalSearchTerm":null,"responseTemplate":null,"actionPlan":null,"dashboardRedirect":null}
 [EJEMPLOS]
-- "Hola" → {"thought":"Saludo","intent":"CONVERSATIONAL","domain":"CONVERSATIONAL","responseTemplate":"¡Hola! ¿En qué te ayudo?"}
-- "carmen jones ocho veintiséis ciento veintinueve cuarenta y dos diez" → {"thought":"Crear","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createClient","parameters":{"nombre":"Carmen","apellido":"Jones","telefono":"8261294210"}}}
-- "cambia correo Roberto a r@coca.com" → {"thought":"Mod","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyClient","parameters":{"targetClient":"Roberto","correo":"r@coca.com"}}}
-- "registra empresa Alfa web alfa.com" → {"thought":"Crear","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createCompany","parameters":{"nombre":"Alfa","website":"alfa.com"}}}
-- "cambia dirección Alfa a Reforma 100" → {"thought":"Mod","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyCompany","parameters":{"targetCompany":"Alfa","direccion":"Reforma 100"}}}
-- "red magic a calificado" → {"thought":"Opp","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyOpportunity","parameters":{"nombreProyecto":"Red Magic","etapa":"Calificado"}}}
-- "llamada a javier 12 oct 10 am" → {"thought":"Act","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createActivity","parameters":{"activity":"Llamar a Javier","tipoActividad":"Llamada","fecha":"2026-10-12","hora":"10:00","cliente":"Javier"}}}
-- "gasto 500 comida cliente Carlos" → {"thought":"Gasto","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createExpense","parameters":{"concepto":"Comida","monto":500,"cliente":"Carlos"}}}
-- "cambia monto gasto comida a 650" → {"thought":"ModGasto","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyExpense","parameters":{"targetExpense":"Comida","monto":650}}}
-- "cuanto he vendido este mes" → {"thought":"Ventas","intent":"ANALYTICAL","domain":"OPORTUNIDADES","actionPlan":null}`;
+- "Hola" → {"thought":"Saludo","intent":"CONVERSATIONAL","domain":"CONVERSATIONAL","responseTemplate":"¡Hola!"}
+- "carmen jones 8261294210" → {"thought":"C","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createClient","parameters":{"nombre":"Carmen","apellido":"Jones","telefono":"8261294210"}}}
+- "red magic a calificado" → {"thought":"O","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyOpportunity","parameters":{"nombreProyecto":"Red Magic","etapa":"Calificado"}}}
+- "llamada a javier 12 oct 10 am" → {"thought":"A","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createActivity","parameters":{"activity":"Llamar a Javier","tipoActividad":"Llamada","fecha":"2026-10-12","hora":"10:00","cliente":"Javier"}}}
+- "mueve ticket #12 a Resuelto notas Se reinició" → {"thought":"T","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyTicket","parameters":{"targetTicket":"12","etapa":"Resuelto","notasResolucion":"Se reinició"}}}
+- "crea producto Licencia precio 1200 unidad Licencia" → {"thought":"P","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createProduct","parameters":{"nombre":"Licencia","precioBase":1200,"unidadMedida":"Licencia"}}}
+- "cambia precio producto Nylon 6-0 a 350" → {"thought":"MP","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"modifyProduct","parameters":{"targetProduct":"Nylon 6-0","precioBase":350}}}
+- "gasto 500 comida cliente Carlos" → {"thought":"G","intent":"ACTION_EXECUTION","domain":"ACTION_EXECUTION","actionPlan":{"action":"createExpense","parameters":{"concepto":"Comida","monto":500,"cliente":"Carlos"}}}
+- "cuanto he vendido este mes" → {"thought":"V","intent":"ANALYTICAL","domain":"OPORTUNIDADES","actionPlan":null}`;
   }
 
   /**
@@ -481,13 +462,24 @@ ${sharedRules}
 
 1. **Productos** (tabla: products — Catálogo de productos y servicios)
    - Measures: count, precioBaseAvg, precioBaseMax, precioBaseMin
-   - Dimensions: id, nombre, descripcion, precioBase, unidadMedida, observaciones, status
+   - Dimensions: id, nombre, descripcion, precioBase, unidadMedida, observaciones, status, createdAt
    - REGLA CRÍTICA: Los productos forman parte del CATÁLOGO GLOBAL de la organización y NO tienen asignación de usuario, asesor ni ejecutivo (NO existen campos como Productos.ejecutivoId ni Productos.userId).
-   - Si el usuario pregunta "mis productos", "productos de [nombre]", "qué productos vendemos" o "catálogo de productos", consulta el catálogo global sin ningún filtro de usuario.
+   - Si el usuario pregunta "mis productos", "productos de [nombre]", "qué productos vendemos" o "catálogo de productos", consulta el catálogo global sin filtros de usuario. Si pide por fecha ("productos esta semana", "productos de hoy"), usa timeDimensions con "Productos.createdAt".
+
+2. **OportunidadProductos** (tabla: opportunity_products — Productos incluidos en oportunidades y ventas)
+   - Measures:
+     * cantidadTotal: Cantidad total de piezas/unidades vendidas o cotizadas. ¡USA ESTA MEDIDA PARA "PRODUCTOS MÁS VENDIDOS"!
+     * subtotalProductos: Monto subtotal acumulado por producto.
+     * count: Número de oportunidades en las que aparece el producto.
+   - Joins: Productos (via productId), Oportunidades (via opportunityId), Etapas (via Oportunidades.stageId -> Etapas.stageType: 1=Ganada/Vendida, 0=Abierta).
+   - REGLA CRÍTICA PARA "PRODUCTOS MÁS VENDIDOS": NUNCA ordenes por precioBaseAvg. Usa measures ["OportunidadProductos.cantidadTotal", "OportunidadProductos.subtotalProductos"], dimensions ["Productos.nombre", "Productos.unidadMedida"], filtros Etapas.stageType = ["1"] y Oportunidades.archived = ["false"], y ordena por {"OportunidadProductos.cantidadTotal": "desc"}.
 
 ${this.buildResponseJsonSchema()}
 
 [EJEMPLOS DE ENTENDIMIENTO NATURAL]
+- "productos más vendidos" / "top productos vendidos" / "qué producto se vende más" →
+  {"thought": "El usuario solicita los productos más vendidos en oportunidades ganadas (stageType=1). Se mide OportunidadProductos.cantidadTotal y subtotalProductos ordenado descendente.", "intent": "ANALYTICAL", "detectedEntity": "Productos", "cubeQuery": {"measures": ["OportunidadProductos.cantidadTotal", "OportunidadProductos.subtotalProductos"], "dimensions": ["Productos.nombre", "Productos.unidadMedida"], "filters": [{"member": "Etapas.stageType", "operator": "equals", "values": ["1"]}, {"member": "Oportunidades.archived", "operator": "equals", "values": ["false"]}], "order": {"OportunidadProductos.cantidadTotal": "desc"}}, "responseTemplate": "Productos más vendidos:"}
+
 - "mis productos" / "productos de jonathan" / "qué productos tenemos" / "catálogo de productos" / "lista de productos" →
   {"thought": "El usuario consulta el catálogo global de productos y servicios de la empresa. Los productos no tienen asignación por usuario.", "intent": "ANALYTICAL", "detectedEntity": "Productos", "cubeQuery": {"dimensions": ["Productos.nombre", "Productos.descripcion", "Productos.precioBase", "Productos.unidadMedida"], "filters": [{"member": "Productos.status", "operator": "equals", "values": ["true"]}]}, "responseTemplate": "Catálogo de productos y servicios:"}
 

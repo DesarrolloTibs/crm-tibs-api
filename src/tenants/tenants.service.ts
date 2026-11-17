@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
@@ -16,6 +16,7 @@ import { UpdateQueueItemDto } from './dto/update-queue-item.dto';
 import { SubscriptionValidatorService, getCourtesyCap } from '../subscriptions/subscription-validator.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { addBillingMonths, subtractBillingMonths } from '../common/utils/billing-date.util';
+import { StorageService } from '../storage/storage.service';
 
 @Injectable()
 export class TenantsService implements OnModuleInit {
@@ -34,7 +35,9 @@ export class TenantsService implements OnModuleInit {
     private readonly planRepository: Repository<Plan>,
     private readonly tenantProvisioner: TenantProvisionerService,
     private readonly subscriptionValidator: SubscriptionValidatorService,
-    private readonly dataSource: DataSource
+    private readonly dataSource: DataSource,
+    @Optional()
+    private readonly storageService?: StorageService,
   ) {}
 
   formatLogoUrl(logo: string | null): string | null {
@@ -552,6 +555,28 @@ export class TenantsService implements OnModuleInit {
       tenant.logo = this.formatLogoUrl(tenant.logo);
     }
     return tenant;
+  }
+
+  async uploadLogoFile(tenantId: number, file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('Archivo de imagen no proporcionado');
+    }
+    const existing = await this.tenantRepository.findOne({ where: { id: tenantId } });
+    if (!existing) {
+      throw new NotFoundException(`Tenant con ID ${tenantId} no encontrado.`);
+    }
+    const relativePath = file.path.replace(/\\/g, '/');
+    const logoUrl = this.storageService
+      ? await this.storageService.uploadFile(file.path, `/${relativePath}`)
+      : `/${relativePath}`;
+
+    if (existing.logo && existing.logo !== logoUrl && this.storageService) {
+      const oldRel = existing.logo.replace(/^https?:\/\/[^/]+/, '');
+      if (oldRel.startsWith('/uploads/') || oldRel.startsWith('uploads/')) {
+        await this.storageService.deleteFile(oldRel);
+      }
+    }
+    return this.updateLogo(tenantId, logoUrl);
   }
 
   async updateLogo(tenantId: number, logoUrl: string) {

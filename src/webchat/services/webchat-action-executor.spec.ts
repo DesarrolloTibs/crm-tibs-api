@@ -26,6 +26,8 @@ describe('WebchatActionExecutorService', () => {
   let mockStageRepo: any;
   let mockExpensesService: any;
   let mockExpenseRepo: any;
+  let mockProductsService: any;
+  let mockTicketStageRepo: any;
 
   const adminUser: User = {
     id: '11111111-1111-1111-1111-111111111111',
@@ -63,6 +65,22 @@ describe('WebchatActionExecutorService', () => {
 
     mockTicketsService = {
       create: jest.fn(),
+      update: jest.fn(),
+    };
+
+    mockProductsService = {
+      create: jest.fn(),
+      update: jest.fn(),
+      updateStatus: jest.fn(),
+    };
+
+    mockTicketStageRepo = {
+      findOne: jest.fn(),
+      find: jest.fn().mockResolvedValue([
+        { id: 'tstage-abierto', strname: 'Abierto', helpdesk_id: 'hd-1', display_order: 1, blninitial: true, blnstatus: true, stage_type: 0 },
+        { id: 'tstage-proceso', strname: 'En Proceso', helpdesk_id: 'hd-1', display_order: 2, blninitial: false, blnstatus: true, stage_type: 0 },
+        { id: 'tstage-resuelto', strname: 'Resuelto', helpdesk_id: 'hd-1', display_order: 3, blninitial: false, blnstatus: true, stage_type: 1 },
+      ]),
     };
 
     mockClientsService = {
@@ -233,6 +251,8 @@ describe('WebchatActionExecutorService', () => {
       mockStageRepo,
       mockExpensesService,
       mockExpenseRepo,
+      mockProductsService,
+      mockTicketStageRepo,
     );
   });
 
@@ -1957,6 +1977,200 @@ describe('WebchatActionExecutorService', () => {
         [],
       );
       expect(readToolRes.answer).toContain('La acción solicitada no está permitida');
+    });
+  });
+
+  describe('12. Módulo de Productos y Modificación de Tickets (createProduct, modifyProduct, modifyTicket)', () => {
+    it('debe crear un producto exitosamente y delegar en ProductsService.create (con indexación RAG)', async () => {
+      mockProductRepo.findOne.mockResolvedValue(null);
+      mockProductsService.create.mockResolvedValue({
+        id: 'prod-new-1',
+        nombre: 'Licencia Enterprise',
+        precioBase: 14500,
+        unidadMedida: 'Licencia',
+        descripcion: 'Licencia anual multiusuario',
+        observaciones: 'Incluye soporte 24/7',
+        status: true,
+      });
+
+      const res = await service.handleCreateProduct(
+        {
+          nombre: 'Licencia Enterprise',
+          precioBase: 14500,
+          unidadMedida: 'Licencia',
+          descripcion: 'Licencia anual multiusuario',
+          observaciones: 'Incluye soporte 24/7',
+        },
+        adminUser,
+        [],
+        'crea producto Licencia Enterprise precio 14500 unidad Licencia',
+      );
+
+      expect(mockProductsService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nombre: 'Licencia Enterprise',
+          precioBase: 14500,
+          unidadMedida: 'Licencia',
+          descripcion: 'Licencia anual multiusuario',
+          observaciones: 'Incluye soporte 24/7',
+          status: true,
+        }),
+        adminUser,
+      );
+      expect(res.answer).toContain('Producto Registrado Exitosamente');
+      expect(res.answer).toContain('Licencia Enterprise');
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe solicitar al menos el Nombre cuando se intenta crear un producto sin nombre o cuando el LLM alucina "Nuevo Producto" ante el texto "nuevo producto"', async () => {
+      const resEmpty = await service.handleCreateProduct(
+        {},
+        executiveUser,
+        [],
+        'crea un producto',
+      );
+
+      expect(mockProductsService.create).not.toHaveBeenCalled();
+      expect(resEmpty.answer).toContain('Para registrar un nuevo producto en el catálogo, por favor indícame al menos su Nombre');
+
+      // Caso exacto: usuario escribe "nuevo producto" y el LLM manda nombre="Nuevo Producto"
+      const resPlaceholder = await service.handleCreateProduct(
+        { nombre: 'Nuevo Producto' },
+        adminUser,
+        [],
+        'nuevo producto',
+      );
+
+      expect(mockProductsService.create).not.toHaveBeenCalled();
+      expect(resPlaceholder.answer).toContain('Para registrar un nuevo producto en el catálogo, por favor indícame al menos su Nombre');
+    });
+
+    it('debe modificar un producto existente resolviendo calibres (ej. Nylon 6-0 vs Nylon 10-0)', async () => {
+      const prod60 = {
+        id: 'prod-nylon-60',
+        nombre: 'Nylon 6-0',
+        precioBase: 120,
+        unidadMedida: 'Caja',
+        status: true,
+      };
+      const prod100 = {
+        id: 'prod-nylon-100',
+        nombre: 'Nylon 10-0',
+        precioBase: 250,
+        unidadMedida: 'Caja',
+        status: true,
+      };
+      mockProductRepo.find.mockResolvedValue([prod100, prod60]);
+      mockProductsService.update.mockResolvedValue({
+        ...prod60,
+        precioBase: 185,
+      });
+
+      const res = await service.handleModifyProduct(
+        {
+          targetProduct: 'Nylon 6-0',
+          precioBase: 185,
+        },
+        adminUser,
+        [],
+        'cambia el precio del producto Nylon 6-0 a 185',
+      );
+
+      expect(mockProductsService.update).toHaveBeenCalledWith('prod-nylon-60', {
+        precioBase: 185,
+      });
+      expect(res.answer).toContain('Producto Actualizado con Éxito');
+      expect(res.answer).toContain('185.00');
+      expect(res.answer).not.toContain('*');
+    });
+
+    it('debe exigir notas de resolución antes de mover un ticket a la etapa "Resuelto" y completarlo en el siguiente turno', async () => {
+      const ticket12 = {
+        id: 'tick-uuid-12',
+        ticket_number: 12,
+        strtitle: 'Falla en facturación',
+        tipo_incidencia: 'Soporte Técnico',
+        description: 'No timbra CFDI',
+        priority: 2,
+        responsable_id: executiveUser.id,
+        responsable: executiveUser,
+        helpdesk_id: 'hd-1',
+        stage_id: 'tstage-proceso',
+        stage: { id: 'tstage-proceso', strname: 'En Proceso', stage_type: 0 },
+        notas_resolucion: null,
+      };
+      mockTicketRepo.findOne.mockResolvedValue(ticket12);
+
+      // Turno 1: intenta mover a Resuelto sin notas
+      const turn1 = await service.handleModifyTicket(
+        {
+          targetTicket: '12',
+          etapa: 'Resuelto',
+        },
+        executiveUser,
+        [],
+        'mueve el ticket #12 a Resuelto',
+      );
+
+      expect(mockTicketsService.update).not.toHaveBeenCalled();
+      expect(turn1.answer).toContain('es obligatorio registrar las notas de resolución');
+
+      // Turno 2: usuario envía las notas de resolución
+      mockTicketsService.update.mockResolvedValue({
+        ...ticket12,
+        stage_id: 'tstage-resuelto',
+        stage: { id: 'tstage-resuelto', strname: 'Resuelto', stage_type: 1 },
+        notas_resolucion: 'Se actualizó el certificado CSD del emisor.',
+      });
+
+      const history = [
+        { role: 'user' as const, content: 'mueve el ticket #12 a Resuelto' },
+        { role: 'assistant' as const, content: turn1.answer },
+      ];
+
+      const turn2 = await service.handleModifyTicket(
+        {},
+        executiveUser,
+        history,
+        'Se actualizó el certificado CSD del emisor.',
+      );
+
+      expect(mockTicketsService.update).toHaveBeenCalledWith(
+        'tick-uuid-12',
+        expect.objectContaining({
+          stage_id: 'tstage-resuelto',
+          notas_resolucion: 'Se actualizó el certificado CSD del emisor.',
+        }),
+        executiveUser,
+      );
+      expect(turn2.answer).toContain('Ticket Actualizado con Éxito');
+      expect(turn2.answer).toContain('Resuelto');
+      expect(turn2.answer).toContain('Se actualizó el certificado CSD del emisor.');
+    });
+
+    it('debe bloquear por RBAC cuando un ejecutivo intenta modificar un ticket asignado a otro usuario', async () => {
+      mockTicketRepo.findOne.mockResolvedValue({
+        id: 'tick-other-99',
+        ticket_number: 99,
+        strtitle: 'Error en servidor',
+        responsable_id: otherExecutiveUser.id,
+        responsable: otherExecutiveUser,
+        helpdesk_id: 'hd-1',
+        stage_id: 'tstage-abierto',
+      });
+
+      const res = await service.handleModifyTicket(
+        {
+          targetTicket: '99',
+          priority: 3,
+        },
+        executiveUser,
+        [],
+        'cambia prioridad del ticket #99 a alta',
+      );
+
+      expect(mockTicketsService.update).not.toHaveBeenCalled();
+      expect(res.answer).toContain('Acceso Denegado');
     });
   });
 });

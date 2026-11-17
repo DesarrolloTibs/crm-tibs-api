@@ -1,5 +1,7 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
 import * as fs from 'fs';
+import type { Response } from 'express';
+import { join } from 'path';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateExpenseDto } from './dto/create-expense.dto';
@@ -11,6 +13,7 @@ import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
 import { UsersService } from '../users/users.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { StorageService } from '../storage/storage.service';
 
 @Injectable()
 export class ExpensesService implements OnModuleInit {
@@ -20,6 +23,8 @@ export class ExpensesService implements OnModuleInit {
         @InjectRepository(Expense)
         private expensesRepository: Repository<Expense>,
         private readonly usersService: UsersService,
+        @Optional()
+        private readonly storageService?: StorageService,
     ) { }
 
     async onModuleInit() {
@@ -189,20 +194,45 @@ export class ExpensesService implements OnModuleInit {
 
     async remove(id: string): Promise<void> {
         const expense = await this.findOne(id);
+        if (expense.receiptUrl) {
+            if (this.storageService) {
+                await this.storageService.deleteFile(expense.receiptUrl);
+            } else {
+                const filePath = `.${expense.receiptUrl}`;
+                if (fs.existsSync(filePath)) {
+                    try { fs.unlinkSync(filePath); } catch {}
+                }
+            }
+        }
         await this.expensesRepository.remove(expense);
+    }
+
+    async uploadReceiptFile(id: string, file: Express.Multer.File): Promise<Expense> {
+        if (!file) {
+            throw new BadRequestException('Se requiere un archivo de comprobante.');
+        }
+        const relativePath = file.path.replace(/\\/g, '/');
+        const storedUrl = this.storageService
+            ? await this.storageService.uploadFile(file.path, `/${relativePath}`)
+            : `/${relativePath}`;
+        return this.uploadReceipt(id, storedUrl);
     }
 
     async uploadReceipt(id: string, receiptUrl: string): Promise<Expense> {
         const expense = await this.findOne(id);
 
-        // Eliminar archivo antiguo si existe
-        if (expense.receiptUrl) {
-            const oldPath = `.${expense.receiptUrl}`;
-            if (fs.existsSync(oldPath)) {
-                try {
-                    fs.unlinkSync(oldPath);
-                } catch (error) {
-                    this.logger.error(`Failed to delete old receipt: ${oldPath} — ${error.message}`);
+        // Eliminar archivo antiguo si existe y es distinto al nuevo
+        if (expense.receiptUrl && expense.receiptUrl !== receiptUrl) {
+            if (this.storageService) {
+                await this.storageService.deleteFile(expense.receiptUrl);
+            } else {
+                const oldPath = `.${expense.receiptUrl}`;
+                if (fs.existsSync(oldPath)) {
+                    try {
+                        fs.unlinkSync(oldPath);
+                    } catch (error) {
+                        this.logger.error(`Failed to delete old receipt: ${oldPath} — ${error.message}`);
+                    }
                 }
             }
         }
@@ -216,12 +246,16 @@ export class ExpensesService implements OnModuleInit {
         const expense = await this.findOne(id);
 
         if (expense.receiptUrl) {
-            const filePath = `.${expense.receiptUrl}`;
-            if (fs.existsSync(filePath)) {
-                try {
-                    fs.unlinkSync(filePath);
-                } catch (error) {
-                    this.logger.error(`Failed to delete receipt: ${filePath} — ${error.message}`);
+            if (this.storageService) {
+                await this.storageService.deleteFile(expense.receiptUrl);
+            } else {
+                const filePath = `.${expense.receiptUrl}`;
+                if (fs.existsSync(filePath)) {
+                    try {
+                        fs.unlinkSync(filePath);
+                    } catch (error) {
+                        this.logger.error(`Failed to delete receipt: ${filePath} — ${error.message}`);
+                    }
                 }
             }
             expense.receiptUrl = null;
@@ -230,6 +264,16 @@ export class ExpensesService implements OnModuleInit {
         }
 
         return expense;
+    }
+
+    async downloadReceipt(id: string, res: Response): Promise<void> {
+        const filePath = await this.getReceiptPath(id);
+        if (this.storageService) {
+            return this.storageService.downloadFile(filePath, res);
+        }
+        const normalizedPath = filePath.replace(/\\/g, '/');
+        const absolutePath = join(process.cwd(), normalizedPath);
+        return res.sendFile(absolutePath);
     }
 
     async getReceiptPath(id: string): Promise<string> {

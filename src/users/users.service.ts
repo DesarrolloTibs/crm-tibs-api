@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { User } from './entities/user.entity';
@@ -7,6 +7,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto, UpdateUserStatusDto } from './dto/update-user.dto';
 import { Role } from '../role.enum';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { StorageService } from '../storage/storage.service';
 
 type UserWithTenantSchema = User & { tenantSchema?: string };
 
@@ -16,6 +17,8 @@ export class UsersService implements OnModuleInit {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly dataSource: DataSource,
+    @Optional()
+    private readonly storageService?: StorageService,
   ) {}
 
   /**
@@ -284,6 +287,22 @@ export class UsersService implements OnModuleInit {
         [id]
       );
     }
+  }
+
+  async uploadProfileImageFile(userId: string, file: Express.Multer.File): Promise<User> {
+    if (!file) {
+      throw new BadRequestException('Se requiere un archivo de imagen.');
+    }
+    const existing = await this.findOneById(userId).catch(() => null);
+    const relativePath = file.path.replace(/\\/g, '/');
+    const imageUrl = this.storageService
+      ? await this.storageService.uploadFile(file.path, `/${relativePath}`)
+      : `/${relativePath}`;
+
+    if (existing?.profileImageUrl && existing.profileImageUrl !== imageUrl && this.storageService) {
+      await this.storageService.deleteFile(existing.profileImageUrl);
+    }
+    return this.updateProfileImage(userId, imageUrl);
   }
 
   async updateProfileImage(userId: string, imageUrl: string): Promise<User> {

@@ -6,10 +6,12 @@ import * as fs from 'fs';
 import { UsersService } from './users.service';
 import { User } from './entities/user.entity';
 import { UsersController } from './users.controller';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User]),
+    StorageModule,
     // Configuración de Multer para la subida de imágenes de perfil
     MulterModule.register({
       storage: diskStorage({

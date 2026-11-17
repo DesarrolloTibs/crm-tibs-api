@@ -627,6 +627,20 @@ describe('Webchat Semantic Layer Updates & Formatter Suite', () => {
       expect(queryWithCita.filters).toHaveLength(1);
       expect(queryWithCita.filters[0].values).toEqual(['Cita']);
     });
+
+    it('should preserve Productos.createdAt timeDimension and dimension now that Cube supports it', () => {
+      const prodQuery: any = {
+        dimensions: ['Productos.nombre', 'Productos.createdAt'],
+        filters: [{ member: 'Productos.status', operator: 'equals', values: ['true'] }],
+        timeDimensions: [{ dimension: 'Productos.createdAt', dateRange: 'This week' }],
+      };
+
+      securityService.sanitizeFilters(prodQuery, '11111111-1111-1111-1111-111111111111', 'admin');
+
+      expect(prodQuery.timeDimensions).toHaveLength(1);
+      expect(prodQuery.dimensions).toEqual(['Productos.nombre', 'Productos.createdAt']);
+      expect(prodQuery.filters).toHaveLength(1);
+    });
   });
 
   describe('WebchatEntityMatcherService - Multi-Entity & Mapping', () => {

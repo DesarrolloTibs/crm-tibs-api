@@ -83,3 +83,10 @@ Una de las reglas de oro de la arquitectura es que **ningún usuario con rol `su
   * Si `STORAGE_TYPE === 'local'`, se almacena en el directorio `uploads/profiles/`.
 * Normaliza las barras de ruta para compatibilidad entre sistemas operativos Windows y Linux (`path.replace(/\\/g, '/')`).
 * Actualiza la columna `profileImageUrl` del usuario y retorna el objeto actualizado.
+
+
+### 3.4. Almacenamiento Agnóstico en Usuarios, Tenants y Gastos (`StorageService`)
+* **Migración a `StorageService` (Local / Azure Blob Storage):**
+  * **Usuarios (`UsersController` / `UsersService`):** `POST /api/users/:id/profile-image` delega en `usersService.uploadProfileImageFile()`, subiendo la foto a Azure cuando `STORAGE_TYPE=azure` y eliminando la imagen anterior vía `StorageService.deleteFile()`.
+  * **Tenants (`TenantsController` / `TenantsService`):** `POST /api/tenants/:id/logo` delega en `tenantsService.uploadLogoFile()`, subiendo el logo a Azure y limpiando el logo anterior.
+  * **Gastos (`ExpensesController` / `ExpensesService`):** `POST /api/expenses/:id/receipt`, `DELETE /api/expenses/:id/receipt`, `DELETE /api/expenses/:id` y `GET /api/expenses/:id/receipt/download` operan de forma agnóstica con `StorageService.uploadFile()`, `deleteFile()` y `downloadFile()`.

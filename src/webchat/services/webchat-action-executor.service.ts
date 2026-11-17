@@ -1,4 +1,4 @@
-import { Injectable, Logger, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, Raw } from 'typeorm';
 import {
@@ -17,6 +17,7 @@ import { ClientsService } from '../../clients/clients.service';
 import { CompaniesService } from '../../companies/companies.service';
 import { UsersService } from '../../users/users.service';
 import { ExpensesService } from '../../expenses/expenses.service';
+import { ProductsService } from '../../products/products.service';
 import { User } from '../../users/entities/user.entity';
 import { Role } from '../../role.enum';
 import { BusinessLineOption } from '../../opportunities/entities/business-line-option.entity';
@@ -30,6 +31,7 @@ import { Opportunity, Currency } from '../../opportunities/entities/opportunity.
 import { Stage } from '../../stages/entities/stage.entity';
 import { Activity } from '../../activities/entities/activity.entity';
 import { Ticket } from '../../tickets/entities/ticket.entity';
+import { TicketStage } from '../../tickets/entities/ticket-stage.entity';
 import { Product } from '../../products/entities/product.entity';
 import { Expense } from '../../expenses/entities/expense.entity';
 import { WebchatActionPlan, WebchatResponse, ConversationHistoryMessage } from '../interfaces/webchat.interfaces';
@@ -72,6 +74,11 @@ export class WebchatActionExecutorService {
     private readonly expensesService: ExpensesService,
     @InjectRepository(Expense)
     private readonly expenseRepo: Repository<Expense>,
+    @Optional()
+    private readonly productsService?: ProductsService,
+    @Optional()
+    @InjectRepository(TicketStage)
+    private readonly ticketStageRepo?: Repository<TicketStage>,
   ) {}
 
   /**
@@ -128,17 +135,20 @@ export class WebchatActionExecutorService {
       'createActivity',
       'modifyActivity',
       'createTicket',
+      'modifyTicket',
       'createClient',
       'modifyClient',
       'createCompany',
       'modifyCompany',
       'createExpense',
       'modifyExpense',
+      'createProduct',
+      'modifyProduct',
     ]);
     if (!actionPlan?.action || !allowedActions.has(actionPlan.action)) {
       this.logger.warn(`[WebChat - Action Executor] Acción bloqueada por no pertenecer al catálogo de tools permitidas: '${(actionPlan as any)?.action}'`);
       return {
-        answer: `La acción solicitada no está permitida. Únicamente puedo ejecutar operaciones autorizadas sobre Clientes, Empresas, Oportunidades, Actividades, Tickets y Gastos.`,
+        answer: `La acción solicitada no está permitida. Únicamente puedo ejecutar operaciones autorizadas sobre Clientes, Empresas, Oportunidades, Actividades, Tickets, Productos y Gastos.`,
       };
     }
 
@@ -152,7 +162,7 @@ export class WebchatActionExecutorService {
         `[WebChat - Action Executor] Petición con impacto a BD fuera del alcance de tools bloqueada para usuario ${user.username}: "${originalQuestion}"`,
       );
       return {
-        answer: 'Por seguridad, el asistente no tiene permitido eliminar registros ni modificar usuarios, roles, permisos o configuraciones de sistema. Solo puedo crear o actualizar Clientes, Empresas, Oportunidades, Actividades, Tickets y Gastos.',
+        answer: 'Por seguridad, el asistente no tiene permitido eliminar registros ni modificar usuarios, roles, permisos o configuraciones de sistema. Solo puedo crear o actualizar Clientes, Empresas, Oportunidades, Actividades, Tickets, Productos y Gastos.',
       };
     }
 
@@ -181,6 +191,8 @@ export class WebchatActionExecutorService {
         return this.handleModifyActivity(params, user);
       case 'createTicket':
         return this.handleCreateTicket(params, user);
+      case 'modifyTicket':
+        return this.handleModifyTicket(params, user, conversationHistory, originalQuestion);
       case 'createClient':
         return this.handleCreateClient(params, user, originalQuestion);
       case 'modifyClient':
@@ -193,6 +205,10 @@ export class WebchatActionExecutorService {
         return this.handleCreateExpense(params, user, conversationHistory, originalQuestion);
       case 'modifyExpense':
         return this.handleModifyExpense(params, user, conversationHistory, originalQuestion);
+      case 'createProduct':
+        return this.handleCreateProduct(params, user, conversationHistory, originalQuestion);
+      case 'modifyProduct':
+        return this.handleModifyProduct(params, user, conversationHistory, originalQuestion);
       default:
         return {
           answer: `No reconozco la acción '${(actionPlan as any).action}'. ¿Podrías indicarme qué deseas realizar?`,
@@ -562,6 +578,191 @@ export class WebchatActionExecutorService {
                 if (modCliMatch && modCliMatch[1]) {
                   merged.cliente = modCliMatch[1].trim();
                 }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (action === 'modifyTicket') {
+      const assistantMessages = conversationHistory
+        .filter((m) => m.role === 'assistant')
+        .map((m) => m.content)
+        .reverse();
+      const lastAssistantMsg = assistantMessages[0] || '';
+      const rawCurrentInput = (merged.__rawUserInput || '').toString().trim();
+      delete merged.__rawUserInput;
+
+      const pickMatch = rawCurrentInput.match(/^\s*(?:el|la|opci[oó]n|n[uú]mero|#)?\s*(\d+)\s*$/i);
+      const pickNumber = pickMatch ? parseInt(pickMatch[1], 10) : null;
+
+      if (pickNumber && pickNumber > 0 && lastAssistantMsg && /encontr[eé] varios tickets que coinciden/i.test(lastAssistantMsg)) {
+        const optionRegex = new RegExp(`(?:^|\\n)\\s*${pickNumber}\\.\\s+#?0*(\\d+)`, 'i');
+        const lineMatch = lastAssistantMsg.match(optionRegex);
+        if (lineMatch && lineMatch[1]) {
+          merged.targetTicket = lineMatch[1].trim();
+        }
+      }
+
+      // Si el asistente acaba de pedir las notas de resolución para mover a etapa Resuelto
+      const awaitingResolutionNotesMatch = lastAssistantMsg.match(
+        /Para mover el ticket #0*(\d+)(?:\s+\("[^"]+"\))?\s+a la etapa "([^"]+)" es obligatorio registrar las notas de resoluci[oó]n/i,
+      );
+      if (awaitingResolutionNotesMatch) {
+        if (!merged.targetTicket && !merged.ticketNumber && !merged.folio && !merged.id) {
+          merged.targetTicket = awaitingResolutionNotesMatch[1].trim();
+        }
+        if (!merged.etapa && !merged.stage) {
+          merged.etapa = awaitingResolutionNotesMatch[2].trim();
+        }
+        if (!merged.notasResolucion && !merged.notas_resolucion && rawCurrentInput.length >= 3) {
+          merged.notasResolucion = rawCurrentInput;
+        }
+      }
+
+      if (!merged.targetTicket && !merged.ticketNumber && !merged.folio && !merged.id) {
+        const folioFromAssistant =
+          lastAssistantMsg.match(/Identifiqu[eé] el ticket #0*(\d+)/i) ||
+          lastAssistantMsg.match(/Ticket de Soporte Creado[\s\S]*?-\s*Folio:\s*#0*(\d+)/i);
+        if (folioFromAssistant && folioFromAssistant[1]) {
+          merged.targetTicket = folioFromAssistant[1].trim();
+        }
+      }
+
+      const hasExplicitChange =
+        merged.etapa !== undefined ||
+        merged.stage !== undefined ||
+        merged.priority !== undefined ||
+        merged.prioridad !== undefined ||
+        merged.notasResolucion !== undefined ||
+        merged.notas_resolucion !== undefined ||
+        merged.nuevoTitulo !== undefined ||
+        merged.description !== undefined ||
+        merged.descripcion !== undefined ||
+        merged.tipo_incidencia !== undefined ||
+        merged.responsable !== undefined ||
+        merged.cliente !== undefined;
+
+      if (!hasExplicitChange && pickNumber) {
+        for (const msg of userMessages) {
+          if (!merged.etapa) {
+            const stMatch = msg.match(
+              /\b(?:a\s+la\s+etapa\s+|etapa\s+|mueve(?:lo)?\s+a\s+|pasa(?:lo)?\s+a\s+|cambia(?:lo)?\s+a\s+)(abierto|en\s+proceso|en\s+espera|pendiente|resuelto|cerrado)\b/i,
+            );
+            if (stMatch && stMatch[1]) {
+              merged.etapa = stMatch[1].trim();
+            } else if (/\b(resuelve|resolver|cierra|cerrar|soluciona|solucionar)\b/i.test(msg)) {
+              merged.etapa = 'Resuelto';
+            }
+          }
+          if (merged.priority === undefined && merged.prioridad === undefined) {
+            const prMatch = msg.match(/\b(?:prioridad\s+)?(alta|urgente|media|normal|baja)\b/i);
+            if (prMatch && prMatch[1]) {
+              const p = prMatch[1].toLowerCase();
+              merged.priority = p === 'alta' || p === 'urgente' ? 3 : p === 'media' || p === 'normal' ? 2 : 1;
+            }
+          }
+          if (!merged.notasResolucion && !merged.notas_resolucion) {
+            const nrMatch = msg.match(
+              /\b(?:notas(?:\s+de\s+resoluci[oó]n|\s+de\s+cierre)?|resoluci[oó]n|soluci[oó]n)\s*[:\-]?\s*["']?([^"'\n]+?)["']?$/i,
+            );
+            if (nrMatch && nrMatch[1]) {
+              merged.notasResolucion = nrMatch[1].trim();
+            }
+          }
+          if (!merged.responsable) {
+            const respMatch = msg.match(
+              /\b(?:responsable|asigna(?:r|do)?\s+a|reasigna(?:r)?\s+a)\s+["']?([^"',\.]+?)["']?(?=\s+(?:con|prioridad|etapa|notas)|$|[,.])/i,
+            );
+            if (respMatch && respMatch[1]) {
+              merged.responsable = respMatch[1].trim();
+            }
+          }
+          if (!merged.nuevoTitulo) {
+            const titleMatch = msg.match(
+              /\b(?:nuevo\s+(?:t[ií]tulo|asunto)|(?:t[ií]tulo|asunto)\s+(?:a|por|=))\s+["']?([^"',;\n]+?)["']?(?=\s+(?:con|prioridad|etapa|notas)|$|[,.])/i,
+            );
+            if (titleMatch && titleMatch[1]) {
+              merged.nuevoTitulo = titleMatch[1].trim();
+            }
+          }
+        }
+      }
+    }
+
+    if (action === 'createProduct' || action === 'modifyProduct') {
+      const assistantMessages = conversationHistory
+        .filter((m) => m.role === 'assistant')
+        .map((m) => m.content)
+        .reverse();
+      const lastAssistantMsg = assistantMessages[0] || '';
+      const rawCurrentInput = (merged.__rawUserInput || '').toString().trim();
+      delete merged.__rawUserInput;
+
+      const pickMatch = rawCurrentInput.match(/^\s*(?:el|la|opci[oó]n|n[uú]mero|#)?\s*(\d+)\s*$/i);
+      const pickNumber = pickMatch ? parseInt(pickMatch[1], 10) : null;
+
+      if (action === 'modifyProduct' && pickNumber && pickNumber > 0 && lastAssistantMsg && /encontr[eé] varios productos que coinciden/i.test(lastAssistantMsg)) {
+        const optionRegex = new RegExp(`(?:^|\\n)\\s*${pickNumber}\\.\\s+\\*{0,2}([^\\n]+)`, 'i');
+        const lineMatch = lastAssistantMsg.match(optionRegex);
+        if (lineMatch && lineMatch[1]) {
+          const pickedFullLine = lineMatch[1].trim();
+          const pickedName = pickedFullLine
+            .split(/\s+—\s+|\s+\(|\s+\[|\s+\|\s+/)[0]
+            .replace(/\*{1,2}/g, '')
+            .trim();
+          if (pickedName) {
+            merged.targetProduct = pickedName;
+          }
+        }
+      }
+
+      if (action === 'modifyProduct') {
+        if (!merged.targetProduct && !merged.id && !merged.productId && !merged.nombreOriginal) {
+          const identifiedProd =
+            lastAssistantMsg.match(/Identifiqu[eé] el producto \*{0,2}"?([^"*\n(]+?)"?\*{0,2}(?:\s*\(|,)/i) ||
+            lastAssistantMsg.match(/Producto Registrado Exitosamente[\s\S]*?-\s*Producto:\s*([^\n]+)/i);
+          if (identifiedProd && identifiedProd[1]) {
+            merged.targetProduct = identifiedProd[1].replace(/\*{1,2}/g, '').trim();
+          }
+        }
+
+        const hasExplicitProdChange =
+          merged.precioBase !== undefined ||
+          merged.precio !== undefined ||
+          merged.monto !== undefined ||
+          merged.nuevoNombre !== undefined ||
+          merged.unidadMedida !== undefined ||
+          merged.descripcion !== undefined ||
+          merged.observaciones !== undefined ||
+          merged.status !== undefined ||
+          merged.estatus !== undefined;
+
+        if (!hasExplicitProdChange && pickNumber) {
+          for (const msg of userMessages) {
+            if (merged.precioBase === undefined && merged.precio === undefined) {
+              const pMatch =
+                msg.match(/(?:precio(?:\s+base)?|costo|valor|a|por)\s+\$?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+                msg.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/i);
+              if (pMatch && pMatch[1]) {
+                merged.precioBase = Number(pMatch[1].replace(/,/g, ''));
+              }
+            }
+            if (!merged.unidadMedida) {
+              const uMatch =
+                msg.match(/\bunidad(?:\s+de\s+medida)?\s*[:\s]+["']?([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{2,20}?)["']?(?=\s+(?:precio|descripci[oó]n|observaciones)|$|[,.])/i) ||
+                msg.match(/\bpor\s+(pieza|caja|servicio|licencia|hora|mes|anualidad|paquete|plan|kit|unidad)\b/i);
+              if (uMatch && uMatch[1]) {
+                merged.unidadMedida = uMatch[1].trim();
+              }
+            }
+            if (!merged.nuevoNombre) {
+              const nMatch = msg.match(
+                /\b(?:nuevo\s+nombre|renombra(?:r)?\s+a|nombre\s+a)\s+["']?([^"',;\n]+?)["']?(?=\s+(?:precio|unidad|descripci[oó]n|observaciones)|$|[,.])/i,
+              );
+              if (nMatch && nMatch[1]) {
+                merged.nuevoNombre = nMatch[1].trim();
               }
             }
           }
@@ -1772,7 +1973,10 @@ export class WebchatActionExecutorService {
     }
 
     // 2. Título / Asunto
-    const title = (params.title || params.strtitle || params.asunto || params.titulo || '').trim();
+    let title = (params.title || params.strtitle || params.asunto || params.titulo || '').trim();
+    if (/^(?:(?:crea(?:r)?|levanta(?:r)?|abre|abrir|registra(?:r)?)\s+)?(?:un\s+|el\s+)?(?:nuevo\s+|nueva\s+)?(?:ticket|incidencia|reporte)(?:\s+de\s+soporte|\s+nuevo|\s+nueva)?$/i.test(title)) {
+      title = '';
+    }
     if (!title || title.length < 3) {
       missingFields.push('• **Título o Asunto**: Describe brevemente el problema o solicitud (ej. *"Falla en inicio de sesión"*, *"Error en generación de factura"*).');
     }
@@ -1849,6 +2053,393 @@ export class WebchatActionExecutorService {
         helpdeskId: createdTicket.helpdesk_id,
       },
     };
+  }
+
+  /**
+   * Modifica un ticket de soporte existente en el CRM (cambio de etapa, notas de resolución,
+   * prioridad, asunto, descripción, tipo de incidencia, cliente o responsable).
+   * Respeta RBAC (ejecutivos solo pueden modificar tickets donde son responsables) y valida
+   * obligatoriamente las notas de resolución cuando la etapa destino es "Resuelto".
+   */
+  async handleModifyTicket(
+    params: any,
+    user: User,
+    conversationHistory: ConversationHistoryMessage[] = [],
+    originalQuestion: string = '',
+  ): Promise<WebchatResponse> {
+    const isExec = this.isExecutive(user.role);
+    const mergedParams = this.mergeHistoryContext(
+      'modifyTicket',
+      { ...params, __rawUserInput: originalQuestion },
+      conversationHistory,
+    );
+
+    const rawId = (mergedParams.id || mergedParams.ticketId || '').toString().trim();
+    const rawTarget = (
+      mergedParams.targetTicket ||
+      mergedParams.ticketNumber ||
+      mergedParams.folio ||
+      mergedParams.ticket ||
+      ''
+    )
+      .toString()
+      .trim();
+
+    const hasExplicitTitleChange =
+      Boolean(mergedParams.nuevoTitulo || mergedParams.newTitle) ||
+      /\b(nuevo\s+t[ií]tulo|nuevo\s+asunto|cambia(?:r)?\s+(?:el\s+)?(?:t[ií]tulo|asunto)|renombra(?:r)?)\b/i.test(
+        originalQuestion || '',
+      );
+
+    let searchHint = rawTarget;
+    if (!searchHint && mergedParams.title && !hasExplicitTitleChange) {
+      searchHint = String(mergedParams.title).trim();
+    }
+
+    let ticket: Ticket | null = null;
+    if (rawId && this.isValidUuid(rawId)) {
+      ticket = await this.ticketRepo
+        .findOne({
+          where: { id: rawId },
+          relations: ['cliente', 'responsable', 'stage', 'helpdesk'],
+        })
+        .catch(() => null);
+    }
+
+    if (!ticket && searchHint) {
+      const resolution = await this.resolveTicketResolution(searchHint, user, isExec);
+      if (resolution.ambiguousCandidates.length > 1) {
+        const listText = resolution.ambiguousCandidates
+          .map((t, idx) => {
+            const folioStr = String(t.ticket_number || '').padStart(5, '0');
+            const stName = t.stage?.strname || 'Abierto';
+            const respName = t.responsable?.username || 'Sin asignar';
+            return `${idx + 1}. #${folioStr} — ${t.strtitle} (Etapa: ${stName} | Responsable: ${respName})`;
+          })
+          .join('\n');
+
+        return {
+          answer: `Encontré varios tickets que coinciden con "${searchHint}". ¿Cuál de ellos deseas modificar?\n\n${listText}\n\nResponde con el número de la opción (ej. "el 1") o indica el folio exacto del ticket.`,
+        };
+      }
+      ticket = resolution.item;
+    }
+
+    if (!ticket) {
+      return {
+        answer: searchHint
+          ? `No encontré ningún ticket de soporte que coincida con "${searchHint}". Por favor verifica el número de folio o el asunto del ticket.`
+          : `Por favor indícame el folio o asunto del ticket que deseas modificar y el cambio que quieres aplicar (etapa, prioridad, notas de resolución, responsable o descripción).`,
+      };
+    }
+
+    // Validación RBAC: Ejecutivo solo puede modificar tickets asignados a sí mismo
+    if (isExec && ticket.responsable_id !== user.id) {
+      return {
+        answer: `Acceso Denegado: Solo tienes permitido modificar los tickets de soporte asignados a tu propia cuenta.`,
+      };
+    }
+
+    const updateDto: Record<string, any> = {};
+
+    // 1. Nuevo Título / Asunto
+    const newTitle = (
+      mergedParams.nuevoTitulo ||
+      mergedParams.newTitle ||
+      (hasExplicitTitleChange ? mergedParams.title || mergedParams.strtitle || mergedParams.asunto || mergedParams.titulo : '') ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newTitle && newTitle !== ticket.strtitle) {
+      updateDto.strtitle = newTitle;
+    }
+
+    // 2. Descripción
+    const newDesc = (
+      mergedParams.nuevaDescripcion ||
+      mergedParams.newDescription ||
+      mergedParams.description ||
+      mergedParams.descripcion ||
+      mergedParams.detalle ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newDesc && newDesc !== (ticket.description || '')) {
+      updateDto.description = newDesc;
+    }
+
+    // 3. Tipo de incidencia
+    const newTipo = (
+      mergedParams.tipo_incidencia ||
+      mergedParams.tipoIncidencia ||
+      mergedParams.categoria ||
+      mergedParams.category ||
+      mergedParams.tipo ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newTipo && newTipo !== (ticket.tipo_incidencia || '')) {
+      updateDto.tipo_incidencia = newTipo;
+    }
+
+    // 4. Prioridad (1=Baja, 2=Media, 3=Alta)
+    const rawPrio = mergedParams.priority ?? mergedParams.prioridad;
+    if (rawPrio !== undefined && rawPrio !== null && rawPrio !== '') {
+      let parsedPrio: number | null = null;
+      if (typeof rawPrio === 'number' && !Number.isNaN(rawPrio) && rawPrio >= 0 && rawPrio <= 3) {
+        parsedPrio = rawPrio;
+      } else {
+        const pStr = this.normalizeString(String(rawPrio));
+        if (/^[0-3]$/.test(pStr)) {
+          parsedPrio = Number(pStr);
+        } else if (pStr.includes('alta') || pStr.includes('urgente') || pStr.includes('critica')) {
+          parsedPrio = 3;
+        } else if (pStr.includes('media') || pStr.includes('normal')) {
+          parsedPrio = 2;
+        } else if (pStr.includes('baja')) {
+          parsedPrio = 1;
+        }
+      }
+      if (parsedPrio !== null && parsedPrio !== ticket.priority) {
+        updateDto.priority = parsedPrio;
+      }
+    }
+
+    // 5. Notas de resolución
+    const newNotes = (
+      mergedParams.notasResolucion ||
+      mergedParams.notas_resolucion ||
+      mergedParams.resolucion ||
+      mergedParams.solucion ||
+      mergedParams.notas ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newNotes && newNotes !== (ticket.notas_resolucion || '')) {
+      updateDto.notas_resolucion = newNotes;
+    }
+
+    // 6. Etapa del Ticket (validando contra ticket_stages y regla obligatoria de notas en "Resuelto")
+    const rawStageHint = (
+      mergedParams.etapa ||
+      mergedParams.stage ||
+      mergedParams.nuevaEtapa ||
+      mergedParams.targetStage ||
+      ''
+    )
+      .toString()
+      .trim();
+    let resolvedStageObj: TicketStage | null = null;
+    if (rawStageHint) {
+      resolvedStageObj = await this.resolveTicketStage(rawStageHint, ticket.helpdesk_id);
+      if (!resolvedStageObj) {
+        return {
+          answer: `No encontré una etapa llamada "${rawStageHint}" en la Mesa de Ayuda. Por favor verifica el nombre de la etapa (ej. "Abierto", "En Proceso", "Resuelto").`,
+        };
+      }
+
+      const isClosingStage =
+        this.normalizeString(resolvedStageObj.strname) === 'resuelto' ||
+        resolvedStageObj.stage_type === 1;
+      const effectiveNotes = (updateDto.notas_resolucion ?? ticket.notas_resolucion ?? '').toString().trim();
+
+      if (isClosingStage && !effectiveNotes) {
+        const folioStr = String(ticket.ticket_number || ticket.id.substring(0, 8)).padStart(5, '0');
+        return {
+          answer: `Para mover el ticket #${folioStr} ("${ticket.strtitle}") a la etapa "${resolvedStageObj.strname}" es obligatorio registrar las notas de resolución. Por favor indícame cómo se solucionó o las notas de cierre.`,
+        };
+      }
+
+      if (resolvedStageObj.id !== ticket.stage_id) {
+        updateDto.stage_id = resolvedStageObj.id;
+      }
+    }
+
+    // 7. Cliente
+    const clientHint = (mergedParams.cliente || mergedParams.nuevoCliente || mergedParams.client || '').toString().trim();
+    if (clientHint) {
+      const resolvedClient = await this.resolveClient(clientHint);
+      if (resolvedClient && resolvedClient.id !== ticket.cliente_id) {
+        updateDto.cliente_id = resolvedClient.id;
+      }
+    }
+
+    // 8. Reasignación de Agente Responsable (Solo Admin / SuperAdmin)
+    const respHint = (
+      mergedParams.responsable ||
+      mergedParams.nuevoResponsable ||
+      mergedParams.ejecutivo ||
+      mergedParams.responsableId ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (!isExec && respHint) {
+      const resolvedUser = await this.resolveUser(respHint);
+      if (resolvedUser && resolvedUser.id !== ticket.responsable_id) {
+        updateDto.responsable_id = resolvedUser.id;
+      }
+    }
+
+    if (Object.keys(updateDto).length === 0) {
+      const folioStr = String(ticket.ticket_number || ticket.id.substring(0, 8)).padStart(5, '0');
+      return {
+        answer: `Identifiqué el ticket #${folioStr} ("${ticket.strtitle}"), pero no detecté qué campo deseas actualizar. Por favor indícame qué cambio deseas aplicar (etapa, prioridad, notas de resolución, descripción, cliente o responsable).`,
+      };
+    }
+
+    const updatedTicket = await this.ticketsService.update(ticket.id, updateDto as any, user);
+    const folioNum = updatedTicket.ticket_number ?? ticket.ticket_number ?? updatedTicket.id.substring(0, 8);
+    const priorityNames = ['Sin prioridad', 'Baja', 'Media', 'Alta'];
+    const prioDisplay = priorityNames[updatedTicket.priority ?? ticket.priority ?? 1] || 'Baja';
+    const stageDisplay = updatedTicket.stage?.strname || resolvedStageObj?.strname || ticket.stage?.strname || 'Abierto';
+    const respDisplay = updatedTicket.responsable?.username || ticket.responsable?.username || user.username;
+
+    return {
+      answer: `Ticket Actualizado con Éxito\n\n- Folio: #${folioNum}\n- Título: ${updatedTicket.strtitle || ticket.strtitle}\n- Etapa: ${stageDisplay}\n- Prioridad: ${prioDisplay}\n- Tipo: ${updatedTicket.tipo_incidencia || ticket.tipo_incidencia}\n- Responsable: ${respDisplay}${updatedTicket.notas_resolucion ? `\n- Notas de Resolución: ${updatedTicket.notas_resolucion}` : ''}`,
+      data: [
+        {
+          'Folio': `#${folioNum}`,
+          'Título': updatedTicket.strtitle || ticket.strtitle,
+          'Etapa': stageDisplay,
+          'Prioridad': prioDisplay,
+          'Tipo': updatedTicket.tipo_incidencia || ticket.tipo_incidencia,
+          'Responsable': respDisplay,
+        },
+      ],
+      dashboardRedirect: {
+        tab: 'support',
+        helpdeskId: updatedTicket.helpdesk_id || ticket.helpdesk_id,
+      },
+    };
+  }
+
+  async resolveTicketStage(hint?: string, helpdeskId?: string): Promise<TicketStage | null> {
+    if (!hint) return null;
+    const clean = hint.replace(/^["']|["']$/g, '').trim();
+    if (!clean) return null;
+
+    const repo =
+      this.ticketStageRepo ||
+      (this.ticketRepo?.manager ? this.ticketRepo.manager.getRepository(TicketStage) : null);
+
+    let stages: TicketStage[] = [];
+    if (repo) {
+      if (this.isValidUuid(clean)) {
+        const byId = await repo.findOne({ where: { id: clean, blnstatus: true } as any }).catch(() => null);
+        if (byId) return byId;
+      }
+      const whereClause: any = { blnstatus: true };
+      if (helpdeskId) whereClause.helpdesk_id = helpdeskId;
+      stages = (await repo.find({ where: whereClause, order: { display_order: 'ASC' } as any }).catch(() => [])) || [];
+      if (stages.length === 0 && helpdeskId) {
+        stages = (await repo.find({ where: { blnstatus: true } as any, order: { display_order: 'ASC' } as any }).catch(() => [])) || [];
+      }
+    }
+
+    if (stages.length === 0) return null;
+
+    const normClean = this.normalizeString(clean);
+    let matched = stages.find((s) => this.normalizeString(s.strname) === normClean);
+    if (matched) return matched;
+
+    matched = stages.find((s) => {
+      const normS = this.normalizeString(s.strname);
+      return normS.includes(normClean) || normClean.includes(normS);
+    });
+    if (matched) return matched;
+
+    if (normClean.includes('resuelt') || normClean.includes('cerrad') || normClean.includes('solucionad')) {
+      matched = stages.find((s) => this.normalizeString(s.strname) === 'resuelto' || s.stage_type === 1);
+      if (matched) return matched;
+    }
+    if (normClean.includes('abiert') || normClean.includes('inici') || normClean.includes('nuev')) {
+      matched = stages.find((s) => s.blninitial) || stages.find((s) => s.stage_type === 0);
+      if (matched) return matched;
+    }
+
+    return null;
+  }
+
+  async resolveTicketResolution(
+    searchHint: string,
+    user: User,
+    isExec: boolean,
+  ): Promise<{ item: Ticket | null; ambiguousCandidates: Ticket[] }> {
+    const clean = (searchHint || '').replace(/^["']|["']$/g, '').trim();
+    if (!clean) return { item: null, ambiguousCandidates: [] };
+
+    if (this.isValidUuid(clean)) {
+      const t = await this.ticketRepo
+        .findOne({ where: { id: clean }, relations: ['cliente', 'responsable', 'stage', 'helpdesk'] })
+        .catch(() => null);
+      return { item: t, ambiguousCandidates: [] };
+    }
+
+    // 1. Si es número de folio (ej. "#12", "folio 12", "00012", "12")
+    const folioMatch = clean.match(/^(?:ticket\s*|folio\s*|#)?0*(\d+)$/i);
+    if (folioMatch && folioMatch[1]) {
+      const num = parseInt(folioMatch[1], 10);
+      if (!Number.isNaN(num)) {
+        const byFolio = await this.ticketRepo
+          .findOne({
+            where: { ticket_number: num } as any,
+            relations: ['cliente', 'responsable', 'stage', 'helpdesk'],
+          })
+          .catch(() => null);
+        if (byFolio) {
+          return { item: byFolio, ambiguousCandidates: [] };
+        }
+      }
+    }
+
+    // 2. Búsqueda por título / asunto
+    let candidates: Ticket[] = [];
+    try {
+      candidates = await this.ticketRepo.find({
+        where: { archived: false } as any,
+        relations: ['cliente', 'responsable', 'stage', 'helpdesk'],
+        order: { fecha_apertura: 'DESC' } as any,
+        take: 40,
+      });
+    } catch {
+      candidates = [];
+    }
+
+    if (candidates.length === 0) return { item: null, ambiguousCandidates: [] };
+
+    const ownCandidates = isExec ? candidates.filter((t) => t.responsable_id === user.id) : candidates;
+    const pool = isExec && ownCandidates.length > 0 ? ownCandidates : candidates;
+
+    const ranked = rankEntitiesByRelevance(pool, clean, (t: Ticket) => [
+      t.strtitle,
+      String(t.ticket_number || ''),
+      t.cliente ? `${t.cliente.nombre || ''} ${t.cliente.apellido || ''}`.trim() : t.contactName || '',
+      t.tipo_incidencia || '',
+    ]);
+
+    if (ranked.length === 0) {
+      return { item: null, ambiguousCandidates: [] };
+    }
+
+    const best = ranked[0];
+    const second = ranked[1];
+
+    if (best && second) {
+      const diff = best.score - second.score;
+      if (diff < AMBIGUITY_MARGIN_SCORE && second.score >= 500) {
+        return {
+          item: null,
+          ambiguousCandidates: ranked.slice(0, 5).map((r) => r.item),
+        };
+      }
+    }
+
+    return { item: best.item, ambiguousCandidates: [] };
   }
 
   // ─── 4. CLIENTES Y EMPRESAS ───────────────────────────────────────────────────
@@ -2045,7 +2636,15 @@ export class WebchatActionExecutorService {
       rawName = rawName.replace(phoneInName[0], '').replace(/\b(tel[eé]fono|cel(?:ular)?|tel|n[uú]mero|correo|email)\b/gi, '').trim();
     }
     const rawLastName = (params.apellido || params.apellidos || params.lastName || '').trim();
-    const { nombre, apellido } = this.splitFullName(rawName, rawLastName);
+    let { nombre, apellido } = this.splitFullName(rawName, rawLastName);
+    if (
+      /^(?:(?:crea(?:r)?|registra(?:r)?|agrega(?:r)?|da(?:r)?\s+de\s+alta)\s+)?(?:un\s+|una\s+|el\s+|la\s+)?(?:nuevo\s+|nueva\s+)?(?:cliente|contacto|prospecto|lead)(?:\s+(?:nuevo|nueva))?$/i.test(
+        `${nombre} ${apellido}`.trim(),
+      )
+    ) {
+      nombre = '';
+      apellido = '';
+    }
 
     if (!nombre || nombre.length < 2) {
       return {
@@ -2378,10 +2977,13 @@ export class WebchatActionExecutorService {
       embeddedPhone = phoneInName[1].trim();
       rawName = rawName.replace(phoneInName[0], '').replace(/\b(tel[eé]fono|cel(?:ular)?|tel|n[uú]mero|correo|email)\b/gi, '').trim();
     }
-    const nombre = rawName
+    let nombre = rawName
       .replace(/^["']|["']$/g, '')
-      .replace(/^(?:la\s+|una\s+|a\s+la\s+)?(?:empresa|compañ[ií]a|cuenta(?:\s+corporativa)?)\s+/i, '')
+      .replace(/^(?:la\s+|una\s+|a\s+la\s+|nueva\s+|nuevo\s+)*(?:empresa|compañ[ií]a|cuenta(?:\s+corporativa)?)(?:\s+nueva|\s+nuevo)?(?:\s+|$)/i, '')
       .trim();
+    if (/^(?:(?:crea(?:r)?|registra(?:r)?|agrega(?:r)?|da(?:r)?\s+de\s+alta)\s+)?(?:una\s+|la\s+)?(?:nueva\s+|nuevo\s+)?(?:empresa|compañ[ií]a|cuenta(?:\s+corporativa)?)(?:\s+(?:nueva|nuevo))?$/i.test(nombre)) {
+      nombre = '';
+    }
 
     if (!nombre || nombre.length < 2) {
       return {
@@ -3786,6 +4388,479 @@ export class WebchatActionExecutorService {
         answer: `❌ No pude actualizar el gasto: ${error.message || 'Verifica los datos e inténtalo nuevamente.'}`,
       };
     }
+  }
+
+  // ============================================================================
+  // 9. MÓDULO DE PRODUCTOS (CREATE & MODIFY EN WEBCHAT INTERNO - LECTURA VIA CUBE)
+  // ============================================================================
+
+  /**
+   * Crea un producto o servicio en el catálogo global del CRM permitiendo guardado con datos parciales
+   * (requiere al menos el nombre). Indexa automáticamente el registro en el RAG vectorial vía ProductsService.
+   */
+  async handleCreateProduct(
+    params: any,
+    user: User,
+    conversationHistory: ConversationHistoryMessage[] = [],
+    originalQuestion: string = '',
+  ): Promise<WebchatResponse> {
+    const mergedParams = this.mergeHistoryContext(
+      'createProduct',
+      { ...params, __rawUserInput: originalQuestion },
+      conversationHistory,
+    );
+
+    const genericProductPlaceholderRegex =
+      /^(?:(?:crea(?:r)?|registra(?:r)?|agrega(?:r)?|da(?:r)?\s+de\s+alta|alta\s+de|quiero|necesito)\s+)?(?:un\s+|una\s+|el\s+|la\s+)?(?:nuevo\s+|nueva\s+)?(?:producto|productos|art[ií]culo|art[ií]culos|servicio|servicios|item|cat[aá]logo)(?:\s+(?:nuevo|nueva|del\s+cat[aá]logo|en\s+el\s+cat[aá]logo))?$/i;
+
+    let rawName = this.normalizeSpokenContactText(
+      String(
+        mergedParams.nombre ||
+          mergedParams.name ||
+          mergedParams.producto ||
+          mergedParams.product ||
+          mergedParams.titulo ||
+          '',
+      ),
+    ).trim();
+
+    if (genericProductPlaceholderRegex.test(rawName)) {
+      rawName = '';
+    }
+
+    const normQuestion = this.normalizeSpokenContactText(originalQuestion || '').trim();
+    const isBareCreateProductCommand = genericProductPlaceholderRegex.test(normQuestion);
+
+    if (!rawName && normQuestion && !isBareCreateProductCommand) {
+      rawName = normQuestion
+        .replace(
+          /^(?:crea(?:r)?|registra(?:r)?|da(?:r)?\s+de\s+alta|agrega(?:r)?|nuevo|nueva)\s+(?:un\s+|una\s+|el\s+|la\s+)?(?:nuevo\s+|nueva\s+)?(?:producto|art[ií]culo|servicio(?:\s+del\s+cat[aá]logo)?)?\s*(?:llamad[oa]\s+|nombre\s+)?/i,
+          '',
+        )
+        .replace(/\b(?:con\s+precio|precio(?:\s+base)?|costo|valor)\s*[:\s]*\$?\s*[\d,]+(?:\.\d{1,2})?(?:\s*(?:pesos|mxn|usd))?/gi, '')
+        .replace(/\b(?:unidad(?:\s+de\s+medida)?|por)\s+(?:pieza|caja|servicio|licencia|hora|mes|anualidad|paquete|plan|kit|unidad)\b/gi, '')
+        .replace(/\bdescripci[oó]n\s*[:\s]+[^,;\n]+/gi, '')
+        .replace(/\b(?:observaciones|notas)\s*[:\s]+[^,;\n]+/gi, '')
+        .trim();
+    }
+
+    let nombre = rawName
+      .replace(/^["']|["']$/g, '')
+      .replace(/^(?:el\s+|un\s+|una\s+|nuevo\s+|nueva\s+)*(?:producto|art[ií]culo|servicio)(?:\s+nuevo|\s+nueva)?(?:\s+|$)/i, '')
+      .trim();
+
+    if (genericProductPlaceholderRegex.test(nombre)) {
+      nombre = '';
+    }
+
+    // Si el mensaje actual es únicamente el comando genérico ("nuevo producto", "crear producto") sin historial con nombre, forzar solicitud de nombre
+    if (isBareCreateProductCommand && (!conversationHistory || conversationHistory.length === 0)) {
+      nombre = '';
+    }
+
+    if (!nombre || nombre.length < 2) {
+      return {
+        answer: `Para registrar un nuevo producto en el catálogo, por favor indícame al menos su Nombre.\n\nOpcionalmente también puedes compartir:\n• Precio base\n• Unidad de medida (ej. Pieza, Servicio, Licencia, Caja)\n• Descripción\n• Observaciones`,
+      };
+    }
+
+    // Validar si ya existe un producto con el mismo nombre
+    const existingProduct = await this.productRepo
+      .findOne({ where: { nombre: ILike(nombre) } })
+      .catch(() => null);
+    if (existingProduct) {
+      return {
+        answer: `El producto "${existingProduct.nombre}" ya se encuentra registrado en el catálogo (Precio base: $${Number(existingProduct.precioBase ?? 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN por ${existingProduct.unidadMedida || 'Pieza'}). Si deseas actualizar su precio, unidad de medida, descripción u observaciones, indícame el cambio.`,
+      };
+    }
+
+    const parsedPrice = this.parseExpenseAmount(
+      mergedParams.precioBase ?? mergedParams.precio_base ?? mergedParams.precio ?? mergedParams.monto ?? mergedParams.costo,
+      originalQuestion,
+    );
+    const precioBase = parsedPrice !== null && !Number.isNaN(parsedPrice) && parsedPrice >= 0 ? parsedPrice : 0;
+
+    const unidadMedida =
+      (
+        mergedParams.unidadMedida ||
+        mergedParams.unidad_medida ||
+        mergedParams.unidad ||
+        mergedParams.unit ||
+        'Pieza'
+      )
+        .toString()
+        .trim() || 'Pieza';
+
+    const descripcion =
+      (mergedParams.descripcion || mergedParams.description || '').toString().trim() || undefined;
+    const observaciones =
+      (mergedParams.observaciones || mergedParams.notas || mergedParams.observations || '').toString().trim() || undefined;
+
+    let status = true;
+    const rawStatus = mergedParams.status !== undefined ? mergedParams.status : mergedParams.estatus;
+    if (rawStatus !== undefined && rawStatus !== null) {
+      if (typeof rawStatus === 'boolean') {
+        status = rawStatus;
+      } else {
+        const sNorm = this.normalizeString(String(rawStatus));
+        if (sNorm === 'false' || sNorm === 'inactivo' || sNorm === 'inactiva' || sNorm === '0') {
+          status = false;
+        }
+      }
+    }
+
+    const createDto: any = {
+      nombre,
+      precioBase,
+      unidadMedida,
+      descripcion,
+      observaciones,
+      status,
+    };
+
+    let createdProduct: Product;
+    if (this.productsService && typeof this.productsService.create === 'function') {
+      createdProduct = await this.productsService.create(createDto, user);
+    } else {
+      const entity = this.productRepo.create
+        ? this.productRepo.create({ ...createDto, createdById: user.id })
+        : ({ id: 'prod-temp-id', ...createDto, createdById: user.id } as any);
+      createdProduct = this.productRepo.save
+        ? await this.productRepo.save(entity)
+        : (entity as Product);
+    }
+
+    const pendingFields: string[] = [];
+    if (parsedPrice === null) pendingFields.push('Precio base');
+    if (!createdProduct.descripcion && !descripcion) pendingFields.push('Descripción');
+    if (!createdProduct.observaciones && !observaciones) pendingFields.push('Observaciones');
+
+    const pendingNote =
+      pendingFields.length > 0
+        ? `\n\nNota: El producto se guardó exitosamente en el catálogo. Si deseas completar más adelante: ${pendingFields.join(', ')}, solo indícamelo.`
+        : '';
+
+    const finalPrice = Number(createdProduct.precioBase ?? precioBase);
+    const finalUnit = createdProduct.unidadMedida || unidadMedida;
+
+    return {
+      answer: `Producto Registrado Exitosamente\n\n- Producto: ${createdProduct.nombre || nombre}\n- Precio Base: $${finalPrice.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN\n- Unidad de Medida: ${finalUnit}\n- Descripción: ${createdProduct.descripcion || descripcion || 'No especificada'}\n- Observaciones: ${createdProduct.observaciones || observaciones || 'Ninguna'}\n- Estado: ${(createdProduct.status ?? status) ? 'Activo' : 'Inactivo'}${pendingNote}`,
+      data: [
+        {
+          'ID': createdProduct.id,
+          'Producto': createdProduct.nombre || nombre,
+          'Precio Base': `$${finalPrice.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN`,
+          'Unidad': finalUnit,
+          'Descripción': createdProduct.descripcion || descripcion || 'N/A',
+          'Estado': (createdProduct.status ?? status) ? 'Activo' : 'Inactivo',
+        },
+      ],
+      dashboardRedirect: {
+        tab: 'commercial',
+      },
+    };
+  }
+
+  /**
+   * Modifica un producto existente del catálogo global validando coincidencias semánticas
+   * (incluyendo calibres/medidas como 6-0, 10-0) y sincronizando con el RAG vectorial vía ProductsService.
+   */
+  async handleModifyProduct(
+    params: any,
+    user: User,
+    conversationHistory: ConversationHistoryMessage[] = [],
+    originalQuestion: string = '',
+  ): Promise<WebchatResponse> {
+    const mergedParams = this.mergeHistoryContext(
+      'modifyProduct',
+      { ...params, __rawUserInput: originalQuestion },
+      conversationHistory,
+    );
+
+    const id = (mergedParams.id || mergedParams.productId || mergedParams.productoId || '').toString().trim();
+    const hasExplicitNameChange =
+      Boolean(mergedParams.nuevoNombre || mergedParams.newName) ||
+      /\b(nuevo\s+nombre|renombra(?:r)?|cambia(?:r)?\s+(?:el\s+)?nombre)\b/i.test(originalQuestion || '');
+
+    const explicitTarget = (
+      mergedParams.targetProduct ||
+      mergedParams.nombreOriginal ||
+      mergedParams.producto ||
+      mergedParams.product ||
+      ''
+    )
+      .toString()
+      .trim();
+
+    const searchHint = explicitTarget || (!hasExplicitNameChange ? String(mergedParams.nombre || mergedParams.name || '').trim() : '');
+
+    let product: Product | null = null;
+    if (id && this.isValidUuid(id)) {
+      product = await this.productRepo.findOne({ where: { id } }).catch(() => null);
+    }
+
+    if (!product && searchHint) {
+      const resolution = await this.resolveProductResolution(searchHint);
+      if (resolution.ambiguousCandidates.length > 1) {
+        const listText = resolution.ambiguousCandidates
+          .map((p, idx) => {
+            const pPrice = Number(p.precioBase ?? 0).toLocaleString('es-MX', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            });
+            return `${idx + 1}. ${p.nombre} — $${pPrice} MXN (${p.unidadMedida || 'Pieza'})`;
+          })
+          .join('\n');
+
+        return {
+          answer: `Encontré varios productos que coinciden con "${searchHint}". ¿Cuál de ellos deseas modificar?\n\n${listText}\n\nResponde con el número de la opción (ej. "el 1") o indica el nombre exacto del producto.`,
+        };
+      }
+      product = resolution.item;
+    }
+
+    if (!product) {
+      return {
+        answer: searchHint
+          ? `No encontré ningún producto en el catálogo que coincida con "${searchHint}". Por favor verifica el nombre del producto.`
+          : `Por favor indícame el nombre del producto que deseas modificar y el campo que quieres actualizar (precio base, unidad de medida, descripción, observaciones o estado).`,
+      };
+    }
+
+    const updateDto: Record<string, any> = {};
+
+    // 1. Nuevo nombre
+    const newName = (
+      mergedParams.nuevoNombre ||
+      mergedParams.newName ||
+      (hasExplicitNameChange ? mergedParams.nombre || mergedParams.name : '') ||
+      (explicitTarget && mergedParams.nombre && this.normalizeString(String(mergedParams.nombre)) !== this.normalizeString(product.nombre)
+        ? mergedParams.nombre
+        : '') ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newName && this.normalizeString(newName) !== this.normalizeString(product.nombre)) {
+      updateDto.nombre = newName;
+    }
+
+    // 2. Precio Base
+    const rawPriceVal =
+      mergedParams.precioBase ??
+      mergedParams.precio_base ??
+      mergedParams.nuevoPrecio ??
+      mergedParams.precio ??
+      mergedParams.monto ??
+      mergedParams.costo;
+    const parsedPrice = this.parseExpenseAmount(rawPriceVal);
+    if (parsedPrice !== null && !Number.isNaN(parsedPrice)) {
+      if (parsedPrice < 0) {
+        return {
+          answer: `El precio base del producto no puede ser negativo.`,
+        };
+      }
+      updateDto.precioBase = parsedPrice;
+    }
+
+    // 3. Unidad de medida
+    const newUnit = (
+      mergedParams.nuevaUnidad ||
+      mergedParams.unidadMedida ||
+      mergedParams.unidad_medida ||
+      mergedParams.unidad ||
+      mergedParams.unit ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newUnit && newUnit !== (product.unidadMedida || '')) {
+      updateDto.unidadMedida = newUnit;
+    }
+
+    // 4. Descripción
+    const newDesc = (
+      mergedParams.nuevaDescripcion ||
+      mergedParams.descripcion ||
+      mergedParams.description ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newDesc && newDesc !== (product.descripcion || '')) {
+      updateDto.descripcion = newDesc;
+    }
+
+    // 5. Observaciones
+    const newObs = (
+      mergedParams.nuevasObservaciones ||
+      mergedParams.observaciones ||
+      mergedParams.notas ||
+      mergedParams.observations ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (newObs && newObs !== (product.observaciones || '')) {
+      updateDto.observaciones = newObs;
+    }
+
+    // 6. Estado (Activo / Inactivo)
+    const rawStatus =
+      mergedParams.status !== undefined
+        ? mergedParams.status
+        : mergedParams.estatus !== undefined
+          ? mergedParams.estatus
+          : mergedParams.activo;
+    if (rawStatus !== undefined && rawStatus !== null) {
+      if (typeof rawStatus === 'boolean') {
+        updateDto.status = rawStatus;
+      } else {
+        const sNorm = this.normalizeString(String(rawStatus));
+        if (sNorm === 'true' || sNorm === 'activo' || sNorm === 'activa' || sNorm === '1') {
+          updateDto.status = true;
+        } else if (sNorm === 'false' || sNorm === 'inactivo' || sNorm === 'inactiva' || sNorm === '0') {
+          updateDto.status = false;
+        }
+      }
+    }
+
+    if (Object.keys(updateDto).length === 0) {
+      return {
+        answer: `Identifiqué el producto "${product.nombre}" ($${Number(product.precioBase ?? 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN — ${product.unidadMedida || 'Pieza'}), pero no detecté qué campo deseas actualizar. Por favor indícame el nuevo precio base, unidad de medida, nombre, descripción, observaciones o estado.`,
+      };
+    }
+
+    let updatedProduct: Product;
+    if (this.productsService && typeof this.productsService.update === 'function') {
+      updatedProduct = await this.productsService.update(product.id, updateDto);
+    } else {
+      updatedProduct = { ...product, ...updateDto } as Product;
+      if (this.productRepo.save) {
+        updatedProduct = await this.productRepo.save(updatedProduct);
+      }
+    }
+
+    const finalPrice = Number(updatedProduct.precioBase ?? updateDto.precioBase ?? product.precioBase ?? 0);
+    const finalUnit = updatedProduct.unidadMedida || updateDto.unidadMedida || product.unidadMedida || 'Pieza';
+    const finalStatus = updatedProduct.status ?? updateDto.status ?? product.status ?? true;
+
+    return {
+      answer: `Producto Actualizado con Éxito\n\n- Producto: ${updatedProduct.nombre || product.nombre}\n- Precio Base: $${finalPrice.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN\n- Unidad de Medida: ${finalUnit}\n- Descripción: ${updatedProduct.descripcion || product.descripcion || 'No especificada'}\n- Observaciones: ${updatedProduct.observaciones || product.observaciones || 'Ninguna'}\n- Estado: ${finalStatus ? 'Activo' : 'Inactivo'}`,
+      data: [
+        {
+          'ID': updatedProduct.id || product.id,
+          'Producto': updatedProduct.nombre || product.nombre,
+          'Precio Base': `$${finalPrice.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN`,
+          'Unidad': finalUnit,
+          'Descripción': updatedProduct.descripcion || product.descripcion || 'N/A',
+          'Estado': finalStatus ? 'Activo' : 'Inactivo',
+        },
+      ],
+      dashboardRedirect: {
+        tab: 'commercial',
+      },
+    };
+  }
+
+  async resolveProductResolution(
+    searchHint: string,
+  ): Promise<{ item: Product | null; ambiguousCandidates: Product[] }> {
+    const clean = (searchHint || '').replace(/^["']|["']$/g, '').trim();
+    if (!clean) return { item: null, ambiguousCandidates: [] };
+
+    if (this.isValidUuid(clean)) {
+      const p = await this.productRepo.findOne({ where: { id: clean } }).catch(() => null);
+      return { item: p, ambiguousCandidates: [] };
+    }
+
+    const cleanNorm = normalizeText(clean);
+    const words = cleanNorm.split(/\s+/).filter((w) => w.length >= 2);
+    const nonStopWords = words.filter((w) => !CRM_ENTITY_STOPWORDS.has(w) && w !== 'producto' && w !== 'productos');
+    const wordsToSearch = nonStopWords.length > 0 ? nonStopWords : words;
+
+    let candidates: Product[] = [];
+    try {
+      const candidateWhere: any[] = [{ nombre: ILike(`%${clean}%`) }];
+      if (cleanNorm) {
+        candidateWhere.push({
+          nombre: Raw((alias) => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${cleanNorm}%` }),
+        });
+      }
+      for (const w of wordsToSearch) {
+        candidateWhere.push(
+          { nombre: Raw((alias) => `${PG_TRANSLATE_EXPRESSION(alias)} ILIKE :term`, { term: `%${w}%` }) },
+          { nombre: ILike(`%${w}%`) },
+        );
+      }
+      candidates = await this.productRepo.find({
+        where: candidateWhere,
+        order: { nombre: 'ASC' },
+        take: 30,
+      });
+    } catch {
+      candidates = await this.productRepo
+        .find({
+          where: [{ nombre: ILike(`%${clean}%`) }, ...wordsToSearch.map((w) => ({ nombre: ILike(`%${w}%`) }))],
+          order: { nombre: 'ASC' },
+          take: 30,
+        })
+        .catch(() => []);
+    }
+
+    if (candidates.length === 0) return { item: null, ambiguousCandidates: [] };
+    if (candidates.length === 1) return { item: candidates[0], ambiguousCandidates: [] };
+
+    // Evaluar relevancia + regla estricta de calibres/medidas (ej. 6-0 vs 10-0)
+    const searchGauges = clean
+      .toLowerCase()
+      .split(/[\s,]+/)
+      .map((w) => w.replace(/[^a-z0-9\-\/]/g, ''))
+      .filter((w) => /^\d+(?:[-\/]\d+)?$/.test(w));
+
+    const ranked = rankEntitiesByRelevance(candidates, clean, (p: Product) => [
+      p.nombre,
+      p.descripcion || '',
+      p.unidadMedida || '',
+    ]).map((scored) => {
+      let adjScore = scored.score;
+      if (searchGauges.length > 0) {
+        const nameGauges = (scored.item.nombre || '')
+          .toLowerCase()
+          .split(/[\s,]+/)
+          .map((w) => w.replace(/[^a-z0-9\-\/]/g, ''))
+          .filter((w) => /^\d+(?:[-\/]\d+)?$/.test(w));
+        for (const sg of searchGauges) {
+          if (nameGauges.includes(sg)) {
+            adjScore += 3000;
+          } else if (nameGauges.length > 0) {
+            adjScore -= 5000;
+          }
+        }
+      }
+      return { ...scored, score: adjScore };
+    });
+
+    ranked.sort((a, b) => b.score - a.score);
+
+    if (ranked.length === 0) {
+      return { item: candidates[0], ambiguousCandidates: [] };
+    }
+
+    const best = ranked[0];
+    const second = ranked[1];
+
+    if (best && second) {
+      const diff = best.score - second.score;
+      if (diff < AMBIGUITY_MARGIN_SCORE && second.score >= 500) {
+        return {
+          item: null,
+          ambiguousCandidates: ranked.slice(0, 5).map((r) => r.item),
+        };
+      }
+    }
+
+    return { item: best.item, ambiguousCandidates: [] };
   }
 
   private normalizeString(str?: string | null): string {

@@ -9,6 +9,7 @@ import { Expense } from './entities/expense.entity';
 import { ClientsModule } from '../clients/clients.module';
 import { OpportunitiesModule } from '../opportunities/opportunities.module';
 import { UsersModule } from '../users/users.module';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
     imports: [
@@ -16,6 +17,7 @@ import { UsersModule } from '../users/users.module';
         ClientsModule,
         OpportunitiesModule,
         UsersModule,
+        StorageModule,
         MulterModule.register({
             storage: diskStorage({
                 destination: (req, file, cb) => {

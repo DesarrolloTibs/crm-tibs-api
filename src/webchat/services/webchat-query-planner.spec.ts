@@ -53,6 +53,21 @@ describe('WebchatQueryPlannerService & PromptBuilder - Módulo de Gastos', () =>
         planner.inferActionTypeFromQuestion('crea una oportunidad para Proyecto de Gastos'),
       ).toBe('createOpportunity');
     });
+
+    it('debe clasificar correctamente createProduct, modifyProduct y modifyTicket', () => {
+      expect(
+        planner.inferActionTypeFromQuestion('crea un producto llamado Sutura Nylon 6-0 con precio 180'),
+      ).toBe('createProduct');
+      expect(
+        planner.inferActionTypeFromQuestion('actualiza el precio del producto Sutura Nylon 6-0 a 220'),
+      ).toBe('modifyProduct');
+      expect(
+        planner.inferActionTypeFromQuestion('mueve el ticket #12 a la etapa En Proceso'),
+      ).toBe('modifyTicket');
+      expect(
+        planner.inferActionTypeFromQuestion('resuelve el ticket #15 con notas Se reinició el servicio'),
+      ).toBe('modifyTicket');
+    });
   });
 
   describe('inferDomainFromQuestion (Consultas en Cube vs Mutaciones en ActionExecutor)', () => {
@@ -133,13 +148,62 @@ describe('WebchatQueryPlannerService & PromptBuilder - Módulo de Gastos', () =>
       expect(analyticalFollowUp.intent).toBe('ANALYTICAL');
       expect(analyticalFollowUp.domain).toBe('GASTOS');
     });
+
+    it('debe soportar flujo AI-First y fallback heurístico multi-turno para createProduct sin secuestrar preguntas analíticas', () => {
+      // 1. AI-First: LLM clasifica "nuevo producto" como createProduct
+      const turn1Plan = planner.parseRouterClassification(
+        JSON.stringify({
+          thought: 'Alta de producto sin nombre especificado',
+          intent: 'ACTION_EXECUTION',
+          domain: 'ACTION_EXECUTION',
+          actionPlan: { action: 'createProduct', parameters: {} },
+        }),
+        'nuevo producto',
+        [],
+      );
+      expect(turn1Plan.intent).toBe('ACTION_EXECUTION');
+      expect(turn1Plan.actionPlan?.action).toBe('createProduct');
+      expect(turn1Plan.thought).not.toContain('Recuperación');
+
+      // 2. Turno 2 tras solicitud de nombre: usuario responde con nombre y precio aunque el LLM responda VAGUE_SEARCH
+      const historyAfterAsk = [
+        { role: 'user' as const, content: 'nuevo producto' },
+        {
+          role: 'assistant' as const,
+          content: 'Para registrar un nuevo producto en el catálogo, por favor indícame al menos su Nombre.',
+        },
+      ];
+
+      const turn2Fallback = planner.parseRouterClassification(
+        JSON.stringify({ intent: 'VAGUE_SEARCH', domain: 'VAGUE_SEARCH', canonicalSearchTerm: 'Monitor Dell' }),
+        'Monitor Dell 27 precio 4500',
+        historyAfterAsk,
+      );
+      expect(turn2Fallback.intent).toBe('ACTION_EXECUTION');
+      expect(turn2Fallback.actionPlan?.action).toBe('createProduct');
+      expect(turn2Fallback.actionPlan?.parameters?.nombre).toBe('Monitor Dell 27');
+      expect(turn2Fallback.actionPlan?.parameters?.precioBase).toBe(4500);
+
+      // 3. Si el usuario cambia de tema a una consulta analítica de productos, NO debe secuestrarlo
+      const analyticalSwitch = planner.parseRouterClassification(
+        JSON.stringify({ intent: 'ANALYTICAL', domain: 'PRODUCTOS' }),
+        'qué productos tenemos en el catálogo',
+        historyAfterAsk,
+      );
+      expect(analyticalSwitch.intent).toBe('ANALYTICAL');
+      expect(analyticalSwitch.domain).toBe('PRODUCTOS');
+      expect(analyticalSwitch.actionPlan).toBeNull();
+    });
   });
 
   describe('WebchatPromptBuilderService.buildRouterPrompt', () => {
-    it('debe incluir createExpense y modifyExpense y mantenerse menor a 5000 caracteres', () => {
+    it('debe incluir createExpense, modifyExpense, createProduct, modifyProduct y modifyTicket y mantenerse menor a 5000 caracteres', () => {
       const routerPrompt = promptBuilder.buildRouterPrompt('u-1', 'executive', 'carlos');
       expect(routerPrompt).toContain('createExpense');
       expect(routerPrompt).toContain('modifyExpense');
+      expect(routerPrompt).toContain('createProduct');
+      expect(routerPrompt).toContain('modifyProduct');
+      expect(routerPrompt).toContain('modifyTicket');
       expect(routerPrompt.length).toBeLessThan(5000);
     });
   });

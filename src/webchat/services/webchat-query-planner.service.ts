@@ -144,8 +144,26 @@ export class WebchatQueryPlannerService {
     if (/Para poder agendar|¿Para qu[eé] fecha y hora deseas programar|Horario no disponible/i.test(lastAssistant)) {
       return 'createActivity';
     }
-    if (/Para levantar un ticket de soporte|ind[ií]came el t[ií]tulo o descripci[oó]n del problema/i.test(lastAssistant)) {
+    if (/Para levantar un ticket de soporte|Para poder levantar el ticket de soporte|ind[ií]came el t[ií]tulo o descripci[oó]n del problema/i.test(lastAssistant)) {
       return 'createTicket';
+    }
+    if (
+      /encontr[eé] varios tickets que coinciden|ind[ií]came el folio o asunto del ticket que deseas (?:modificar|actualizar)|identifiqu[eé] el ticket .* pero no detect[eé] qu[eé] campo|para mover el ticket .* a la etapa .* es obligatorio registrar las notas de resoluci[oó]n|ind[ií]came c[oó]mo se solucion[oó] o las notas de cierre|ind[ií]came las notas de resoluci[oó]n/i.test(
+        lastAssistant,
+      )
+    ) {
+      return 'modifyTicket';
+    }
+
+    if (/Para registrar (?:un nuevo|el) producto.*ind[ií]came al menos su Nombre/i.test(lastAssistant)) {
+      return 'createProduct';
+    }
+    if (
+      /encontr[eé] varios productos que coinciden|ind[ií]came el nombre del producto que deseas (?:modificar|actualizar)|identifiqu[eé] el producto .* pero no detect[eé] qu[eé] campo/i.test(
+        lastAssistant,
+      )
+    ) {
+      return 'modifyProduct';
     }
 
     if (/Encontr[eé] varios clientes que coinciden|ind[ií]came el nombre o correo del cliente que deseas actualizar|Identifiqu[eé] al cliente .* pero no detect[eé] qu[eé] dato/i.test(lastAssistant)) {
@@ -183,8 +201,23 @@ export class WebchatQueryPlannerService {
       (/\b(monto|concepto|fecha|ayer|anteayer|antier|cliente|oportunidad|proyecto)\b/i.test(qNorm) ||
         /^\s*\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(qNorm));
 
+    const hasComplementaryProductData =
+      !/^(cu[aá]nt|qu[eé]\s+productos|lista|muestra|dame|ver|cat[aá]logo|reporte|resumen)/i.test(qNorm) &&
+      (/\b(precio(?:\s+base)?|unidad(?:\s+de\s+medida)?|descripci[oó]n|observaciones|notas|pieza|caja|servicio|licencia|hora|plan)\b/i.test(qNorm) ||
+        /^\s*\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(qNorm));
+
+    const hasComplementaryTicketData =
+      !/^(cu[aá]nt|qu[eé]\s+tickets|lista|muestra|dame|ver|reporte|resumen)/i.test(qNorm) &&
+      /\b(prioridad|alta|media|baja|urgente|etapa|resuelto|en\s+proceso|notas(?:\s+de\s+resoluci[oó]n)?|responsable|asigna|ejecutivo)\b/i.test(qNorm);
+
     if (hasComplementaryExpenseData && /Gasto Registrado Exitosamente/i.test(lastAssistant)) {
       return 'modifyExpense';
+    }
+    if (hasComplementaryProductData && /Producto Registrado Exitosamente/i.test(lastAssistant)) {
+      return 'modifyProduct';
+    }
+    if (hasComplementaryTicketData && /Ticket de Soporte Creado/i.test(lastAssistant)) {
+      return 'modifyTicket';
     }
 
     if (hasComplementaryContactData && /Cliente Registrado Exitosamente/i.test(lastAssistant)) {
@@ -225,7 +258,7 @@ export class WebchatQueryPlannerService {
     if (/^(hola|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|gracias|adi[oó]s|cancelar|olv[ií]dalo)\b/i.test(q)) {
       return true;
     }
-    return /\b(cu[aá]nt[oa]s?|qu[eé]\s+clientes|qu[eé]\s+empresas|lista\s+de|mu[eé]strame|dame\s+los|top\s+\d+|ventas\s+de|oportunidades\s+de|tickets\s+de|actividades\s+de|gastos\s+de|pipeline)\b/i.test(q);
+    return /\b(cu[aá]nt[oa]s?|qu[eé]\s+clientes|qu[eé]\s+empresas|qu[eé]\s+productos|cat[aá]logo\s+de\s+productos|lista\s+de|mu[eé]strame|dame\s+los|top\s+\d+|ventas\s+de|oportunidades\s+de|tickets\s+de|actividades\s+de|gastos\s+de|pipeline)\b/i.test(q);
   }
 
   private enrichActionParametersWithNormalizedInput(
@@ -245,10 +278,18 @@ export class WebchatQueryPlannerService {
       actionType === 'createCompany' ||
       actionType === 'modifyCompany' ||
       actionType === 'createExpense' ||
-      actionType === 'modifyExpense'
+      actionType === 'modifyExpense' ||
+      actionType === 'createProduct' ||
+      actionType === 'modifyProduct' ||
+      actionType === 'modifyTicket'
     ) {
       const shouldExtractBasic =
-        Object.keys(params).length === 0 || actionType === 'createExpense' || actionType === 'modifyExpense';
+        Object.keys(params).length === 0 ||
+        actionType === 'createExpense' ||
+        actionType === 'modifyExpense' ||
+        actionType === 'createProduct' ||
+        actionType === 'modifyProduct' ||
+        actionType === 'modifyTicket';
       const basic = shouldExtractBasic ? this.extractBasicActionParams(normalizedQuestion, actionType) : {};
       for (const [k, v] of Object.entries(basic)) {
         if (v !== undefined && v !== '' && (params[k] === undefined || params[k] === null || params[k] === '')) {
@@ -407,8 +448,8 @@ export class WebchatQueryPlannerService {
   inferDomainFromQuestion(question: string): WebchatDomain {
     const q = (question || '').toLowerCase().trim();
 
-    // Verbos de acción imperativos
-    const actionRegex = /^(crea|crear|genera|generar|registra|registrar|apunta|apuntar|anota|anotar|carga|cargar|captura|capturar|da\s+de\s+alta|dar\s+de\s+alta|agrega|agregar|agenda|agendar|programa|programar|modifica|modificar|actualiza|actualizar|corrige|corregir|reasigna|reasignar|edita|editar|cambia|cambiar|levanta|levantar|abre|abrir|pon|poner|asigna|asignar|mueve|muevela|mover|pasa|pasala|pasar|traslada|trasladar)\b/i;
+    // Verbos de acción imperativos o comandos de alta rápida ("nuevo producto", "nuevo cliente", etc.)
+    const actionRegex = /^(crea|crear|genera|generar|registra|registrar|apunta|apuntar|anota|anotar|carga|cargar|captura|capturar|da\s+de\s+alta|dar\s+de\s+alta|agrega|agregar|agenda|agendar|programa|programar|modifica|modificar|actualiza|actualizar|corrige|corregir|reasigna|reasignar|edita|editar|cambia|cambiar|levanta|levantar|abre|abrir|pon|poner|asigna|asignar|mueve|muevela|mover|pasa|pasala|pasar|traslada|trasladar|resuelve|resolver|cierra|cerrar|soluciona|solucionar|(?:nuevo|nueva)\s+(?:producto|art[ií]culo|cliente|contacto|prospecto|lead|empresa|compañ[ií]a|ticket|incidencia|oportunidad|cotizaci[oó]n|actividad|gasto))\b/i;
     if (actionRegex.test(q)) {
       return 'ACTION_EXECUTION';
     }
@@ -445,12 +486,15 @@ export class WebchatQueryPlannerService {
     | 'createActivity'
     | 'modifyActivity'
     | 'createTicket'
+    | 'modifyTicket'
     | 'createClient'
     | 'modifyClient'
     | 'createCompany'
     | 'modifyCompany'
     | 'createExpense'
     | 'modifyExpense'
+    | 'createProduct'
+    | 'modifyProduct'
     | null {
     const q = (question || '').toLowerCase();
     const isModify =
@@ -465,13 +509,29 @@ export class WebchatQueryPlannerService {
       q.includes('completa') ||
       q.includes('corrige') ||
       q.includes('corregir') ||
-      q.includes('reasigna');
+      q.includes('reasigna') ||
+      q.includes('resuelve') ||
+      q.includes('resolver') ||
+      q.includes('cierra') ||
+      q.includes('cerrar') ||
+      q.includes('soluciona') ||
+      q.includes('solucionar') ||
+      q.includes('desactiva') ||
+      q.includes('inactiva');
 
     if (q.includes('actividad') || q.includes('reunion') || q.includes('reunión') || q.includes('llamada') || q.includes('cita') || q.includes('agenda') || q.includes('programa')) {
       return isModify ? 'modifyActivity' : 'createActivity';
     }
-    if (q.includes('ticket') || q.includes('incidencia') || q.includes('soporte') || q.includes('reporte') || q.includes('falla')) {
-      return 'createTicket';
+    if (q.includes('ticket') || q.includes('incidencia') || q.includes('soporte') || q.includes('folio') || q.includes('reporte') || q.includes('falla')) {
+      return isModify ? 'modifyTicket' : 'createTicket';
+    }
+    if (
+      /\b(producto|productos|cat[aá]logo)\b/i.test(q) &&
+      !/^(?:crea|crear|genera|generar|modifica|modificar|actualiza|actualizar|cambia|cambiar|mueve|muevela|pasa|pasala)\s+(?:una?\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\b/i.test(
+        q,
+      )
+    ) {
+      return isModify ? 'modifyProduct' : 'createProduct';
     }
     if (
       /\b(gasto|gastos|vi[aá]tico|vi[aá]ticos|reembolso|reembolsos)\b/i.test(q) &&
@@ -551,6 +611,154 @@ export class WebchatQueryPlannerService {
       }
     } else if (actionType === 'createTicket') {
       params.title = q.replace(/^(crea|crear|levanta|levantar|abre|abrir|reporta)\s+(un\s+)?(ticket|incidencia|reporte)?\s*(por|de)?/i, '').trim() || q;
+    } else if (actionType === 'modifyTicket') {
+      const folioMatch =
+        q.match(/(?:ticket|folio|incidencia)\s*(?:n[uú]mero|num|no\.?|#)?\s*(\d+)/i) ||
+        q.match(/#(\d+)\b/);
+      if (folioMatch && folioMatch[1]) {
+        params.targetTicket = folioMatch[1].trim();
+      } else {
+        const titleTargetMatch = q.match(
+          /(?:ticket|incidencia|reporte)\s+(?:de\s+|sobre\s+|llamad[oa]\s+|titulad[oa]\s+)?["']?([^"',\.]+?)["']?(?=\s+(?:a\s+la\s+etapa|a\s+resuelto|a\s+en\s+proceso|etapa|prioridad|notas|responsable|asignad[oa]|cliente)|$|[,.])/i,
+        );
+        if (titleTargetMatch && titleTargetMatch[1]) {
+          params.targetTicket = titleTargetMatch[1].trim();
+        }
+      }
+
+      const stageMatch = q.match(
+        /\b(?:a\s+la\s+etapa\s+|etapa\s+|mueve(?:lo)?\s+a\s+|pasa(?:lo)?\s+a\s+|cambia(?:lo)?\s+a\s+|marca(?:lo)?\s+como\s+)(abierto|en\s+proceso|en\s+espera|pendiente|resuelto|cerrado|solucionado)\b/i,
+      );
+      if (stageMatch && stageMatch[1]) {
+        params.etapa = stageMatch[1].trim();
+      } else if (/\b(resuelve|resolver|cierra|cerrar|soluciona|solucionar)\b/i.test(q)) {
+        params.etapa = 'Resuelto';
+      }
+
+      const notesMatch = q.match(
+        /\b(?:notas(?:\s+de\s+resoluci[oó]n|\s+de\s+cierre)?|resoluci[oó]n|soluci[oó]n)\s*[:\-]?\s*["']?([^"'\n]+?)["']?$/i,
+      );
+      if (notesMatch && notesMatch[1]) {
+        params.notasResolucion = notesMatch[1].trim();
+      }
+
+      const prioMatch = q.match(/\b(?:prioridad\s+)?(alta|urgente|media|normal|baja)\b/i);
+      if (prioMatch && prioMatch[1]) {
+        const p = prioMatch[1].toLowerCase();
+        params.priority = p === 'alta' || p === 'urgente' ? 3 : p === 'media' || p === 'normal' ? 2 : 1;
+      }
+
+      const respMatch = q.match(
+        /\b(?:responsable|asigna(?:r|do)?\s+a(?:l\s+ejecutivo|\s+agente)?|reasigna(?:r)?\s+a)\s+["']?([^"',\.]+?)["']?(?=\s+(?:con|prioridad|etapa|notas)|$|[,.])/i,
+      );
+      if (respMatch && respMatch[1]) {
+        params.responsable = respMatch[1].trim();
+      }
+
+      const cliMatch = q.match(
+        /\b(?:para\s+el\s+cliente|del\s+cliente|cliente)\s+["']?([^"',\.]+?)["']?(?=\s+(?:con|prioridad|etapa|notas|responsable)|$|[,.])/i,
+      );
+      if (cliMatch && cliMatch[1]) {
+        params.cliente = cliMatch[1].trim();
+      }
+    } else if (actionType === 'createProduct' || actionType === 'modifyProduct') {
+      const cleanedRaw = q.trim();
+      const priceMatch =
+        cleanedRaw.match(/(?:precio(?:\s+base)?|costo|valor|a|por|de)\s*:?\s*\$\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+        cleanedRaw.match(/\b(?:precio(?:\s+base)?|costo|valor)\s*(?:de|a|:)?\s*\$?\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+        cleanedRaw.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/i) ||
+        cleanedRaw.match(/\b([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)\b/i) ||
+        cleanedRaw.match(/\b(?:a|por)\s+([\d,]+(?:\.\d{1,2})?)\s*$/i);
+      if (priceMatch && priceMatch[1]) {
+        const parsedPrice = Number(priceMatch[1].replace(/,/g, ''));
+        if (!Number.isNaN(parsedPrice) && parsedPrice >= 0) {
+          params.precioBase = parsedPrice;
+        }
+      } else if (/^\s*\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(cleanedRaw)) {
+        params.precioBase = Number(cleanedRaw.replace(/[^\d.]/g, ''));
+      }
+
+      const unitMatch =
+        cleanedRaw.match(/\bunidad(?:\s+de\s+medida)?\s*[:\s]+["']?([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{2,20}?)["']?(?=\s+(?:precio|descripci[oó]n|observaciones|con|y)|$|[,.])/i) ||
+        cleanedRaw.match(/\bpor\s+(pieza|caja|servicio|licencia|hora|mes|anualidad|paquete|plan| lote|kit|unidad)\b/i);
+      if (unitMatch && unitMatch[1]) {
+        params.unidadMedida = unitMatch[1].trim();
+      }
+
+      const descMatch = cleanedRaw.match(
+        /\bdescripci[oó]n\s*[:\s]+["']?([^"',;\n]+?)["']?(?=\s+(?:precio|unidad|observaciones)|$|[,.])/i,
+      );
+      if (descMatch && descMatch[1]) {
+        params.descripcion = descMatch[1].trim();
+      }
+
+      const obsMatch = cleanedRaw.match(
+        /\b(?:observaciones|notas)\s*[:\s]+["']?([^"',;\n]+?)["']?(?=\s+(?:precio|unidad|descripci[oó]n)|$|[,.])/i,
+      );
+      if (obsMatch && obsMatch[1]) {
+        params.observaciones = obsMatch[1].trim();
+      }
+
+      if (/\b(inactivo|desactivar|desactiva|baja)\b/i.test(cleanedRaw)) {
+        params.status = false;
+      } else if (/\b(activo|activar|activa|reactivar)\b/i.test(cleanedRaw)) {
+        params.status = true;
+      }
+
+      const newNameMatch = cleanedRaw.match(
+        /\b(?:nuevo\s+nombre|renombra(?:r)?\s+a|nombre\s+a)\s+["']?([^"',;\n]+?)["']?(?=\s+(?:precio|unidad|descripci[oó]n|observaciones)|$|[,.])/i,
+      );
+      if (newNameMatch && newNameMatch[1]) {
+        params.nuevoNombre = newNameMatch[1].trim();
+      }
+
+      const prodNameMatch = cleanedRaw.match(
+        /\b(?:producto|art[ií]culo|servicio(?:\s+del\s+cat[aá]logo)?)\s+(?:llamad[oa]\s+)?["']?([^"',;\n]+?)["']?(?=\s+(?:con\s+precio|precio|costo|a\s+\$?\d|por\s+\$?\d|de\s+\$?\d|unidad|descripci[oó]n|observaciones|nuevo\s+nombre|a\s+inactivo|a\s+activo)|$|[,.])/i,
+      );
+      if (prodNameMatch && prodNameMatch[1]) {
+        const cleanProdName = prodNameMatch[1]
+          .replace(/\b(nuevo|nueva|en\s+el\s+cat[aá]logo|del\s+cat[aá]logo)\b/gi, '')
+          .trim();
+        if (
+          cleanProdName &&
+          !/^(?:(?:un|una|el|la|nuevo|nueva)\s+)*(?:producto|productos|art[ií]culo|art[ií]culos|servicio|servicios)(?:\s+(?:nuevo|nueva))?$/i.test(
+            cleanProdName,
+          )
+        ) {
+          if (actionType === 'modifyProduct') {
+            params.targetProduct = cleanProdName;
+          } else {
+            params.nombre = cleanProdName;
+          }
+        }
+      } else {
+        const residualProd = cleanedRaw
+          .replace(/\b(?:con\s+precio|precio(?:\s+base)?|costo|valor)\s*(?:de|a|:)?\s*\$?\s*[\d,]+(?:\.\d{1,2})?\s*(?:pesos|mxn|usd|d[oó]lares)?/gi, ' ')
+          .replace(/\$\s*[\d,]+(?:\.\d{1,2})?\s*(?:pesos|mxn|usd|d[oó]lares)?/gi, ' ')
+          .replace(/\b[\d,]+(?:\.\d{1,2})?\s*(?:pesos|mxn|usd|d[oó]lares)\b/gi, ' ')
+          .replace(/\bunidad(?:\s+de\s+medida)?\s*[:\s]+[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{2,20}/gi, ' ')
+          .replace(/\bpor\s+(?:pieza|caja|servicio|licencia|hora|mes|anualidad|paquete|plan|kit|unidad)\b/gi, ' ')
+          .replace(/\bdescripci[oó]n\s*[:\s]+[^"',;\n]+/gi, ' ')
+          .replace(/\b(?:observaciones|notas)\s*[:\s]+[^"',;\n]+/gi, ' ')
+          .replace(/\b(?:nuevo\s+nombre|renombra(?:r)?\s+a|nombre\s+a)\s+[^"',;\n]+/gi, ' ')
+          .replace(/^(?:crea(?:r)?|registra(?:r)?|agrega(?:r)?|da(?:r)?\s+de\s+alta|modifica(?:r)?|actualiza(?:r)?|edita(?:r)?|cambia(?:r)?|nuevo|nueva|un|una|el|la|producto|art[ií]culo|servicio(?:\s+del\s+cat[aá]logo)?|en\s+el\s+cat[aá]logo|del\s+cat[aá]logo|nombre|se\s+llama|llamad[oa]|es)\b[\s:]*/gi, '')
+          .replace(/[,\.:\-]+$/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (
+          residualProd &&
+          residualProd.length >= 2 &&
+          !/^(?:(?:un|una|el|la|nuevo|nueva)\s+)*(?:producto|productos|art[ií]culo|art[ií]culos|servicio|servicios|cat[aá]logo|nuevo|nueva)(?:\s+(?:nuevo|nueva|en\s+el\s+cat[aá]logo))?$/i.test(
+            residualProd,
+          )
+        ) {
+          if (actionType === 'modifyProduct') {
+            params.targetProduct = residualProd;
+          } else {
+            params.nombre = residualProd;
+          }
+        }
+      }
     } else if (actionType === 'createClient' || actionType === 'modifyClient') {
       const emailMatch = q.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
       if (emailMatch) params.correo = emailMatch[0].trim();
