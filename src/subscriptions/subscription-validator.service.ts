@@ -97,7 +97,7 @@ export class SubscriptionValidatorService implements OnModuleInit {
   async getTenantPlanInfo(tenantIdOrSchema: string) {
     const rows = await this.dataSource.query(
       `SELECT 
-         t.id, t.name, t.schema_name, t.plan_id, t.next_renewal_date, t.is_active, t.allow_extra, t.logo,
+         t.id, t.name, t.schema_name, t.plan_id, t.next_renewal_date, t.is_active, t.allow_extra, t.ibm_audio_enabled, t.logo,
          p.plan_name, p.price, p.tokens_limit, p.billing_period_months, p.blnstatus
        FROM public.tenants t
        LEFT JOIN public.plans p ON t.plan_id = p.plan_id
@@ -119,6 +119,7 @@ export class SubscriptionValidatorService implements OnModuleInit {
       next_renewal_date: row.next_renewal_date ? new Date(row.next_renewal_date) : null,
       is_active: Boolean(row.is_active),
       allow_extra: Boolean(row.allow_extra),
+      ibm_audio_enabled: Boolean(row.ibm_audio_enabled),
       plan_name: row.plan_name,
       price: row.price ? parseFloat(row.price) : 0,
       tokens_limit: row.tokens_limit ? parseInt(row.tokens_limit, 10) : 0,

@@ -121,3 +121,12 @@ Esta tabla relaciona exhaustivamente las rutas HTTP del backend NestJS 11, los c
 * [[Diccionario de Entidades y Modelos]] — Diccionario de entidades TypeORM y DTOs.
 * [[CRM TIBS - Multi-Tenancy Architecture]] — Middleware de resolución de esquemas.
 * [[CRM TIBS - Aprovisionamiento de Tenants, Planes SaaS & Renovaciones]] — Guía de Aprovisionamiento y Ciclo de Vida SaaS.
+
+#### Endpoints Agregados (Soporte de Audio IBM & Auditoría)
+| Módulo | Endpoint Backend | Método | Controlador | Método en Servicio | Auth / Guard | Persistencia / Entidad |
+| :--- | :--- | :---: | :--- | :--- | :---: | :--- |
+| **Tenants** | `/api/tenants/:id/ibm-audio` | PUT / PATCH | `TenantsController` | `TenantsService.updateIbmAudio()` | JWT + `SuperAdminGuard` | `Tenant.ibm_audio_enabled` |
+| **Tenants** | `/api/tenants/audio-usage` | GET | `TenantsController` | `TenantsService.getAudioUsageReport()` | JWT + `SuperAdminGuard` | `public.audio_transcription_logs` |
+| **Tenants** | `/api/tenants/:id/audio-usage` | GET | `TenantsController` | `TenantsService.getAudioUsageReport()` | JWT + `SuperAdminGuard` | `public.audio_transcription_logs` |
+| **Webchat** | `/api/webchat/audio-status` | GET | `WebchatController` | `SpeechToTextService.getAudioPolicy()` | JWT | Política de audio efectiva |
+| **Webchat** | `/api/webchat/transcribe` | POST | `WebchatController` | `SpeechToTextService.transcribeWithMetrics()` | JWT (+ Add-on IBM) | `public.audio_transcription_logs` |

@@ -13,6 +13,9 @@ import {
   ValidationPipe,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
+  NotImplementedException,
+  Optional,
 } from '@nestjs/common';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
@@ -23,9 +26,11 @@ import { WebchatQueryDto } from './dto/webchat-query.dto';
 import { SendPublicWebchatMessageDto, GetPublicWebchatQueryDto } from './dto/public-webchat.dto';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
+import { Role } from '../role.enum';
 import { ConversationsService } from '../conversations/conversations.service';
 import { SpeechToTextService } from '../conversations/speech-to-text.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
+import { AudioAuditService } from '../subscriptions/audio-audit.service';
 
 @ApiTags('webchat')
 @Controller('webchat')
@@ -38,7 +43,32 @@ export class WebchatController {
     private readonly webchatService: WebchatService,
     private readonly conversationsService: ConversationsService,
     private readonly speechToTextService: SpeechToTextService,
+    @Optional()
+    private readonly audioAuditService?: AudioAuditService,
   ) {}
+
+  @Get('audio-status')
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'))
+  @ApiOperation({ summary: 'Consultar disponibilidad de soporte de audio para el WebChat interno del tenant activo' })
+  async getAudioStatus(@GetUser() user: User) {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const policy = await this.speechToTextService.getAudioPolicy(tenantSchema);
+    const isSuperAdminPublic =
+      tenantSchema === 'public' && (user?.role || '').toString().toLowerCase().trim() === Role.SuperAdmin;
+
+    const ibmAddonEffective = isSuperAdminPublic ? true : policy.ibmAudioEnabled;
+    const audioEnabled = !policy.isIbmProvider || ibmAddonEffective;
+
+    return {
+      globalProvider: policy.globalProvider,
+      rawModelProvider: policy.rawModelProvider,
+      usesIbmStt: policy.isIbmProvider,
+      ibmAudioEnabled: ibmAddonEffective,
+      audioEnabled,
+      transcribeEndpointEnabled: policy.isIbmProvider && ibmAddonEffective,
+    };
+  }
 
   @Post('transcribe')
   @ApiBearerAuth()
@@ -54,27 +84,81 @@ export class WebchatController {
       },
     },
   })
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 25 * 1024 * 1024 } }))
   async transcribeAudio(
+    @GetUser() user: User,
     @UploadedFiles() files: Express.Multer.File[],
   ) {
+    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const policy = await this.speechToTextService.getAudioPolicy(tenantSchema);
+    const isSuperAdminPublic =
+      tenantSchema === 'public' && (user?.role || '').toString().toLowerCase().trim() === Role.SuperAdmin;
+
+    if (!policy.isIbmProvider) {
+      throw new NotImplementedException(
+        'El proveedor global actual procesará audio de forma nativa directamente en el agente (pendiente de habilitación). No se utiliza IBM Speech-to-Text.',
+      );
+    }
+
+    if (!isSuperAdminPublic && !policy.ibmAudioEnabled) {
+      throw new ForbiddenException(
+        'El soporte de audio (IBM Speech-to-Text) no está habilitado para esta organización. Por favor escribe tu consulta en texto.',
+      );
+    }
+
     const file = files?.[0];
     if (!file || !file.buffer || file.buffer.length === 0) {
       throw new BadRequestException('Se requiere un archivo de audio válido para transcribir.');
     }
 
-    const transcript = await this.speechToTextService.transcribeAudio(
-      file.buffer,
-      file.mimetype,
-    );
+    let result: { transcript: string | null; durationSeconds: number; mimeType: string };
+    try {
+      result = await this.speechToTextService.transcribeWithMetrics(
+        file.buffer,
+        file.mimetype,
+      );
+    } catch (err: any) {
+      if (this.audioAuditService) {
+        await this.audioAuditService.recordAudioTranscription({
+          tenantId: policy.tenantId,
+          tenantSchema,
+          channel: 'webchat_interno',
+          provider: 'ibm_stt',
+          durationSeconds: typeof err?.durationSeconds === 'number' ? err.durationSeconds : 0,
+          audioBytes: file.buffer.length,
+          mimeType: file.mimetype,
+          hasSpeech: false,
+          success: false,
+          errorMessage: err?.message || 'Error en IBM Speech-to-Text',
+          userId: user?.id || null,
+        });
+      }
+      throw err;
+    }
 
-    if (!transcript) {
+    if (this.audioAuditService) {
+      await this.audioAuditService.recordAudioTranscription({
+        tenantId: policy.tenantId,
+        tenantSchema,
+        channel: 'webchat_interno',
+        provider: 'ibm_stt',
+        durationSeconds: result.durationSeconds,
+        audioBytes: file.buffer.length,
+        mimeType: file.mimetype,
+        hasSpeech: Boolean(result.transcript),
+        success: true,
+        userId: user?.id || null,
+      });
+    }
+
+    if (!result.transcript) {
       throw new BadRequestException('No se detectó voz en el audio. Por favor intenta hablar más claro o verifica tu micrófono.');
     }
 
     return {
-      text: transcript,
-      transcript,
+      text: result.transcript,
+      transcript: result.transcript,
+      durationSeconds: result.durationSeconds,
     };
   }
 

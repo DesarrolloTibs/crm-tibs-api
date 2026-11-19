@@ -280,3 +280,19 @@ Se corrigió un desfase crítico en la desestructuración del array resultante d
 - `getConsumption` expone `courtesy_cap` y `courtesy_cap_exceeded`.
 
 - **Ajuste**: si el desborde supera el tope (2%) con `allow_extra = false`, `recordConsumption` solo imputa los tokens restantes del plan base (el plan queda en 100%, sin cortesía absorbida). El costo real queda en `transaction_history.metadata` (`courtesy_rejected`, `real_total_tokens`, `rejected_overage_tokens`).
+## 8. Add-on de Soporte de Audio IBM Speech-to-Text & Auditoría de Duración
+##### 8.1. Control por Tenant (`public.tenants.ibm_audio_enabled`)
+* Todo tenant recién aprovisionado en `TenantProvisionerService` inicia con `ibm_audio_enabled = false`.
+* **Control Exclusivo de `SuperAdmin`:** Mediante `SuperAdminGuard` (`src/auth/guards/super-admin.guard.ts`), únicamente usuarios con rol `'superadmin'` pueden habilitar o deshabilitar `ibm_audio_enabled` a través de:
+  * `PUT /api/tenants/:id/ibm-audio` y `PATCH /api/tenants/:id/ibm-audio` (`UpdateTenantIbmAudioDto`: `{ ibm_audio_enabled: boolean }`).
+  * `PUT /api/tenants/:id` (`UpdateTenantDto` valida el rol `SuperAdmin` si `ibm_audio_enabled` está presente).
+* `GET /api/tenants/my-tenant` enriquece la respuesta con `ibm_audio_enabled`, `global_ai_provider`, `uses_ibm_stt` y `audio_enabled` para que el frontend adapte su interfaz.
+
+##### 8.2. Aislamiento de Costos y Auditoría Interna (`AudioAuditService` / `public.audio_transcription_logs`)
+* Cuando el proveedor global es `ibm` (`watsonx` / `ibm`) y el add-on está activo:
+  * La transcripción con IBM Speech-to-Text **no** ejecuta `SubscriptionValidatorService.checkSubscriptionLimits` ni registra filas en `transaction_history`, por lo que **no descuenta tokens ni créditos del plan**.
+  * Únicamente el texto transcrito que posteriormente se envía al LLM consume tokens de manera normal.
+* `AudioAuditService` (`src/subscriptions/audio-audit.service.ts`) registra cada transcripción en `public.audio_transcription_logs` con `duration_seconds`, `audio_bytes`, `channel`, `has_speech`, `success`, `conversation_id`, `message_id` y `user_id`.
+* Endpoints de auditoría interna (solo `SuperAdmin`):
+  * `GET /api/tenants/audio-usage` (con filtros opcionales `?tenantId=&schemaName=&startDate=&endDate=`).
+  * `GET /api/tenants/:id/audio-usage`.

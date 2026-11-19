@@ -28,6 +28,9 @@ export class Tenant {
   @Column({ type: 'boolean', nullable: false, default: false })
   allow_extra: boolean;
 
+  @Column({ type: 'boolean', nullable: false, default: false })
+  ibm_audio_enabled: boolean;
+
   @Column({ type: 'varchar', length: 512, nullable: true })
   logo: string | null;
 
@@ -37,4 +40,10 @@ export class Tenant {
   total_queued_periods?: number;
 
   coverage_until?: string | Date | null;
+
+  global_ai_provider?: string;
+
+  uses_ibm_stt?: boolean;
+
+  audio_enabled?: boolean;
 }

@@ -14,6 +14,7 @@ import { EnqueueRenewalDto } from './dto/enqueue-renewal.dto';
 import { UpdateQueueItemDto } from './dto/update-queue-item.dto';
 
 import { SubscriptionValidatorService, getCourtesyCap } from '../subscriptions/subscription-validator.service';
+import { AudioAuditService } from '../subscriptions/audio-audit.service';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { addBillingMonths, subtractBillingMonths } from '../common/utils/billing-date.util';
 import { StorageService } from '../storage/storage.service';
@@ -38,6 +39,8 @@ export class TenantsService implements OnModuleInit {
     private readonly dataSource: DataSource,
     @Optional()
     private readonly storageService?: StorageService,
+    @Optional()
+    private readonly audioAuditService?: AudioAuditService,
   ) {}
 
   formatLogoUrl(logo: string | null): string | null {
@@ -69,6 +72,7 @@ export class TenantsService implements OnModuleInit {
     let planName = tenantInfo?.plan_name || 'Plan Pro';
     let price = tenantInfo?.price || 0;
     let allowExtra = tenantInfo?.allow_extra ?? false;
+    let ibmAudioEnabled = tenantInfo?.ibm_audio_enabled ?? false;
     let tenantName = tenantInfo?.tenant_name || '';
     let isActive = tenantInfo?.is_active ?? true;
     let tenantId = tenantInfo?.tenant_id || null;
@@ -172,6 +176,7 @@ export class TenantsService implements OnModuleInit {
       cycle_id: cycleId,
       is_active: isActive,
       allow_extra: allowExtra,
+      ibm_audio_enabled: ibmAudioEnabled,
       logo: logo,
       documents_used: documentsUsed,
       tokens_used: tokensUsed,
@@ -209,6 +214,7 @@ export class TenantsService implements OnModuleInit {
         plan_name: consumption.plan_name,
         is_active: tenant.is_active,
         allow_extra: tenant.allow_extra,
+        ibm_audio_enabled: Boolean(tenant.ibm_audio_enabled),
         tokens_limit: consumption.tokens_limit,
         tokens_used: consumption.tokens_used,
         tokens_extra_used: consumption.tokens_extra_used,
@@ -542,6 +548,21 @@ export class TenantsService implements OnModuleInit {
     }
   }
 
+  private async resolveGlobalAiProvider(): Promise<'ibm' | 'azure_openai' | 'gemini'> {
+    try {
+      const rows = await this.dataSource.query(`SELECT "modelProvider" FROM public.ai_agent_configs LIMIT 1`);
+      const raw = (rows?.[0]?.modelProvider || process.env.MODEL_PROVIDER || 'watsonx').toString().toLowerCase().trim();
+      if (raw === 'watsonx' || raw === 'ibm') return 'ibm';
+      if (raw === 'openai' || raw === 'azure_openai' || raw === 'azure') return 'azure_openai';
+      return 'gemini';
+    } catch {
+      const raw = (process.env.MODEL_PROVIDER || 'watsonx').toString().toLowerCase().trim();
+      if (raw === 'watsonx' || raw === 'ibm') return 'ibm';
+      if (raw === 'openai' || raw === 'azure_openai' || raw === 'azure') return 'azure_openai';
+      return 'gemini';
+    }
+  }
+
   async getCurrentTenant(schemaName?: string) {
     const activeSchema = schemaName || TenantContextService.getTenantSchema() || 'public';
     const tenantInfo = await this.subscriptionValidator.getTenantPlanInfo(activeSchema);
@@ -551,8 +572,15 @@ export class TenantsService implements OnModuleInit {
     } else {
       tenant = await this.tenantRepository.findOne({ where: { id: tenantInfo.tenant_id }, relations: ['plan'] });
     }
-    if (tenant && tenant.logo) {
-      tenant.logo = this.formatLogoUrl(tenant.logo);
+    if (tenant) {
+      if (tenant.logo) {
+        tenant.logo = this.formatLogoUrl(tenant.logo);
+      }
+      const globalProvider = await this.resolveGlobalAiProvider();
+      const usesIbmStt = globalProvider === 'ibm';
+      tenant.global_ai_provider = globalProvider;
+      tenant.uses_ibm_stt = usesIbmStt;
+      tenant.audio_enabled = !usesIbmStt || Boolean(tenant.ibm_audio_enabled) || tenant.schema_name === 'public';
     }
     return tenant;
   }
@@ -593,6 +621,9 @@ export class TenantsService implements OnModuleInit {
   async onModuleInit() {
     try {
       await this.dataSource.query(`
+        ALTER TABLE public.tenants
+          ADD COLUMN IF NOT EXISTS ibm_audio_enabled boolean NOT NULL DEFAULT false;
+
         CREATE TABLE IF NOT EXISTS public.tenant_billing_cycles (
           id SERIAL PRIMARY KEY,
           tenant_id VARCHAR(63) NOT NULL,
@@ -742,6 +773,7 @@ export class TenantsService implements OnModuleInit {
         t.next_renewal_date,
         t.is_active,
         t.allow_extra,
+        t.ibm_audio_enabled,
         t.logo,
         t.created_at,
         COALESCE(q.total_queued_periods, 0)::int AS total_queued_periods,
@@ -789,6 +821,7 @@ export class TenantsService implements OnModuleInit {
       next_renewal_date: row.next_renewal_date ? new Date(row.next_renewal_date).toISOString() : null,
       is_active: Boolean(row.is_active),
       allow_extra: Boolean(row.allow_extra),
+      ibm_audio_enabled: Boolean(row.ibm_audio_enabled),
       logo: this.formatLogoUrl(row.logo),
       created_at: row.created_at ? new Date(row.created_at).toISOString() : row.created_at,
       total_queued_periods: Number(row.total_queued_periods || 0),
@@ -1219,7 +1252,62 @@ export class TenantsService implements OnModuleInit {
     return saved;
   }
 
-  async update(id: number, dto: { name?: string; is_active?: boolean; allow_extra?: boolean }) {
+  /**
+   * Habilita o deshabilita el add-on de transcripción de audio IBM Speech-to-Text para un tenant.
+   * Uso restringido exclusivamente a SuperAdmin desde el controlador.
+   */
+  async updateIbmAudio(tenantId: number, enabled: boolean) {
+    const tenant = await this.findOne(tenantId);
+    tenant.ibm_audio_enabled = Boolean(enabled);
+    return this.tenantRepository.save(tenant);
+  }
+
+  /**
+   * Consulta el reporte interno de auditoría de duración y volumen de audios transcritos por tenant.
+   */
+  async getAudioUsageReport(options?: {
+    tenantId?: number;
+    schemaName?: string;
+    startDate?: string;
+    endDate?: string;
+  }) {
+    if (!this.audioAuditService) {
+      return {
+        summary: {
+          total_requests: 0,
+          successful_requests: 0,
+          speech_detected_requests: 0,
+          total_seconds: 0,
+          total_minutes: 0,
+          total_bytes: 0,
+        },
+        by_tenant: [],
+        by_channel: [],
+        recent_logs: [],
+      };
+    }
+
+    const parsedStart = options?.startDate ? new Date(options.startDate) : undefined;
+    let parsedEnd: Date | undefined;
+    if (options?.endDate) {
+      parsedEnd = new Date(options.endDate);
+      if (options.endDate.length <= 10) {
+        parsedEnd.setHours(23, 59, 59, 999);
+      }
+    }
+
+    return this.audioAuditService.getAudioUsageSummary({
+      tenantId: options?.tenantId,
+      schemaName: options?.schemaName,
+      startDate: parsedStart,
+      endDate: parsedEnd,
+    });
+  }
+
+  async update(
+    id: number,
+    dto: { name?: string; is_active?: boolean; allow_extra?: boolean; ibm_audio_enabled?: boolean },
+  ) {
     const tenant = await this.findOne(id);
     if (dto.name !== undefined) tenant.name = dto.name;
     if (dto.is_active !== undefined) tenant.is_active = dto.is_active;
@@ -1229,6 +1317,9 @@ export class TenantsService implements OnModuleInit {
         { tenant_id: String(tenant.id), status: 'active' },
         { allow_extra: dto.allow_extra }
       );
+    }
+    if (dto.ibm_audio_enabled !== undefined) {
+      tenant.ibm_audio_enabled = Boolean(dto.ibm_audio_enabled);
     }
     return this.tenantRepository.save(tenant);
   }

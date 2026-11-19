@@ -18,6 +18,7 @@ import { CompaniesModule } from '../companies/companies.module';
 import { UsersModule } from '../users/users.module';
 import { ExpensesModule } from '../expenses/expenses.module';
 import { ProductsModule } from '../products/products.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { Stage } from '../stages/entities/stage.entity';
 import { TicketStage } from '../tickets/entities/ticket-stage.entity';
 import { BusinessLineOption } from '../opportunities/entities/business-line-option.entity';
@@ -60,6 +61,7 @@ import { Expense } from '../expenses/entities/expense.entity';
     UsersModule,
     ExpensesModule,
     ProductsModule,
+    SubscriptionsModule,
   ],
   controllers: [WebchatController],
   providers: [

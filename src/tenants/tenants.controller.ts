@@ -1,13 +1,22 @@
-import { Controller, Get, Post, Put, Patch, Delete, Body, Param, ParseIntPipe, Query, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Delete, Body, Param, ParseIntPipe, Query, UseInterceptors, UploadedFile, UseGuards, ForbiddenException } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle } from '@nestjs/throttler';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { TenantsService } from './tenants.service';
 import { ProvisionTenantDto } from './dto/provision-tenant.dto';
 import { UpdateTenantPlanDto } from './dto/update-tenant-plan.dto';
 import { EnqueueRenewalDto } from './dto/enqueue-renewal.dto';
 import { UpdateQueueItemDto } from './dto/update-queue-item.dto';
+import { UpdateTenantIbmAudioDto } from './dto/update-tenant-ibm-audio.dto';
+import { UpdateTenantDto } from './dto/update-tenant.dto';
+import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
+import { GetUser } from '../auth/decorators/get-user.decorator';
+import { User } from '../users/entities/user.entity';
+import { Role } from '../role.enum';
 
+@ApiTags('tenants')
 @Controller('tenants')
 export class TenantsController {
   constructor(private readonly tenantsService: TenantsService) {}
@@ -65,6 +74,24 @@ export class TenantsController {
     return this.tenantsService.getCourtesyOveragesReport();
   }
 
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
+  @Get('audio-usage')
+  @ApiOperation({ summary: 'Auditoría interna de duración y uso de audio IBM Speech-to-Text por tenant (solo SuperAdmin)' })
+  async getAudioUsage(
+    @Query('schemaName') schemaName?: string,
+    @Query('tenantId') tenantId?: number,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    return this.tenantsService.getAudioUsageReport({
+      tenantId: tenantId ? Number(tenantId) : undefined,
+      schemaName,
+      startDate,
+      endDate,
+    });
+  }
+
   @Get('my-tenant')
   async getMyTenant(@Query('schemaName') schemaName?: string) {
     return this.tenantsService.getCurrentTenant(schemaName);
@@ -91,6 +118,22 @@ export class TenantsController {
   async getTenantConsumptionById(@Param('id', ParseIntPipe) id: number) {
     const tenant = await this.tenantsService.findOne(id);
     return this.tenantsService.getConsumption(tenant.schema_name);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
+  @Get(':id/audio-usage')
+  @ApiOperation({ summary: 'Auditoría interna de duración de audio IBM Speech-to-Text de un tenant específico (solo SuperAdmin)' })
+  async getTenantAudioUsageById(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    return this.tenantsService.getAudioUsageReport({
+      tenantId: id,
+      startDate,
+      endDate,
+    });
   }
 
   @Get(':id')
@@ -155,11 +198,42 @@ export class TenantsController {
     return this.tenantsService.updateAllowExtra(id, body.allowExtra);
   }
 
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
+  @Put(':id/ibm-audio')
+  @ApiOperation({ summary: 'Habilitar o deshabilitar el add-on de audio IBM Speech-to-Text para un tenant (solo SuperAdmin)' })
+  async updateIbmAudio(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdateTenantIbmAudioDto,
+  ) {
+    return this.tenantsService.updateIbmAudio(id, body.ibm_audio_enabled);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
+  @Patch(':id/ibm-audio')
+  @ApiOperation({ summary: 'Habilitar o deshabilitar el add-on de audio IBM Speech-to-Text para un tenant (solo SuperAdmin)' })
+  async patchIbmAudio(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: UpdateTenantIbmAudioDto,
+  ) {
+    return this.tenantsService.updateIbmAudio(id, body.ibm_audio_enabled);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'))
   @Put(':id')
   async update(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body: { name?: string; is_active?: boolean; allow_extra?: boolean }
+    @GetUser() user: User,
+    @Body() body: UpdateTenantDto,
   ) {
+    if (body.ibm_audio_enabled !== undefined) {
+      const role = (user?.role || '').toString().toLowerCase().trim();
+      if (role !== Role.SuperAdmin) {
+        throw new ForbiddenException('Solo los usuarios con rol SuperAdmin pueden modificar el soporte de audio IBM.');
+      }
+    }
     return this.tenantsService.update(id, body);
   }
 

@@ -71,6 +71,9 @@ erDiagram
 
 ---
 
+* **`public.tenants` (extensión de Add-on de Audio):** Incluye la bandera `ibm_audio_enabled boolean NOT NULL DEFAULT false` para habilitar o deshabilitar el servicio **IBM Watson Speech-to-Text** por inquilino.
+* **`public.audio_transcription_logs`:** Bitácora global de auditoría interna para transcripciones de audio con IBM Speech-to-Text (`id`, `tenant_id`, `tenant_schema`, `channel`, `provider`, `duration_seconds`, `audio_bytes`, `mime_type`, `has_speech`, `success`, `error_message`, `conversation_id`, `message_id`, `user_id`, `client_id`, `created_at`). Permite controlar costos por minuto sin impactar la cuota de tokens (`transaction_history`).
+
 ## 2. Tablas Aisladas en Esquemas de Inquilino (`tenant_*`)
 
 Cada vez que se aprovisiona una organización, se crea su propio esquema PostgreSQL con el siguiente conjunto de tablas locales:

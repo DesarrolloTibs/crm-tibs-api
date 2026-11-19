@@ -871,10 +871,10 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
       const now = new Date();
       const nextRenewalDate = addBillingMonths(now, billingPeriodMonths);
 
-      // e) Registrar tenant en public.tenants
+      // e) Registrar tenant en public.tenants (todo tenant nuevo inicia con soporte de audio IBM deshabilitado por defecto)
       const tenantInsertRes = await queryRunner.query(
-        `INSERT INTO public.tenants (name, schema_name, plan_id, next_renewal_date, is_active, allow_extra) 
-         VALUES ($1, $2, $3, $4, true, false) 
+        `INSERT INTO public.tenants (name, schema_name, plan_id, next_renewal_date, is_active, allow_extra, ibm_audio_enabled) 
+         VALUES ($1, $2, $3, $4, true, false, false) 
          RETURNING id`,
         [tenantName, schemaName, planId || null, nextRenewalDate]
       );

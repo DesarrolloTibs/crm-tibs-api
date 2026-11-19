@@ -21,38 +21,92 @@ Este documento compila las principales entidades de TypeORM, interfaces de TypeS
 
 ### 1.1. Tenant (`Tenant` - `public.tenants`)
 ```typescript
-@Entity('tenants', { schema: 'public' })
+@Entity({ name: 'tenants', schema: 'public' })
 export class Tenant {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', length: 150, unique: true })
+  @Column({ type: 'varchar', length: 255, nullable: false })
   name: string;
 
-  @Column({ type: 'varchar', length: 63, unique: true })
+  @Column({ type: 'varchar', length: 63, unique: true, nullable: false })
   schema_name: string;
 
-  @Column({ type: 'int', nullable: true })
-  plan_id: number;
+  @Column({ type: 'integer', nullable: true })
+  plan_id: number | null;
 
-  @ManyToOne(() => Plan, { nullable: true, eager: true })
+  @ManyToOne(() => Plan, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'plan_id' })
-  plan: Plan;
+  plan: Plan | null;
 
   @Column({ type: 'timestamptz', nullable: true })
-  planned_date: Date;
+  next_renewal_date: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true })
-  next_renewal_date: Date;
-
-  @Column({ type: 'boolean', default: true })
+  @Column({ type: 'boolean', nullable: false, default: true })
   is_active: boolean;
 
-  @Column({ type: 'boolean', default: false })
+  @Column({ type: 'boolean', nullable: false, default: false })
   allow_extra: boolean;
 
-  @Column({ type: 'varchar', length: 500, nullable: true })
-  logo: string;
+  @Column({ type: 'boolean', nullable: false, default: false })
+  ibm_audio_enabled: boolean;
+
+  @Column({ type: 'varchar', length: 512, nullable: true })
+  logo: string | null;
+
+  @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
+  created_at: Date;
+}
+```
+
+###### 1.1.1. AudioTranscriptionLog (`AudioTranscriptionLog` - `public.audio_transcription_logs`)
+```typescript
+@Entity({ name: 'audio_transcription_logs', schema: 'public' })
+export class AudioTranscriptionLog {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'integer', nullable: true })
+  tenant_id: number | null;
+
+  @Column({ type: 'varchar', length: 63 })
+  tenant_schema: string;
+
+  @Column({ type: 'varchar', length: 50 })
+  channel: string; // 'whatsapp' | 'messenger' | 'instagram' | 'webchat_interno'
+
+  @Column({ type: 'varchar', length: 50, default: 'ibm_stt' })
+  provider: string;
+
+  @Column({ type: 'numeric', precision: 10, scale: 2, default: 0 })
+  duration_seconds: number;
+
+  @Column({ type: 'integer', default: 0 })
+  audio_bytes: number;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  mime_type: string | null;
+
+  @Column({ type: 'boolean', default: true })
+  has_speech: boolean;
+
+  @Column({ type: 'boolean', default: true })
+  success: boolean;
+
+  @Column({ type: 'text', nullable: true })
+  error_message: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  conversation_id: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  message_id: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  user_id: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  client_id: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

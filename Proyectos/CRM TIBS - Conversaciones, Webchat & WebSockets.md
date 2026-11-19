@@ -98,6 +98,10 @@ El Webchat Interno asiste a ejecutivos y administradores para consultar métrica
 * **Búsqueda Flexible y Resiliente de Oportunidades:** Búsqueda difusa y compacta que tolera diferencias de espacios (ej. *"redmagic"* coincide con *"Cotización Red Magic"*), palabras clave y búsqueda compuesta por nombre y apellido de clientes (`CONCAT(cliente.nombre, ' ', COALESCE(cliente.apellido, '')) ILIKE :hint`).
 * **Fusión de Contexto Multi-Turno (`mergeHistoryContext`):** Si el usuario busca o consulta una oportunidad en un turno (ej. *"Cotización Red Magic"*) y en el turno siguiente simplemente ordena *"muevela a calificado"*, el sistema recupera la oportunidad de los mensajes previos (del usuario o de la respuesta del asistente) e inyecta la etapa de destino automáticamente.
 
+* **Control de Acceso y Estado de Audio en WebChat Interno (`GET /api/webchat/audio-status` y `POST /api/webchat/transcribe`):**
+  * `GET /api/webchat/audio-status` (JWT) informa `{ globalProvider, rawModelProvider, usesIbmStt, ibmAudioEnabled, audioEnabled, transcribeEndpointEnabled }` según el proveedor global y `public.tenants.ibm_audio_enabled`.
+  * `POST /api/webchat/transcribe` rechaza con `403 ForbiddenException` cualquier intento de envío de audio cuando el proveedor global es `ibm` y el add-on del tenant está deshabilitado (`ibm_audio_enabled = false`); cuando está habilitado, transcribe con `transcribeWithMetrics()`, audita la duración en `public.audio_transcription_logs` (`channel: 'webchat_interno'`, `user_id`) sin descontar tokens del plan y devuelve `{ text, transcript, durationSeconds }`. Cuando el proveedor global es `gemini` o `azure_openai`, no invoca IBM Speech-to-Text y retorna `501 NotImplementedException`.
+
 ## 5. Canales Externos (WhatsApp Cloud API, Meta, Instagram & Messenger)
 
 ### 5.1. Regla de Ventana de Atención (24h con Margen de Seguridad de 23 Horas)
@@ -218,6 +222,11 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
   * **Atención Humana (Bot Apagado):** El asesor comercial cuenta con el archivo de audio reproducible directamente en el módulo de conversaciones, eliminando la dependencia ciega de la transcripción.
   * **Atención Automatizada (Bot Activo):** Se programa el debounce de 7 segundos (`scheduleAiReplyDebounce`). Si el usuario no envía más mensajes en esa ventana, `triggerAiReply` recupera el texto transcrito de `content` y lo entrega al motor agéntico (`AiAgentOrchestratorService`) para generar la respuesta contextual.
   * Se emite en vivo a los asesores mediante `ConversationsGateway` (`message_received`) con todos los metadatos multimedia.
+
+* **Política por Proveedor Global y Add-on por Tenant (`SpeechToTextService.getAudioPolicy` & `processIncomingWebhookAudio`):**
+  * **Proveedor global `ibm` (`watsonx` / `ibm`) con `ibm_audio_enabled = false`:** Los webhooks de WhatsApp, Messenger e Instagram omiten la descarga del binario, no invocan `SpeechToTextService` ni el agente LLM; registran el evento en `messages` (`messageType: 'audio_unsupported'`, `content: '[Nota de voz no procesada - Soporte de audio deshabilitado]'`) y responden automáticamente al usuario externo solicitando su consulta en texto (`sendAudioDisabledReply`).
+  * **Proveedor global `ibm` con `ibm_audio_enabled = true`:** Descargan y persisten el audio, calculan su duración exacta en segundos (WAV RIFF o `ffmpeg-static` probe) mediante `transcribeWithMetrics()`, auditan el consumo en `public.audio_transcription_logs` (sin descontar tokens del plan), almacenan `mediaDuration` en `messages` y entregan el texto transcrito al LLM si el bot está activo y se detectó habla.
+  * **Proveedor global multimodal (`gemini` / `openai` / `azure_openai`):** El add-on IBM no bloquea el canal ni invoca `SpeechToTextService`; los audios recibidos se descargan y persisten en almacenamiento sin pasar por IBM STT (en espera de la fase de envío de audio nativo en `callGemini` / `callOpenAI`).
 
 
 ### 4.1. Sincronización en Tiempo Real de Acciones en la UI (WebSockets Multi-Tenant)

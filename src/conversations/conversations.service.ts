@@ -1,9 +1,9 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, Inject } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, Inject, Optional } from '@nestjs/common';
 import type { Response } from 'express';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Brackets, In } from 'typeorm';
+import { Repository, Brackets, In, Not } from 'typeorm';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Conversation } from './entities/conversation.entity';
 import { Message } from './entities/message.entity';
@@ -22,6 +22,7 @@ import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
 import { SendTemplateMessageDto, UpsertBaseTemplateDto, SelectExistingBaseTemplateDto } from './dto/conversations.dto';
 import { SpeechToTextService } from './speech-to-text.service';
 import { StorageService } from '../storage/storage.service';
+import { AudioAuditService } from '../subscriptions/audio-audit.service';
 
 /**
  * Margen de seguridad para la ventana de atención de WhatsApp antes del corte estricto de Meta (24h).
@@ -43,6 +44,8 @@ export const WHATSAPP_BASE_TEMPLATE_DEFAULT_BODY =
 
 @Injectable()
 export class ConversationsService {
+  private static readonly AUDIO_DISABLED_REPLY_TEXT =
+    'Por el momento no puedo escuchar audios. Por favor, envíame un mensaje escrito para poder ayudarte.';
   private readonly logger = new Logger('ConversationsService');
   private aiDebounceTimers: Map<string, NodeJS.Timeout> = new Map();
 
@@ -67,7 +70,22 @@ export class ConversationsService {
     private readonly cacheManager: Cache,
     private readonly speechToTextService: SpeechToTextService,
     private readonly storageService: StorageService,
+    @Optional()
+    private readonly audioAuditService?: AudioAuditService,
   ) {}
+
+  private sanitizeUserForResponse<T extends Partial<User> | null | undefined>(user: T): T {
+    if (!user || typeof user !== 'object') return user;
+    const { password, resetPasswordToken, resetPasswordExpires, ...safeUser } = user as any;
+    return safeUser as T;
+  }
+
+  private sanitizeMessageForResponse(message: Message): Message {
+    if (message?.senderUser) {
+      message.senderUser = this.sanitizeUserForResponse(message.senderUser);
+    }
+    return message;
+  }
 
   /**
    * Lista las conversaciones activas.
@@ -76,7 +94,15 @@ export class ConversationsService {
   async findAll(userId?: string, isAdmin: boolean = false): Promise<any[]> {
     const query = this.conversationRepository.createQueryBuilder('c')
       .leftJoinAndSelect('c.client', 'client')
-      .leftJoinAndSelect('c.assignedUser', 'assignedUser');
+      .leftJoin('c.assignedUser', 'assignedUser')
+      .addSelect([
+        'assignedUser.id',
+        'assignedUser.username',
+        'assignedUser.email',
+        'assignedUser.role',
+        'assignedUser.isActive',
+        'assignedUser.profileImageUrl',
+      ]);
 
     if (!isAdmin && userId) {
       query.where('c.assignedUserId = :userId', { userId });
@@ -117,7 +143,15 @@ export class ConversationsService {
 
     // Obtener el último mensaje de todas las conversaciones en una sola consulta para evitar N+1 queries y deadlocks
     const lastMessages = await this.messageRepository.createQueryBuilder('m')
-      .leftJoinAndSelect('m.senderUser', 'senderUser')
+      .leftJoin('m.senderUser', 'senderUser')
+      .addSelect([
+        'senderUser.id',
+        'senderUser.username',
+        'senderUser.email',
+        'senderUser.role',
+        'senderUser.isActive',
+        'senderUser.profileImageUrl',
+      ])
       .where('m.conversationId IN (:...conversationIds)', { conversationIds })
       .orderBy('m.createdAt', 'DESC')
       .getMany();
@@ -125,11 +159,14 @@ export class ConversationsService {
     const lastMessageMap = new Map<string, Message>();
     for (const msg of lastMessages) {
       if (!lastMessageMap.has(msg.conversationId)) {
-        lastMessageMap.set(msg.conversationId, msg);
+        lastMessageMap.set(msg.conversationId, this.sanitizeMessageForResponse(msg));
       }
     }
 
     return conversations.map((conv) => {
+      if (conv.assignedUser) {
+        conv.assignedUser = this.sanitizeUserForResponse(conv.assignedUser);
+      }
       const is24HourWindowActive = conv.channel !== 'whatsapp' || (
         !!conv.lastCustomerMessageAt &&
         (Date.now() - new Date(conv.lastCustomerMessageAt).getTime()) < WHATSAPP_WINDOW_HOURS_MARGIN * 60 * 60 * 1000
@@ -180,7 +217,7 @@ export class ConversationsService {
       if (m.content) {
         m.content = this.formatMessageContent(m.content);
       }
-      return m;
+      return this.sanitizeMessageForResponse(m);
     });
   }
 
@@ -234,6 +271,7 @@ export class ConversationsService {
     mediaUrl?: string | null,
     mediaMimeType?: string | null,
     mediaDuration?: number | null,
+    options?: { skipAiReply?: boolean },
   ): Promise<Message> {
     // 1. Buscar o crear la conversación
     let conversation = await this.conversationRepository.findOne({
@@ -389,8 +427,8 @@ export class ConversationsService {
     conversation.updatedAt = new Date();
     await this.conversationRepository.save(conversation);
 
-    // 3. Si el bot está activo, programar el procesamiento de IA con Debounce de 7 segundos
-    if (conversation.botActive) {
+    // 3. Si el bot está activo y no se solicitó omitir IA, programar el procesamiento con Debounce de 7 segundos
+    if (conversation.botActive && !options?.skipAiReply) {
       this.scheduleAiReplyDebounce(conversation.id);
     }
 
@@ -433,11 +471,21 @@ export class ConversationsService {
     }
 
     const lastContactMessage = await this.messageRepository.findOne({
-      where: { conversationId, sender: 'contact' },
+      where: {
+        conversationId,
+        sender: 'contact',
+        messageType: Not('audio_unsupported'),
+      },
       order: { createdAt: 'DESC' },
     });
 
-    if (!lastContactMessage) return;
+    if (
+      !lastContactMessage ||
+      !lastContactMessage.content ||
+      lastContactMessage.content.startsWith('[Nota de voz')
+    ) {
+      return;
+    }
 
     await this.triggerAiReply(conversation, lastContactMessage.content);
   }
@@ -627,6 +675,7 @@ export class ConversationsService {
       where: { id: saved.id },
       relations: ['senderUser'],
     });
+    if (fullMessage) this.sanitizeMessageForResponse(fullMessage);
 
     this.gateway.emitMessage(fullMessage || saved);
 
@@ -858,6 +907,7 @@ export class ConversationsService {
       where: { id: saved.id },
       relations: ['senderUser'],
     });
+    if (fullMessage) this.sanitizeMessageForResponse(fullMessage);
 
     this.gateway.emitMessage(fullMessage || saved);
 
@@ -1503,11 +1553,15 @@ export class ConversationsService {
       where: { id: savedAudit.id },
       relations: ['senderUser'],
     });
+    if (fullAudit) this.sanitizeMessageForResponse(fullAudit);
 
     // Notificar en tiempo real
     this.gateway.emitBotStatusChanged(conversationId, botActive);
     this.gateway.emitMessage(fullAudit!);
 
+    if (updated.assignedUser) {
+      updated.assignedUser = this.sanitizeUserForResponse(updated.assignedUser);
+    }
     return updated;
   }
 
@@ -1618,8 +1672,11 @@ export class ConversationsService {
     const triggerUserName = triggerUser ? triggerUser.username : 'Sistema';
 
     conversation.assignedUserId = finalTargetId;
-    conversation.assignedUser = newUser;
+    conversation.assignedUser = this.sanitizeUserForResponse(newUser);
     const updated = await this.conversationRepository.save(conversation);
+    if (updated.assignedUser) {
+      updated.assignedUser = this.sanitizeUserForResponse(updated.assignedUser);
+    }
 
 
 
@@ -1647,6 +1704,7 @@ export class ConversationsService {
         where: { id: savedAudit.id },
         relations: ['senderUser'],
       });
+      if (fullAudit) this.sanitizeMessageForResponse(fullAudit);
 
       this.gateway.emitMessage(fullAudit!);
     }
@@ -2221,6 +2279,236 @@ export class ConversationsService {
     return this.storageService.downloadFile(filePath, res, fileName);
   }
 
+  /**
+   * Envía un aviso automático al cliente externo indicando que las notas de voz no están habilitadas
+   * y que envíe su consulta en texto (sin invocar el agente LLM).
+   */
+  private async sendAudioDisabledReply(conversationId: string): Promise<void> {
+    try {
+      const conversation = await this.conversationRepository.findOne({ where: { id: conversationId } });
+      if (!conversation) return;
+
+      const replyText = ConversationsService.AUDIO_DISABLED_REPLY_TEXT;
+      const replyMessage = this.messageRepository.create({
+        conversationId: conversation.id,
+        sender: 'agent',
+        content: replyText,
+        status: 'pending',
+        messageType: 'text',
+      });
+      const savedReply = await this.messageRepository.save(replyMessage);
+
+      try {
+        await this.sendOutboundMessage(conversation, replyText, savedReply);
+      } catch (outboundErr: any) {
+        this.logger.warn(
+          `[Audio Disabled Reply] No se pudo entregar respuesta automática por ${conversation.channel}: ${outboundErr.message}`,
+        );
+      }
+
+      const fullReply = await this.messageRepository.findOne({
+        where: { id: savedReply.id },
+        relations: ['conversation'],
+      });
+      this.gateway.emitMessage(fullReply || savedReply);
+
+      conversation.updatedAt = new Date();
+      await this.conversationRepository.save(conversation);
+    } catch (err: any) {
+      this.logger.warn(`[Audio Disabled Reply] Error enviando aviso de audio no soportado: ${err?.message || err}`);
+    }
+  }
+
+  /**
+   * Orquesta de forma uniforme la recepción de audios en webhooks externos (WhatsApp, Messenger, Instagram)
+   * aplicando las reglas por proveedor global y el add-on por tenant.
+   */
+  private async processIncomingWebhookAudio(params: {
+    channel: 'whatsapp' | 'messenger' | 'instagram';
+    tenantSchema: string;
+    externalId: string;
+    clientNickname: string;
+    channelConfig?: ChannelConfig | null;
+    externalMessageId?: string;
+    audioSource:
+      | { type: 'whatsapp'; audioId: string }
+      | { type: 'meta_url'; url: string; fileTag: string };
+  }): Promise<void> {
+    const {
+      channel,
+      tenantSchema,
+      externalId,
+      clientNickname,
+      channelConfig,
+      externalMessageId,
+      audioSource,
+    } = params;
+
+    const policy = await this.speechToTextService.getAudioPolicy(tenantSchema);
+
+    // 1. Proveedor global IBM + add-on DESHABILITADO:
+    //    No descargar audio, no invocar IBM STT, no invocar LLM.
+    //    Registrar como audio no procesado y pedir al cliente que envíe texto.
+    if (policy.isIbmProvider && !policy.ibmAudioEnabled) {
+      this.logger.log(
+        `[Webhook ${channel.toUpperCase()} AUDIO] Add-on deshabilitado para tenant ${tenantSchema}. Omitiendo descarga y transcripción.`,
+      );
+
+      const savedIncoming = await this.receiveIncomingMessage(
+        channel,
+        externalId,
+        clientNickname,
+        '[Nota de voz no procesada - Soporte de audio deshabilitado]',
+        channelConfig?.id,
+        externalMessageId,
+        undefined,
+        'audio_unsupported',
+        null,
+        null,
+        null,
+        { skipAiReply: true },
+      );
+
+      await this.sendAudioDisabledReply(savedIncoming.conversationId);
+      return;
+    }
+
+    // 2. Descargar audio desde CDN de Meta
+    let audioMedia: { buffer: Buffer; mimeType: string } | null = null;
+    if (audioSource.type === 'whatsapp') {
+      if (audioSource.audioId && channelConfig?.accessToken) {
+        this.logger.log(`[Webhook WHATSAPP AUDIO] Recibida nota de voz/audio (id: ${audioSource.audioId}) de ${externalId}`);
+        audioMedia = await this.downloadWhatsAppAudio(audioSource.audioId, channelConfig.accessToken);
+      } else {
+        this.logger.warn(`[Webhook WHATSAPP AUDIO] Falta audioId o token de acceso para descargar audio`);
+      }
+    } else if (audioSource.url) {
+      this.logger.log(`[Webhook ${channel.toUpperCase()} AUDIO] Recibido audio de ${externalId}: ${audioSource.url}`);
+      audioMedia = await this.downloadMessengerInstagramAudio(audioSource.url, channelConfig?.accessToken);
+    }
+
+    if (!audioMedia || !audioMedia.buffer) {
+      this.logger.error(`[Webhook ${channel.toUpperCase()} AUDIO] No se pudo descargar el archivo de audio de ${externalId}`);
+      await this.receiveIncomingMessage(
+        channel,
+        externalId,
+        clientNickname,
+        '[Nota de voz no disponible]',
+        channelConfig?.id,
+        externalMessageId,
+        undefined,
+        'text',
+        null,
+        null,
+        null,
+        { skipAiReply: true },
+      );
+      return;
+    }
+
+    // 3. Persistir archivo físico
+    const extension = this.resolveAudioExtension(audioMedia.mimeType);
+    const fileTag = audioSource.type === 'whatsapp' ? audioSource.audioId : audioSource.fileTag;
+    const destPath = `uploads/conversations/audios/${Date.now()}_${fileTag}.${extension}`;
+    let mediaUrl: string | null = null;
+    const mediaMimeType: string | null = audioMedia.mimeType;
+
+    try {
+      mediaUrl = await this.storageService.saveBuffer(audioMedia.buffer, destPath, audioMedia.mimeType);
+      this.logger.log(`[Webhook ${channel.toUpperCase()} AUDIO] Archivo de audio persistido en ${mediaUrl}`);
+    } catch (saveErr: any) {
+      this.logger.error(`[Webhook ${channel.toUpperCase()} AUDIO] Error guardando archivo de audio: ${saveErr.message}`);
+    }
+
+    // 4. Si el proveedor global es multimodal (Gemini / Azure OpenAI):
+    //    No bloquear por add-on ni invocar IBM Speech-to-Text.
+    if (!policy.isIbmProvider) {
+      const durationSeconds = await this.speechToTextService
+        .measureAudioDurationSeconds(audioMedia.buffer)
+        .catch(() => 0);
+
+      await this.receiveIncomingMessage(
+        channel,
+        externalId,
+        clientNickname,
+        '[Nota de voz]',
+        channelConfig?.id,
+        externalMessageId,
+        undefined,
+        'audio',
+        mediaUrl,
+        mediaMimeType,
+        durationSeconds > 0 ? Math.max(1, Math.round(durationSeconds)) : null,
+        { skipAiReply: true },
+      );
+      return;
+    }
+
+    // 5. Proveedor global IBM + add-on HABILITADO:
+    //    Transcribir con IBM STT (sin descontar tokens del plan) y auditar duración.
+    let transcript: string | null = null;
+    let durationSeconds = 0;
+    let sttSuccess = true;
+    let sttErrorMessage: string | null = null;
+
+    try {
+      const sttResult = await this.speechToTextService.transcribeWithMetrics(
+        audioMedia.buffer,
+        audioMedia.mimeType,
+      );
+      transcript = sttResult.transcript;
+      durationSeconds = sttResult.durationSeconds;
+    } catch (err: any) {
+      sttSuccess = false;
+      sttErrorMessage = err?.message || 'Error transcribiendo con IBM Speech-to-Text';
+      durationSeconds = typeof err?.durationSeconds === 'number' ? err.durationSeconds : 0;
+      this.logger.error(`[Webhook ${channel.toUpperCase()} AUDIO] Error transcribiendo con IBM: ${sttErrorMessage}`);
+    }
+
+    const messageText = transcript
+      ? transcript
+      : sttSuccess
+        ? '[Nota de voz sin habla detectada]'
+        : '[Nota de voz - error de transcripción]';
+
+    const savedIncoming = await this.receiveIncomingMessage(
+      channel,
+      externalId,
+      clientNickname,
+      messageText,
+      channelConfig?.id,
+      externalMessageId,
+      undefined,
+      'audio',
+      mediaUrl,
+      mediaMimeType,
+      durationSeconds > 0 ? Math.max(1, Math.round(durationSeconds)) : null,
+      { skipAiReply: !transcript },
+    );
+
+    if (this.audioAuditService) {
+      const conv = await this.conversationRepository
+        .findOne({ where: { id: savedIncoming.conversationId } })
+        .catch(() => null);
+
+      await this.audioAuditService.recordAudioTranscription({
+        tenantId: policy.tenantId,
+        tenantSchema,
+        channel,
+        provider: 'ibm_stt',
+        durationSeconds,
+        audioBytes: audioMedia.buffer.length,
+        mimeType: audioMedia.mimeType,
+        hasSpeech: Boolean(transcript),
+        success: sttSuccess,
+        errorMessage: sttErrorMessage,
+        conversationId: savedIncoming.conversationId,
+        messageId: savedIncoming.id,
+        clientId: conv?.clientId || null,
+      });
+    }
+  }
+
   async handleIncomingWebhook(channel: string, payload: any): Promise<any> {
     this.logger.log(`[Webhook ${channel.toUpperCase()}] Recibido body: ${JSON.stringify(payload)}`);
 
@@ -2310,61 +2598,30 @@ export class ConversationsService {
               where: { channel: 'whatsapp', phoneNumberId, isActive: true },
             });
 
-            let text = '';
-            let messageType = 'text';
-            let mediaUrl: string | null = null;
-            let mediaMimeType: string | null = null;
-
             if (message.type === 'text') {
-              text = message.text?.body || '';
-            } else if (message.type === 'audio') {
-              messageType = 'audio';
-              const audioId = message.audio?.id;
-              if (audioId && channelConfig?.accessToken) {
-                this.logger.log(`[Webhook WHATSAPP AUDIO] Recibida nota de voz/audio (id: ${audioId}) de ${externalId}`);
-                const audioMedia = await this.downloadWhatsAppAudio(audioId, channelConfig.accessToken);
-                if (audioMedia && audioMedia.buffer) {
-                  const extension = this.resolveAudioExtension(audioMedia.mimeType);
-                  const destPath = `uploads/conversations/audios/${Date.now()}_${audioId}.${extension}`;
-                  try {
-                    mediaUrl = await this.storageService.saveBuffer(audioMedia.buffer, destPath, audioMedia.mimeType);
-                    mediaMimeType = audioMedia.mimeType;
-                    this.logger.log(`[Webhook WHATSAPP AUDIO] Archivo de audio persistido en ${mediaUrl}`);
-                  } catch (saveErr: any) {
-                    this.logger.error(`[Webhook WHATSAPP AUDIO] Error guardando archivo de audio: ${saveErr.message}`);
-                  }
-
-                  const transcript = await this.speechToTextService.transcribeAudio(
-                    audioMedia.buffer,
-                    audioMedia.mimeType,
-                  ).catch((err) => {
-                    this.logger.error(`[Webhook WHATSAPP AUDIO] Error transcribiendo con IBM: ${err.message}`);
-                    return null;
-                  });
-                  text = transcript || '[Nota de voz]';
-                } else {
-                  this.logger.error(`[Webhook WHATSAPP AUDIO] No se pudo descargar el archivo de audio ${audioId}`);
-                  text = '[Nota de voz no disponible]';
-                }
-              } else {
-                this.logger.warn(`[Webhook WHATSAPP AUDIO] Falta audioId o token de acceso para descargar audio`);
-                text = '[Nota de voz]';
+              const text = message.text?.body || '';
+              if (text) {
+                await this.receiveIncomingMessage(
+                  'whatsapp',
+                  externalId,
+                  clientNickname,
+                  text,
+                  channelConfig?.id,
+                  incomingWamid,
+                  undefined,
+                  'text',
+                );
               }
-            }
-
-            if (text || mediaUrl) {
-              await this.receiveIncomingMessage(
-                'whatsapp',
+            } else if (message.type === 'audio') {
+              await this.processIncomingWebhookAudio({
+                channel: 'whatsapp',
+                tenantSchema,
                 externalId,
                 clientNickname,
-                text || '[Nota de voz]',
-                channelConfig?.id,
-                incomingWamid,
-                undefined,
-                messageType,
-                mediaUrl,
-                mediaMimeType,
-              );
+                channelConfig,
+                externalMessageId: incomingWamid,
+                audioSource: { type: 'whatsapp', audioId: message.audio?.id || '' },
+              });
             }
           }
         } else if (channel === 'facebook' || channel === 'messenger') {
@@ -2379,8 +2636,9 @@ export class ConversationsService {
             }
             const senderId = messaging.sender?.id;
             const audioAttachment = messaging.message.attachments?.find((att: any) => att.type === 'audio');
+            const incomingText = messaging.message.text?.trim() || '';
 
-            if (!messaging.message.text && !audioAttachment) {
+            if (!incomingText && !audioAttachment) {
               return { status: 'SUCCESS' };
             }
 
@@ -2427,55 +2685,33 @@ export class ConversationsService {
               }
             }
 
-            let text = messaging.message.text || '';
-            let messageType = 'text';
-            let mediaUrl: string | null = null;
-            let mediaMimeType: string | null = null;
-
-            if (audioAttachment) {
-              messageType = 'audio';
-              const audioUrl = audioAttachment.payload?.url;
-              if (audioUrl) {
-                this.logger.log(`[Webhook MESSENGER AUDIO] Recibido audio de ${senderId}: ${audioUrl}`);
-                const audioMedia = await this.downloadMessengerInstagramAudio(audioUrl, channelConfig?.accessToken);
-                if (audioMedia && audioMedia.buffer) {
-                  const extension = this.resolveAudioExtension(audioMedia.mimeType);
-                  const destPath = `uploads/conversations/audios/${Date.now()}_${senderId}.${extension}`;
-                  try {
-                    mediaUrl = await this.storageService.saveBuffer(audioMedia.buffer, destPath, audioMedia.mimeType);
-                    mediaMimeType = audioMedia.mimeType;
-                    this.logger.log(`[Webhook MESSENGER AUDIO] Archivo de audio persistido en ${mediaUrl}`);
-                  } catch (saveErr: any) {
-                    this.logger.error(`[Webhook MESSENGER AUDIO] Error guardando archivo de audio: ${saveErr.message}`);
-                  }
-
-                  const transcript = await this.speechToTextService.transcribeAudio(
-                    audioMedia.buffer,
-                    audioMedia.mimeType,
-                  ).catch((err) => {
-                    this.logger.error(`[Webhook MESSENGER AUDIO] Error transcribiendo con IBM: ${err.message}`);
-                    return null;
-                  });
-                  text = transcript || '[Nota de voz]';
-                } else {
-                  text = '[Nota de voz no disponible]';
-                }
+            if (senderId) {
+              if (incomingText) {
+                await this.receiveIncomingMessage(
+                  'messenger',
+                  senderId,
+                  clientNickname,
+                  incomingText,
+                  channelConfig?.id,
+                  messaging.message.mid,
+                  undefined,
+                  'text',
+                );
+              } else if (audioAttachment) {
+                await this.processIncomingWebhookAudio({
+                  channel: 'messenger',
+                  tenantSchema,
+                  externalId: senderId,
+                  clientNickname,
+                  channelConfig,
+                  externalMessageId: messaging.message.mid,
+                  audioSource: {
+                    type: 'meta_url',
+                    url: audioAttachment.payload?.url || '',
+                    fileTag: senderId,
+                  },
+                });
               }
-            }
-
-            if ((text || mediaUrl) && senderId) {
-              await this.receiveIncomingMessage(
-                'messenger',
-                senderId,
-                clientNickname,
-                text || '[Nota de voz]',
-                channelConfig?.id,
-                messaging.message.mid,
-                undefined,
-                messageType,
-                mediaUrl,
-                mediaMimeType,
-              );
             }
           }
         } else if (channel === 'instagram') {
@@ -2490,8 +2726,9 @@ export class ConversationsService {
             }
             const senderId = messaging.sender?.id;
             const audioAttachment = messaging.message.attachments?.find((att: any) => att.type === 'audio');
+            const incomingText = messaging.message.text?.trim() || '';
 
-            if (!messaging.message.text && !audioAttachment) {
+            if (!incomingText && !audioAttachment) {
               return { status: 'SUCCESS' };
             }
 
@@ -2520,55 +2757,33 @@ export class ConversationsService {
               }
             }
 
-            let text = messaging.message.text || '';
-            let messageType = 'text';
-            let mediaUrl: string | null = null;
-            let mediaMimeType: string | null = null;
-
-            if (audioAttachment) {
-              messageType = 'audio';
-              const audioUrl = audioAttachment.payload?.url;
-              if (audioUrl) {
-                this.logger.log(`[Webhook INSTAGRAM AUDIO] Recibido audio de ${senderId}: ${audioUrl}`);
-                const audioMedia = await this.downloadMessengerInstagramAudio(audioUrl, channelConfig?.accessToken);
-                if (audioMedia && audioMedia.buffer) {
-                  const extension = this.resolveAudioExtension(audioMedia.mimeType);
-                  const destPath = `uploads/conversations/audios/${Date.now()}_${senderId}.${extension}`;
-                  try {
-                    mediaUrl = await this.storageService.saveBuffer(audioMedia.buffer, destPath, audioMedia.mimeType);
-                    mediaMimeType = audioMedia.mimeType;
-                    this.logger.log(`[Webhook INSTAGRAM AUDIO] Archivo de audio persistido en ${mediaUrl}`);
-                  } catch (saveErr: any) {
-                    this.logger.error(`[Webhook INSTAGRAM AUDIO] Error guardando archivo de audio: ${saveErr.message}`);
-                  }
-
-                  const transcript = await this.speechToTextService.transcribeAudio(
-                    audioMedia.buffer,
-                    audioMedia.mimeType,
-                  ).catch((err) => {
-                    this.logger.error(`[Webhook INSTAGRAM AUDIO] Error transcribiendo con IBM: ${err.message}`);
-                    return null;
-                  });
-                  text = transcript || '[Nota de voz]';
-                } else {
-                  text = '[Nota de voz no disponible]';
-                }
+            if (senderId) {
+              if (incomingText) {
+                await this.receiveIncomingMessage(
+                  'instagram',
+                  senderId,
+                  clientNickname,
+                  incomingText,
+                  channelConfig?.id,
+                  messaging.message.mid,
+                  undefined,
+                  'text',
+                );
+              } else if (audioAttachment) {
+                await this.processIncomingWebhookAudio({
+                  channel: 'instagram',
+                  tenantSchema,
+                  externalId: senderId,
+                  clientNickname,
+                  channelConfig,
+                  externalMessageId: messaging.message.mid,
+                  audioSource: {
+                    type: 'meta_url',
+                    url: audioAttachment.payload?.url || '',
+                    fileTag: senderId,
+                  },
+                });
               }
-            }
-
-            if ((text || mediaUrl) && senderId) {
-              await this.receiveIncomingMessage(
-                'instagram',
-                senderId,
-                clientNickname,
-                text || '[Nota de voz]',
-                channelConfig?.id,
-                messaging.message.mid,
-                undefined,
-                messageType,
-                mediaUrl,
-                mediaMimeType,
-              );
             }
           }
         }
@@ -2863,7 +3078,7 @@ export class ConversationsService {
       });
 
       if (fullDocMessage) {
-        this.gateway.emitMessage(fullDocMessage);
+        this.gateway.emitMessage(this.sanitizeMessageForResponse(fullDocMessage));
       }
     } catch (dbErr) {
       this.logger.error(`Error guardando o emitiendo mensaje de documento en conversación: ${dbErr.message}`);
