@@ -83,3 +83,20 @@ El módulo de actividades organiza la agenda operativa de los ejecutivos:
 * **Alineación de Comportamiento:** Los recordatorios de actividad configurados en el CRM (ej. 60 minutos antes) son **100% internos para los usuarios/ejecutivos del CRM** (notificación in-app y correo electrónico interno opcional al usuario).
 * **Desactivación de Correos a Clientes en Recordatorios:** En `NotificationsSchedulerService` se desactivó el despacho de correos de recordatorio hacia los clientes. Los clientes reciben única y exclusivamente el correo inicial de aviso informativo con su archivo `.ics` adjunto al crearse la actividad.
 * **Agente de IA:** Se configuró en `AiAgentOrchestratorService` la regla estricta que prohíbe prometer o mencionar recordatorios previos al cliente por chat/WhatsApp.
+
+---
+
+## 6. Validaciones de Entrada, Propiedad e Integridad de Catálogos (Bloque 2)
+* **Clientes y Empresas (`CreateClientDto`, `CreateCompanyDto`):**
+  * Límites sincronizados con PostgreSQL (`nombre`, `apellido`, `correo`, `empresa`, `puesto`, `website` ≤ 255; `direccion` ≤ 512; `telefono` ≤ 50 con `@Matches` de formato telefónico).
+  * Separación REST vs AI-First: por HTTP (`POST/PATCH /api/companies`), `CreateCompanyDto` / `UpdateCompanyDto` exigen `@IsUrl({ protocols: ['http', 'https'], require_protocol: true })` en `website`; desde flujos conversacionales (`WebchatActionExecutorService`), `CompaniesService` mantiene creación con datos parciales y URLs sin esquema (p. ej. `www.grupoalfa.com`) aplicando recorte seguro a límites de columna.
+* **Actividades y Recordatorios (`ActivitiesController`, `ActivitiesService`, `CreateActivityDto`, `UpdateReminderDto`):**
+  * `PATCH`/`DELETE /api/activities/types/:id` usan `ParseIntPipe` y `GET /api/activities` usa `GetActivitiesFilterDto` (`userId` y `opportunityId` UUID opcionales).
+  * `CreateActivityDto` valida `typeActivityId` entero positivo, normaliza UUIDs vacíos (`'' -> null`), acota `activity` ≤ 5000, `externalEventId` ≤ 255 y restringe `externalProvider` a `['google', 'outlook']`.
+  * `ActivitiesService` verifica existencia real de `typeActivityId` antes de guardar, valida fechas válidas en `parseActivityDate`, habilita acceso a `SuperAdmin` en `update` y reactiva la validación de propiedad en `remove` (`Admin`/`SuperAdmin` o propietario).
+  * `AiAgentToolsHandlerService.createActivity` pre-valida `typeActivityId` devolviendo un error estructurado con catálogo disponible al LLM si no existe, hidrata `User` completo y recorta `reminder.title` ≤ 100.
+  * `UpdateReminderDto` usa `PartialType` de `@nestjs/swagger` para mantener consistencia Swagger/validación.
+* **Interacciones, Productos y Gastos (`InteractionsController`, `ProductsController`, `ExpensesController`, `ExpensesService`):**
+  * `InteractionsController` exige `ParseUUIDPipe` en `opportunityId` e `id`; `InteractionsService` lanza `NotFoundException` cuando el ID no existe y `CreateInteractionDto` acota `comment` ≤ 5000.
+  * `CreateProductDto` limita `nombre` ≤ 255, `descripcion` ≤ 5000, `unidadMedida` ≤ 100, `imagenPortada` ≤ 512, `observaciones` ≤ 2000 y `precioBase` entre `0` y `99999999.99` (`UploadProductFileDto` valida `title` ≤ 255).
+  * `CreateExpenseDto` exige `monto` positivo (`> 0`, máx. `9999999999999999.99`) y `concepto` ≤ 255. `ExpensesController` aplica `ParseUUIDPipe` en todas las rutas `:id` e inyecta `@GetUser()`; `ExpensesService` verifica la existencia de `client_id` / `opportunity_id` y valida propiedad para ejecutivos no administradores en lectura, edición, eliminación y manejo de comprobantes.

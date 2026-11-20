@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, BadRequestException, InternalServerErrorException, NotFoundException, HttpException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
@@ -27,8 +27,19 @@ export class TenantProvisionerService {
 
     // 1. Sanitizar y validar slug
     const schemaName = TenantContextService.generateSlug(tenantName);
-    if (!TenantContextService.validateSchemaName(schemaName)) {
+    if (schemaName === 'tenant_' || !TenantContextService.validateSchemaName(schemaName)) {
       throw new BadRequestException(`El nombre de esquema generado '${schemaName}' no es válido.`);
+    }
+
+    // 1b. Pre-validar existencia y vigencia del plan si se proporcionó planId (antes de ejecutar DDL)
+    if (planId !== undefined && planId !== null) {
+      const planCheck = await this.dataSource.query(
+        `SELECT plan_id, blnstatus FROM public.plans WHERE plan_id = $1`,
+        [planId],
+      );
+      if (!planCheck || planCheck.length === 0 || !planCheck[0].blnstatus) {
+        throw new NotFoundException(`El plan con ID ${planId} no existe o se encuentra inactivo.`);
+      }
     }
 
     // 2. Ejecutar todo en una sola transacción PostgreSQL
@@ -926,9 +937,12 @@ Redirección: Si derivas o transfieres la conversación con un ejecutivo especia
         tempPassword,
         nextRenewalDate,
       };
-    } catch (err) {
+    } catch (err: any) {
       await queryRunner.rollbackTransaction();
-      throw new InternalServerErrorException(`Error al aprovisionar tenant: ${err.message}`);
+      if (err instanceof HttpException) {
+        throw err;
+      }
+      throw new InternalServerErrorException(`Error al aprovisionar tenant: ${err?.message || err}`);
     } finally {
       await queryRunner.release();
     }

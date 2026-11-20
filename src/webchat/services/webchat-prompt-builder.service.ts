@@ -24,7 +24,7 @@ export class WebchatPromptBuilderService {
    * Opportunity: nombreProyecto,etapa("Calificado","Propuesta","Negociación","Ganada"),cliente,empresa,monto,montoLicenciamiento,montoServicios.
    * Ticket: targetTicket(folio/asunto),title,description,tipo_incidencia,priority(1..3),etapa,notasResolucion,cliente,responsable.
    * Product: targetProduct,nombre,nuevoNombre,precioBase,unidadMedida,descripcion,observaciones,status. No inventes nombres genéricos ("Nuevo Producto"); si no dio nombre, omite "nombre".
-   * Expense: targetExpense|targetFecha|targetMonto,concepto,monto,fecha(YYYY-MM-DD),cliente O oportunidad(XOR),ejecutivo.
+   * Expense: targetExpense|targetFecha|targetMonto,concepto,monto,fecha(YYYY-MM-DD),cliente O oportunidad(XOR),ejecutivo|usuario. No inventes "nuevo gasto" como concepto ni pongas un "usuario" en "cliente".
 4. MULTI-TURNO/VOZ: Si [HISTORIAL] pidió datos o dicta voz ("arroba"→"@", números→dígitos), usa "ACTION_EXECUTION".
 5. Dashboard: "dashboardRedirect":{"tab":"commercial"|"support","executiveId":"${userId}"}.
 [JSON] {"thought":"Breve","intent":"ANALYTICAL|SPECIFIC_ENTITY|VAGUE_SEARCH|CONVERSATIONAL|ACTION_EXECUTION","domain":"...","canonicalSearchTerm":null,"responseTemplate":null,"actionPlan":null,"dashboardRedirect":null}

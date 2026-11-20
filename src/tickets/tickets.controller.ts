@@ -5,6 +5,7 @@ import { TicketsService } from './tickets.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { ArchiveTicketDto } from './dto/archive-ticket.dto';
+import { GetTicketsFilterDto, PublicTicketQueryDto } from './dto/tickets-query.dto';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { User } from 'src/users/entities/user.entity';
 
@@ -31,21 +32,14 @@ export class TicketsController {
   @ApiBearerAuth()
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener la lista de tickets' })
-  findAll(
-    @Query('stage_id') stage_id?: string,
-    @Query('showArchived') showArchived?: string,
-  ) {
-    const showArchivedBool = showArchived === 'true';
-    return this.ticketsService.findAll(stage_id, showArchivedBool);
+  findAll(@Query() filterDto: GetTicketsFilterDto) {
+    return this.ticketsService.findAll(filterDto.stage_id, filterDto.showArchived ?? false);
   }
 
   @Get('public/query')
   @ApiOperation({ summary: 'Consultar el estatus de un ticket o lista de tickets por correo o número de ticket' })
-  queryPublic(
-    @Query('email') email?: string,
-    @Query('ticketNumber') ticketNumber?: string,
-  ) {
-    return this.ticketsService.queryPublic(email, ticketNumber);
+  queryPublic(@Query() queryDto: PublicTicketQueryDto) {
+    return this.ticketsService.queryPublic(queryDto.email, queryDto.ticketNumber);
   }
 
   @Get(':id')

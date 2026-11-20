@@ -1,22 +1,25 @@
-import { IsOptional, IsBoolean, IsUUID, IsString } from 'class-validator';
+import { IsOptional, IsBoolean, IsUUID, IsDateString } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class GetOpportunitiesFilterDto {
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
   @IsUUID()
   stage_id?: string;
 
   @IsOptional()
-  @Transform(({ value }) => value === 'true')
+  @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean()
   showArchived?: boolean;
 
   @IsOptional()
-  @IsString()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsDateString()
   startDate?: string;
 
   @IsOptional()
-  @IsString()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsDateString()
   endDate?: string;
 }
 

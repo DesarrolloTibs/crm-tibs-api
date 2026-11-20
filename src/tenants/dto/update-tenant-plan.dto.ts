@@ -1,9 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsNumber, IsOptional } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsPositive, Max, Min } from 'class-validator';
 
 export class UpdateTenantPlanDto {
   @ApiProperty({ example: 2, description: 'ID del nuevo plan a asignar' })
-  @IsNumber()
+  @IsInt({ message: 'planId debe ser un número entero.' })
+  @IsPositive({ message: 'planId debe ser mayor a 0.' })
   planId: number;
 
   @ApiProperty({
@@ -30,7 +31,9 @@ export class UpdateTenantPlanDto {
 
   @ApiProperty({ example: 1, description: 'Número de meses de vigencia del período (por defecto usa billing_period_months del plan)', required: false })
   @IsOptional()
-  @IsNumber()
+  @IsInt({ message: 'months debe ser un número entero.' })
+  @Min(1, { message: 'months debe ser al menos 1.' })
+  @Max(60, { message: 'months no debe exceder 60 meses.' })
   months?: number;
 
   @ApiProperty({

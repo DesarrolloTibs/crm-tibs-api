@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Optional } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { User } from './entities/user.entity';
@@ -44,6 +44,7 @@ export class UsersService implements OnModuleInit {
     ).catch(() => []);
 
     for (const t of tenants) {
+      if (!TenantContextService.validateSchemaName(t.schema_name)) continue;
       try {
         const rows = await this.dataSource.query(
           `SELECT id FROM "${t.schema_name}".users WHERE LOWER(email) = LOWER($1) ${excludeUserId ? 'AND id::text != $2' : ''}`,
@@ -87,7 +88,7 @@ export class UsersService implements OnModuleInit {
   private static checkedSchemas = new Set<string>();
 
   private async ensureTenantUserColumns(tenantSchema: string) {
-    if (!tenantSchema || tenantSchema === 'public' || UsersService.checkedSchemas.has(tenantSchema)) return;
+    if (!tenantSchema || tenantSchema === 'public' || !TenantContextService.validateSchemaName(tenantSchema) || UsersService.checkedSchemas.has(tenantSchema)) return;
     try {
       await this.dataSource.query(
         `ALTER TABLE "${tenantSchema}".users ADD COLUMN IF NOT EXISTS "isActive" boolean NOT NULL DEFAULT true;
@@ -102,6 +103,9 @@ export class UsersService implements OnModuleInit {
   async findOneByEmail(email: string): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema !== 'public') {
+      if (!TenantContextService.validateSchemaName(tenantSchema)) {
+        throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
+      }
       await this.ensureTenantUserColumns(tenantSchema);
       const rows = await this.dataSource.query(
         `SELECT id, username, email, password, role, "isActive" FROM "${tenantSchema}".users WHERE LOWER(email) = LOWER($1)`,
@@ -121,6 +125,7 @@ export class UsersService implements OnModuleInit {
     ).catch(() => []);
 
     for (const t of tenants) {
+      if (!TenantContextService.validateSchemaName(t.schema_name)) continue;
       try {
         const rows = await this.dataSource.query(
           `SELECT id, username, email, password, role, "isActive" FROM "${t.schema_name}".users WHERE LOWER(email) = LOWER($1)`,
@@ -136,6 +141,9 @@ export class UsersService implements OnModuleInit {
   async findOneById(id: string): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema !== 'public') {
+      if (!TenantContextService.validateSchemaName(tenantSchema)) {
+        throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
+      }
       await this.ensureTenantUserColumns(tenantSchema);
       const rows = await this.dataSource.query(
         `SELECT id, username, email, role, "isActive", "profileImageUrl" FROM "${tenantSchema}".users WHERE id::text = $1`,
@@ -153,73 +161,108 @@ export class UsersService implements OnModuleInit {
     throw new NotFoundException('Usuario no encontrado');
   }
 
-  async create(userData: CreateUserDto): Promise<User> {
+  async create(userData: CreateUserDto, currentUser?: User): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const callerRole = (currentUser?.role || '').toString().toLowerCase().trim();
+    const requestedRole = (userData.role || Role.Executive).toString().toLowerCase().trim();
+
+    if (tenantSchema !== 'public' && requestedRole === Role.SuperAdmin) {
+      throw new ForbiddenException('No está permitido crear usuarios SuperAdmin dentro de una organización.');
+    }
+    if (tenantSchema === 'public' && currentUser && callerRole !== Role.SuperAdmin) {
+      throw new ForbiddenException('Solo SuperAdmin puede crear usuarios globales.');
+    }
+
     await this.checkEmailUnique(userData.email);
     const hashedPassword = await bcrypt.hash(userData.password, 10);
 
-    if (tenantSchema === 'public' || userData.role === Role.SuperAdmin || (userData.role as any) === 'superadmin') {
+    if (tenantSchema === 'public') {
       const rows = await this.dataSource.query(
-        `INSERT INTO public.users (username, email, password, role, "isActive") VALUES ($1, $2, $3, 'superadmin', true) RETURNING id, username, email, role, "isActive"`,
-        [userData.username, userData.email, hashedPassword]
+        `INSERT INTO public.users (username, email, password, role, "isActive") VALUES ($1, $2, $3, 'superadmin', $4) RETURNING id, username, email, role, "isActive"`,
+        [userData.username, userData.email, hashedPassword, userData.isActive ?? true]
       );
       return rows[0] as User;
     }
 
+    if (!TenantContextService.validateSchemaName(tenantSchema)) {
+      throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
+    }
+
     await this.ensureTenantUserColumns(tenantSchema);
-    const roleToSet = userData.role || Role.Executive;
+    const roleToSet = requestedRole === Role.Admin ? Role.Admin : Role.Executive;
     const rows = await this.dataSource.query(
-      `INSERT INTO "${tenantSchema}".users (username, email, password, role, "isActive") VALUES ($1, $2, $3, $4, true) RETURNING id, username, email, role, "isActive"`,
-      [userData.username, userData.email, hashedPassword, roleToSet]
+      `INSERT INTO "${tenantSchema}".users (username, email, password, role, "isActive", "profileImageUrl") VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, username, email, role, "isActive", "profileImageUrl"`,
+      [
+        userData.username,
+        userData.email,
+        hashedPassword,
+        roleToSet,
+        userData.isActive ?? true,
+        userData.profileImageUrl ?? null,
+      ]
     );
     return rows[0] as User;
   }
 
-  async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
+  async update(id: string, updateUserDto: UpdateUserDto, _currentUser?: User): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    await this.findOneById(id);
+
     if (updateUserDto.email) {
       await this.checkEmailUnique(updateUserDto.email, id);
     }
+
+    let hashedPassword: string | undefined;
     if (updateUserDto.password) {
-      updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
+      hashedPassword = await bcrypt.hash(updateUserDto.password, 10);
     }
 
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    const pushCol = (colSql: string, val: any) => {
+      values.push(val);
+      setClauses.push(`${colSql} = $${values.length}`);
+    };
+
+    if (updateUserDto.username !== undefined) pushCol('username', updateUserDto.username);
+    if (updateUserDto.email !== undefined) pushCol('email', updateUserDto.email);
+    if (hashedPassword !== undefined) pushCol('password', hashedPassword);
+    if (updateUserDto.isActive !== undefined) pushCol('"isActive"', updateUserDto.isActive);
+
     if (tenantSchema === 'public') {
-      if (updateUserDto.password) {
-        await this.dataSource.query(
-          `UPDATE public.users SET username = $1, email = $2, password = $3, role = 'superadmin' WHERE id::text = $4`,
-          [updateUserDto.username, updateUserDto.email, updateUserDto.password, id]
-        );
-      } else {
-        await this.dataSource.query(
-          `UPDATE public.users SET username = $1, email = $2, role = 'superadmin' WHERE id::text = $3`,
-          [updateUserDto.username, updateUserDto.email, id]
-        );
+      if (setClauses.length === 0) {
+        return this.findOneById(id);
       }
+      values.push(id);
+      await this.dataSource.query(
+        `UPDATE public.users SET ${setClauses.join(', ')} WHERE id::text = $${values.length} AND LOWER(role::text) = 'superadmin'`,
+        values
+      );
       return this.findOneById(id);
     }
 
-    await this.ensureTenantUserColumns(tenantSchema);
-    let roleToSet = updateUserDto.role || Role.Executive;
-    if ((roleToSet as any) === 'superadmin' || roleToSet === Role.SuperAdmin) {
-      roleToSet = Role.Executive;
+    if (!TenantContextService.validateSchemaName(tenantSchema)) {
+      throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
     }
 
-    if (updateUserDto.password) {
-      await this.dataSource.query(
-        `UPDATE "${tenantSchema}".users SET username = $1, email = $2, password = $3, role = $4 WHERE id::text = $5`,
-        [updateUserDto.username, updateUserDto.email, updateUserDto.password, roleToSet, id]
-      );
-    } else {
-      await this.dataSource.query(
-        `UPDATE "${tenantSchema}".users SET username = $1, email = $2, role = $3 WHERE id::text = $4`,
-        [updateUserDto.username, updateUserDto.email, roleToSet, id]
-      );
+    await this.ensureTenantUserColumns(tenantSchema);
+
+    if (updateUserDto.role !== undefined) {
+      const requestedRole = updateUserDto.role.toString().toLowerCase().trim();
+      if (requestedRole === Role.SuperAdmin) {
+        throw new ForbiddenException('No se puede escalar a rol SuperAdmin dentro de una organización.');
+      }
+      pushCol('role', requestedRole === Role.Admin ? Role.Admin : Role.Executive);
     }
     if (updateUserDto.profileImageUrl !== undefined) {
+      pushCol('"profileImageUrl"', updateUserDto.profileImageUrl);
+    }
+
+    if (setClauses.length > 0) {
+      values.push(id);
       await this.dataSource.query(
-        `UPDATE "${tenantSchema}".users SET "profileImageUrl" = $1 WHERE id::text = $2`,
-        [updateUserDto.profileImageUrl, id]
+        `UPDATE "${tenantSchema}".users SET ${setClauses.join(', ')} WHERE id::text = $${values.length}`,
+        values
       );
     }
     return this.findOneById(id);
@@ -233,6 +276,9 @@ export class UsersService implements OnModuleInit {
         [updateUserStatusDto.isActive, id]
       );
       return this.findOneById(id);
+    }
+    if (!TenantContextService.validateSchemaName(tenantSchema)) {
+      throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
     }
     await this.ensureTenantUserColumns(tenantSchema);
     await this.dataSource.query(
@@ -250,6 +296,9 @@ export class UsersService implements OnModuleInit {
       );
       return rows as User[];
     }
+    if (!TenantContextService.validateSchemaName(tenantSchema)) {
+      throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
+    }
     await this.ensureTenantUserColumns(tenantSchema);
     const rows = await this.dataSource.query(
       `SELECT id, username, email, role, "isActive", "profileImageUrl" FROM "${tenantSchema}".users WHERE LOWER(role::text) != 'superadmin' ORDER BY id DESC`
@@ -265,14 +314,15 @@ export class UsersService implements OnModuleInit {
       );
       return rows as User[];
     }
+    if (!TenantContextService.validateSchemaName(tenantSchema)) {
+      throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
+    }
     await this.ensureTenantUserColumns(tenantSchema);
     const rows = await this.dataSource.query(
       `SELECT id, username, email, role, "isActive", "profileImageUrl" FROM "${tenantSchema}".users WHERE "isActive" = true AND LOWER(role::text) != 'superadmin' ORDER BY id DESC`
     );
     return rows as User[];
   }
-
-
 
   async remove(id: string): Promise<void> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
@@ -281,11 +331,13 @@ export class UsersService implements OnModuleInit {
         `DELETE FROM public.users WHERE id::text = $1 AND role = 'superadmin'`,
         [id]
       );
-    } else {
+    } else if (TenantContextService.validateSchemaName(tenantSchema)) {
       await this.dataSource.query(
         `DELETE FROM "${tenantSchema}".users WHERE id::text = $1`,
         [id]
       );
+    } else {
+      throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
     }
   }
 
@@ -308,6 +360,9 @@ export class UsersService implements OnModuleInit {
   async updateProfileImage(userId: string, imageUrl: string): Promise<User> {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     if (tenantSchema !== 'public') {
+      if (!TenantContextService.validateSchemaName(tenantSchema)) {
+        throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
+      }
       await this.dataSource.query(
         `UPDATE "${tenantSchema}".users SET "profileImageUrl" = $1 WHERE id::text = $2`,
         [imageUrl, userId]
@@ -335,7 +390,7 @@ export class UsersService implements OnModuleInit {
     }
 
     for (const schema of schemasToSearch) {
-      if (!TenantContextService.validateSchemaName(schema)) continue;
+      if (schema !== 'public' && !TenantContextService.validateSchemaName(schema)) continue;
       const rows = await this.dataSource.query(
         `SELECT ${userColumns} FROM "${schema}".users WHERE reset_password_token = $1`,
         [token]
@@ -363,7 +418,7 @@ export class UsersService implements OnModuleInit {
          WHERE id::text = $6`,
         [user.username, user.email, user.password, user.resetPasswordToken || null, user.resetPasswordExpires || null, userId]
       );
-    } else {
+    } else if (TenantContextService.validateSchemaName(tenantSchema)) {
       await this.dataSource.query(
         `UPDATE "${tenantSchema}".users SET 
            username = $1, 
@@ -374,6 +429,8 @@ export class UsersService implements OnModuleInit {
          WHERE id::text = $6`,
         [user.username, user.email, user.password, user.resetPasswordToken || null, user.resetPasswordExpires || null, userId]
       );
+    } else {
+      throw new BadRequestException(`Esquema de organización inválido '${tenantSchema}'.`);
     }
 
     return user;

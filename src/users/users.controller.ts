@@ -12,6 +12,7 @@ import {
   UseGuards,
   UseInterceptors,
   NotFoundException,
+  ForbiddenException,
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
@@ -28,9 +29,10 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { CreateUserDto } from './dto/create-user.dto';
-
 import { UpdateUserDto, UpdateUserStatusDto } from './dto/update-user.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { GetUser } from '../auth/decorators/get-user.decorator';
+import { Role } from '../role.enum';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -39,11 +41,23 @@ import { FileInterceptor } from '@nestjs/platform-express';
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  private isAdminOrSuperAdmin(user?: User): boolean {
+    const role = (user?.role || '').toString().toLowerCase().trim();
+    return role === Role.Admin || role === Role.SuperAdmin;
+  }
+
+  private ensureAdminOrSuperAdmin(user?: User): void {
+    if (!this.isAdminOrSuperAdmin(user)) {
+      throw new ForbiddenException('Solo los administradores pueden gestionar usuarios.');
+    }
+  }
+
   @Post()
   @ApiCreatedResponse({ description: 'Usuario creado exitosamente.', type: User })
   @ApiBody({ type: CreateUserDto })
-  create(@Body() createUserDto: CreateUserDto): Promise<User> {
-    return this.usersService.create(createUserDto);
+  create(@Body() createUserDto: CreateUserDto, @GetUser() currentUser: User): Promise<User> {
+    this.ensureAdminOrSuperAdmin(currentUser);
+    return this.usersService.create(createUserDto, currentUser);
   }
 
   @Get()
@@ -63,7 +77,7 @@ export class UsersController {
 
   @Get(':id')
   @ApiOkResponse({ description: 'Usuario encontrado.', type: User })
-  async findOne(@Param('id') id: string): Promise<User> {
+  async findOne(@Param('id', ParseUUIDPipe) id: string): Promise<User> {
     const user = await this.usersService.findOneById(id);
     if (!user) {
       throw new NotFoundException(`Usuario con ID "${id}" no encontrado.`);
@@ -74,17 +88,33 @@ export class UsersController {
   @Patch(':id')
   @ApiOkResponse({ description: 'Usuario actualizado exitosamente.', type: User })
   @ApiBody({ type: UpdateUserDto })
-  update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto): Promise<User> {
-    return this.usersService.update(id, updateUserDto);
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateUserDto: UpdateUserDto,
+    @GetUser() currentUser: User,
+  ): Promise<User> {
+    const currentId = currentUser?.id || (currentUser as any)?.userId;
+    const isPrivileged = this.isAdminOrSuperAdmin(currentUser);
+    if (!isPrivileged) {
+      if (currentId !== id) {
+        throw new ForbiddenException('No tienes permiso para modificar a otro usuario.');
+      }
+      if (updateUserDto.role !== undefined || updateUserDto.isActive !== undefined) {
+        throw new ForbiddenException('No tienes permiso para cambiar tu rol o estatus.');
+      }
+    }
+    return this.usersService.update(id, updateUserDto, currentUser);
   }
 
   @Patch(':id/status')
   @ApiOkResponse({ description: 'Estado del usuario actualizado exitosamente.', type: User })
   @ApiBody({ type: UpdateUserStatusDto })
   updateStatus(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() updateUserStatusDto: UpdateUserStatusDto,
+    @GetUser() currentUser: User,
   ): Promise<User> {
+    this.ensureAdminOrSuperAdmin(currentUser);
     return this.usersService.updateStatus(id, updateUserStatusDto);
   }
 
@@ -104,7 +134,12 @@ export class UsersController {
   async uploadProfileImage(
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File,
+    @GetUser() currentUser: User,
   ) {
+    const currentId = currentUser?.id || (currentUser as any)?.userId;
+    if (!this.isAdminOrSuperAdmin(currentUser) && currentId !== id) {
+      throw new ForbiddenException('No tienes permiso para modificar la foto de perfil de otro usuario.');
+    }
     return this.usersService.uploadProfileImageFile(id, file);
   }
 }

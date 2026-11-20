@@ -9,8 +9,6 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFiles,
-  UsePipes,
-  ValidationPipe,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -36,8 +34,6 @@ import { AudioAuditService } from '../subscriptions/audio-audit.service';
 @Controller('webchat')
 // Los endpoints públicos de webchat tienen límite más alto (webhook de IA)
 @Throttle({ webhook: { ttl: 60000, limit: 200 } })
-// whitelist:false porque el body puede contener campos dinámicos de conversaciones externas
-@UsePipes(new ValidationPipe({ whitelist: false, transform: true }))
 export class WebchatController {
   constructor(
     private readonly webchatService: WebchatService,
@@ -183,10 +179,10 @@ export class WebchatController {
   @Get('public/init')
   @ApiOperation({ summary: 'Verificar estado y conexión del canal WebChat externo' })
   async getPublicInit(
-    @Query('tenantKey') tenantKey?: string,
+    @Query() query: GetPublicWebchatQueryDto,
     @Headers('x-tenant-key') headerTenantKey?: string,
   ) {
-    const key = tenantKey || headerTenantKey;
+    const key = query?.tenantKey || headerTenantKey;
     if (!key) {
       throw new BadRequestException('El parámetro tenantKey es requerido para inicializar la conexión.');
     }
@@ -237,10 +233,13 @@ export class WebchatController {
   @ApiOperation({ summary: 'Obtener historial de mensajes del visitante de WebChat externo' })
   async getPublicMessages(
     @Param('visitorId') visitorId: string,
-    @Query('tenantKey') tenantKey?: string,
+    @Query() query: GetPublicWebchatQueryDto,
     @Headers('x-tenant-key') headerTenantKey?: string,
   ) {
-    const key = tenantKey || headerTenantKey;
+    if (!visitorId || !visitorId.trim() || visitorId.trim().length > 150) {
+      throw new BadRequestException('El parámetro visitorId es inválido.');
+    }
+    const key = query?.tenantKey || headerTenantKey;
     if (!key) {
       throw new BadRequestException('El parámetro tenantKey es requerido para identificar la organización.');
     }

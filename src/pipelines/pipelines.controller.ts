@@ -1,7 +1,11 @@
-import { Controller, Get, Patch, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Body, UseGuards, ForbiddenException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { PipelinesService } from './pipelines.service';
+import { UpdateMainPipelineDto } from './dto/update-main-pipeline.dto';
+import { GetUser } from '../auth/decorators/get-user.decorator';
+import { User } from '../users/entities/user.entity';
+import { Role } from '../role.enum';
 
 @ApiTags('pipelines')
 @ApiBearerAuth()
@@ -24,8 +28,10 @@ export class PipelinesController {
 
   @Patch('main')
   @ApiOperation({ summary: 'Actualizar configuración del pipeline principal y sus etapas' })
-  updateMainPipeline(@Body() updateDto: any) {
-    // We can use a loose validation or map type because of dynamic inline stage list edits
+  updateMainPipeline(@Body() updateDto: UpdateMainPipelineDto, @GetUser() user: User) {
+    if (user.role !== Role.Admin && user.role !== Role.SuperAdmin && (user.role as any) !== 'superadmin') {
+      throw new ForbiddenException('Solo los administradores pueden configurar el pipeline.');
+    }
     return this.pipelinesService.updateMainPipeline(updateDto);
   }
 

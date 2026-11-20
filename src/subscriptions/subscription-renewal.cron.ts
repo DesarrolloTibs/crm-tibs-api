@@ -1,13 +1,19 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import { addBillingMonths } from '../common/utils/billing-date.util';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class SubscriptionRenewalCron {
   private readonly logger = new Logger(SubscriptionRenewalCron.name);
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    @Optional() @Inject(CACHE_MANAGER) private readonly cacheManager?: Cache,
+  ) {}
 
   /**
    * Tarea programada que se ejecuta cada hora para renovar suscripciones expiradas.
@@ -35,6 +41,9 @@ export class SubscriptionRenewalCron {
       for (const tenant of dueTenants) {
         const tenantIdStr = String(tenant.id);
         const schemaName = tenant.schema_name;
+        if (!schemaName || schemaName === 'public' || !TenantContextService.validateSchemaName(schemaName)) {
+          continue;
+        }
         const currentRenewalDate = new Date(tenant.next_renewal_date);
 
         // 2. Congelar y cerrar el ciclo de facturación activo expirado
@@ -147,6 +156,9 @@ export class SubscriptionRenewalCron {
             `UPDATE public.tenants SET is_active = false WHERE id = $1`,
             [tenant.id]
           );
+          if (this.cacheManager) {
+            await this.cacheManager.del(`tenant_active:${schemaName}`).catch(() => {});
+          }
 
           this.logger.warn(
             `Organización '${schemaName}' (ID ${tenant.id}) no tiene renovaciones en cola. Suscripción marcada como INACTIVA.`

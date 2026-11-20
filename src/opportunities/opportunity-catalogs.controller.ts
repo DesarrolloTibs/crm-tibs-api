@@ -1,8 +1,11 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards, ParseUUIDPipe, ForbiddenException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { OpportunityCatalogsService } from './opportunity-catalogs.service';
 import { CreateCatalogOptionDto, UpdateCatalogOptionDto } from './dto/catalog-option.dto';
+import { GetUser } from '../auth/decorators/get-user.decorator';
+import { User } from '../users/entities/user.entity';
+import { Role } from '../role.enum';
 
 @ApiTags('opportunity-catalogs')
 @ApiBearerAuth()
@@ -10,6 +13,12 @@ import { CreateCatalogOptionDto, UpdateCatalogOptionDto } from './dto/catalog-op
 @UseGuards(AuthGuard('jwt'))
 export class OpportunityCatalogsController {
   constructor(private readonly catalogsService: OpportunityCatalogsService) {}
+
+  private checkAdmin(user: User) {
+    if (user.role !== Role.Admin && user.role !== Role.SuperAdmin && (user.role as any) !== 'superadmin') {
+      throw new ForbiddenException('Solo los administradores pueden administrar los catálogos.');
+    }
+  }
 
   // ==========================================
   // 1. Líneas de Negocio (Business Lines)
@@ -28,7 +37,8 @@ export class OpportunityCatalogsController {
 
   @Post('business-lines')
   @ApiOperation({ summary: 'Crear opción de línea de negocio' })
-  async createBusinessLine(@Body() createDto: CreateCatalogOptionDto) {
+  async createBusinessLine(@Body() createDto: CreateCatalogOptionDto, @GetUser() user: User) {
+    this.checkAdmin(user);
     return this.catalogsService.create('business-lines', createDto.strname);
   }
 
@@ -37,13 +47,16 @@ export class OpportunityCatalogsController {
   async updateBusinessLine(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateDto: UpdateCatalogOptionDto,
+    @GetUser() user: User,
   ) {
+    this.checkAdmin(user);
     return this.catalogsService.update('business-lines', id, updateDto.strname, updateDto.blnstatus);
   }
 
   @Delete('business-lines/:id')
   @ApiOperation({ summary: 'Eliminar opción de línea de negocio' })
-  async deleteBusinessLine(@Param('id', ParseUUIDPipe) id: string) {
+  async deleteBusinessLine(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+    this.checkAdmin(user);
     return this.catalogsService.remove('business-lines', id);
   }
 
@@ -64,7 +77,8 @@ export class OpportunityCatalogsController {
 
   @Post('delivery-types')
   @ApiOperation({ summary: 'Crear opción de tipo de entrega' })
-  async createDeliveryType(@Body() createDto: CreateCatalogOptionDto) {
+  async createDeliveryType(@Body() createDto: CreateCatalogOptionDto, @GetUser() user: User) {
+    this.checkAdmin(user);
     return this.catalogsService.create('delivery-types', createDto.strname);
   }
 
@@ -73,13 +87,16 @@ export class OpportunityCatalogsController {
   async updateDeliveryType(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateDto: UpdateCatalogOptionDto,
+    @GetUser() user: User,
   ) {
+    this.checkAdmin(user);
     return this.catalogsService.update('delivery-types', id, updateDto.strname, updateDto.blnstatus);
   }
 
   @Delete('delivery-types/:id')
   @ApiOperation({ summary: 'Eliminar opción de tipo de entrega' })
-  async deleteDeliveryType(@Param('id', ParseUUIDPipe) id: string) {
+  async deleteDeliveryType(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+    this.checkAdmin(user);
     return this.catalogsService.remove('delivery-types', id);
   }
 
@@ -100,7 +117,8 @@ export class OpportunityCatalogsController {
 
   @Post('licensings')
   @ApiOperation({ summary: 'Crear opción de licenciamiento' })
-  async createLicensing(@Body() createDto: CreateCatalogOptionDto) {
+  async createLicensing(@Body() createDto: CreateCatalogOptionDto, @GetUser() user: User) {
+    this.checkAdmin(user);
     return this.catalogsService.create('licensings', createDto.strname);
   }
 
@@ -109,13 +127,16 @@ export class OpportunityCatalogsController {
   async updateLicensing(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateDto: UpdateCatalogOptionDto,
+    @GetUser() user: User,
   ) {
+    this.checkAdmin(user);
     return this.catalogsService.update('licensings', id, updateDto.strname, updateDto.blnstatus);
   }
 
   @Delete('licensings/:id')
   @ApiOperation({ summary: 'Eliminar opción de licenciamiento' })
-  async deleteLicensing(@Param('id', ParseUUIDPipe) id: string) {
+  async deleteLicensing(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+    this.checkAdmin(user);
     return this.catalogsService.remove('licensings', id);
   }
 }

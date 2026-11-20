@@ -166,10 +166,11 @@ export class TenantContextService {
    * Ejemplo: "Mi Empresa S.A." → "tenant_mi_empresa_s_a"
    */
   static generateSlug(tenantName: string): string {
-    let slug = tenantName.toLowerCase();
+    let slug = (tenantName || '').toLowerCase();
     slug = slug.replace(/[^a-z0-9_]/g, '_');
     slug = slug.replace(/_+/g, '_');
     slug = slug.replace(/^_+|_+$/g, '');
-    return `tenant_${slug}`;
+    const full = `tenant_${slug}`;
+    return full.length > 63 ? full.slice(0, 63).replace(/_+$/g, '') : full;
   }
 }

@@ -2,6 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AiAgentService } from '../../conversations/ai-agent.service';
 import { WebchatEntityMatcherService } from './webchat-entity-matcher.service';
 import { ConversationHistoryMessage, CubeQuery, CubeQueryPlan, RouterClassification, WebchatActionType, WebchatDomain } from '../interfaces/webchat.interfaces';
+import {
+  normalizeSpokenSpanishText as normalizeSpokenSpanishUtil,
+  extractExpenseAmountFromText,
+  extractExpenseConceptFromText,
+  extractExpenseUserFromText,
+  isInvalidOrGenericExpenseConcept,
+} from '../../common/utils/spoken-spanish.util';
 
 @Injectable()
 export class WebchatQueryPlannerService {
@@ -17,101 +24,7 @@ export class WebchatQueryPlannerService {
    * "ocho veintiséis ciento veintinueve cuarenta y dos diez" -> "8261294210") y correos dictados con "arroba" / "punto".
    */
   normalizeSpokenSpanishText(text: string): string {
-    if (!text || typeof text !== 'string') return text;
-    let result = text.trim();
-
-    if (/\barroba\b/i.test(result)) {
-      result = result
-        .replace(/\s+arroba\s+/gi, '@')
-        .replace(/(\S+)\s+punto\s+(\S+)/gi, '$1.$2')
-        .replace(/(\S+)\s+guion\s+bajo\s+(\S+)/gi, '$1_$2')
-        .replace(/(\S+)\s+guion\s+(\S+)/gi, '$1-$2');
-    }
-
-    const unitsAndTeens: Record<string, number> = {
-      cero: 0, un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
-      seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12,
-      trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17,
-      dieciocho: 18, diecinueve: 19, veinte: 20, veintiun: 21, veintiuno: 21,
-      veintidos: 22, veintitres: 23, veinticuatro: 24, veinticinco: 25,
-      veintiseis: 26, veintisiete: 27, veintiocho: 28, veintinueve: 29,
-    };
-    const tens: Record<string, number> = {
-      treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60,
-      setenta: 70, ochenta: 80, noventa: 90,
-    };
-    const hundreds: Record<string, number> = {
-      cien: 100, ciento: 100, doscientos: 200, doscientas: 200,
-      trescientos: 300, trescientas: 300, cuatrocientos: 400, cuatrocientas: 400,
-      quinientos: 500, quinientas: 500, seiscientos: 600, seiscientas: 600,
-      setecientos: 700, setecientas: 700, ochocientos: 800, ochocientas: 800,
-      novecientos: 900, novecientas: 900,
-    };
-
-    const normWord = (w: string) =>
-      w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
-    const tokens = result.split(/\s+/);
-
-    const parseSubHundred = (idx: number): { val: string; nextIdx: number } | null => {
-      if (idx >= tokens.length) return null;
-      const w = normWord(tokens[idx]);
-      if (unitsAndTeens[w] !== undefined) {
-        return { val: String(unitsAndTeens[w]), nextIdx: idx + 1 };
-      }
-      if (tens[w] !== undefined) {
-        const base = tens[w];
-        if (idx + 2 < tokens.length && normWord(tokens[idx + 1]) === 'y') {
-          const u = normWord(tokens[idx + 2]);
-          if (unitsAndTeens[u] !== undefined && unitsAndTeens[u] >= 1 && unitsAndTeens[u] <= 9) {
-            return { val: String(base + unitsAndTeens[u]), nextIdx: idx + 3 };
-          }
-        }
-        return { val: String(base), nextIdx: idx + 1 };
-      }
-      return null;
-    };
-
-    const parseNumberGroup = (idx: number): { val: string; nextIdx: number } | null => {
-      if (idx >= tokens.length) return null;
-      const w = normWord(tokens[idx]);
-      if (/^\d+$/.test(w)) {
-        return { val: w, nextIdx: idx + 1 };
-      }
-      if (hundreds[w] !== undefined) {
-        const hVal = hundreds[w];
-        if (w === 'cien') {
-          return { val: '100', nextIdx: idx + 1 };
-        }
-        const sub = parseSubHundred(idx + 1);
-        if (sub) {
-          return { val: String(hVal + parseInt(sub.val, 10)), nextIdx: sub.nextIdx };
-        }
-        return { val: String(hVal), nextIdx: idx + 1 };
-      }
-      return parseSubHundred(idx);
-    };
-
-    const out: string[] = [];
-    let i = 0;
-    while (i < tokens.length) {
-      const groups: string[] = [];
-      let curr = i;
-      while (curr < tokens.length) {
-        const g = parseNumberGroup(curr);
-        if (!g) break;
-        groups.push(g.val);
-        curr = g.nextIdx;
-      }
-      const joined = groups.join('');
-      if (groups.length >= 2 && joined.length >= 7 && joined.length <= 15) {
-        out.push(joined);
-        i = curr;
-      } else {
-        out.push(tokens[i]);
-        i++;
-      }
-    }
-    return out.join(' ');
+    return normalizeSpokenSpanishUtil(text);
   }
 
   /**
@@ -132,14 +45,17 @@ export class WebchatQueryPlannerService {
     const lastAssistant = assistantMessages[assistantMessages.length - 1];
     const qNorm = this.normalizeSpokenSpanishText(currentQuestion || '');
 
-    if (/Para registrar al cliente o contacto,\s*por favor ind[ií]came al menos su Nombre/i.test(lastAssistant)) {
+    if (/Para registrar al cliente o contacto,\s*por favor ind[ií]came al menos su Nombre|Ya existe un cliente registrado con el (?:correo|tel[eé]fono)/i.test(lastAssistant)) {
       return 'createClient';
     }
-    if (/Para registrar una nueva empresa,\s*por favor ind[ií]came al menos su Nombre/i.test(lastAssistant)) {
+    if (/Para registrar una nueva empresa,\s*por favor ind[ií]came al menos su Nombre|La empresa .* ya se encuentra registrada/i.test(lastAssistant)) {
       return 'createCompany';
     }
     if (/Para poder crear(?:\s+la\s+oportunidad|\s+una\s+nueva\s+oportunidad)/i.test(lastAssistant)) {
       return 'createOpportunity';
+    }
+    if (/Conflicto de Horario:\s*La nueva fecha propuesta|No se encontr[oó] ninguna actividad que coincida/i.test(lastAssistant)) {
+      return 'modifyActivity';
     }
     if (/Para poder agendar|¿Para qu[eé] fecha y hora deseas programar|Horario no disponible/i.test(lastAssistant)) {
       return 'createActivity';
@@ -177,7 +93,7 @@ export class WebchatQueryPlannerService {
     }
 
     if (
-      /para registrar el gasto necesito|¿cu[aá]l es el \*{0,2}(?:concepto|monto)|todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|los gastos en el crm no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades) posibles para asociar el gasto|para asociar el gasto/i.test(
+      /para registrar el gasto necesito|¿cu[aá]l es el \*{0,2}(?:concepto|monto)|todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|los gastos en el crm no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades|usuarios) posibles para|no encontr[eé] ning[uú]n (?:cliente|oportunidad|usuario)(?:\s+(?:ni|o)\s+(?:oportunidad|cliente|ejecutivo))?\s+que\s+coincida|verifica el username o nombre del usuario|para asociar el gasto/i.test(
         lastAssistant,
       )
     ) {
@@ -226,6 +142,13 @@ export class WebchatQueryPlannerService {
     if (hasComplementaryContactData && /Empresa Registrada Exitosamente/i.test(lastAssistant)) {
       return 'modifyCompany';
     }
+    if (
+      !/^(cu[aá]nt|qu[eé]\s+actividades|lista|muestra|dame|ver|agenda)/i.test(qNorm) &&
+      /\b(cambia|mueve|reprograma|posp[oó]n|mejor\s+a|a\s+las\s+\d|ma[ñn]ana|pasado\s+ma[ñn]ana|recordatorio)\b/i.test(qNorm) &&
+      /Actividad Programada Exitosamente/i.test(lastAssistant)
+    ) {
+      return 'modifyActivity';
+    }
 
     return null;
   }
@@ -265,6 +188,7 @@ export class WebchatQueryPlannerService {
     actionType: string,
     params: Record<string, any>,
     normalizedQuestion: string,
+    lastAssistant: string = '',
   ): void {
     if (!params || typeof params !== 'object') return;
     for (const key of Object.keys(params)) {
@@ -272,6 +196,50 @@ export class WebchatQueryPlannerService {
         params[key] = this.normalizeSpokenSpanishText(params[key]);
       }
     }
+    if (
+      (actionType === 'createExpense' || actionType === 'modifyExpense') &&
+      typeof params.concepto === 'string' &&
+      isInvalidOrGenericExpenseConcept(params.concepto)
+    ) {
+      delete params.concepto;
+    }
+    if (
+      actionType === 'createOpportunity' &&
+      typeof params.nombreProyecto === 'string' &&
+      /^(?:(?:crea(?:r)?|genera(?:r)?|registra(?:r)?)\s+)?(?:una?\s+)?(?:nuev[oa]\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)$/i.test(
+        params.nombreProyecto.trim(),
+      )
+    ) {
+      delete params.nombreProyecto;
+    }
+    if (
+      actionType === 'createTicket' &&
+      typeof params.title === 'string' &&
+      /^(?:(?:crea(?:r)?|levanta(?:r)?|abre|abrir|registra(?:r)?)\s+)?(?:un\s+|una\s+|el\s+)?(?:nuev[oa]\s+)?(?:ticket|incidencia|reporte)(?:\s+de\s+soporte)?$/i.test(
+        params.title.trim(),
+      )
+    ) {
+      delete params.title;
+    }
+    if (
+      actionType === 'createClient' &&
+      typeof params.nombre === 'string' &&
+      /^(?:(?:crea(?:r)?|registra(?:r)?|agrega(?:r)?)\s+)?(?:un\s+|una\s+|el\s+)?(?:nuev[oa]\s+)?(?:cliente|contacto|prospecto|lead)$/i.test(
+        params.nombre.trim(),
+      )
+    ) {
+      delete params.nombre;
+    }
+    if (
+      actionType === 'createCompany' &&
+      typeof params.nombre === 'string' &&
+      /^(?:(?:crea(?:r)?|registra(?:r)?|agrega(?:r)?)\s+)?(?:una?\s+|la\s+)?(?:nuev[oa]\s+)?(?:empresa|compañ[ií]a|cuenta(?:\s+corporativa)?)$/i.test(
+        params.nombre.trim(),
+      )
+    ) {
+      delete params.nombre;
+    }
+
     if (
       actionType === 'createClient' ||
       actionType === 'modifyClient' ||
@@ -281,7 +249,10 @@ export class WebchatQueryPlannerService {
       actionType === 'modifyExpense' ||
       actionType === 'createProduct' ||
       actionType === 'modifyProduct' ||
-      actionType === 'modifyTicket'
+      actionType === 'createTicket' ||
+      actionType === 'modifyTicket' ||
+      actionType === 'createOpportunity' ||
+      actionType === 'modifyActivity'
     ) {
       const shouldExtractBasic =
         Object.keys(params).length === 0 ||
@@ -289,11 +260,41 @@ export class WebchatQueryPlannerService {
         actionType === 'modifyExpense' ||
         actionType === 'createProduct' ||
         actionType === 'modifyProduct' ||
-        actionType === 'modifyTicket';
-      const basic = shouldExtractBasic ? this.extractBasicActionParams(normalizedQuestion, actionType) : {};
+        actionType === 'createTicket' ||
+        actionType === 'modifyTicket' ||
+        actionType === 'modifyActivity';
+      const basic = shouldExtractBasic ? this.extractBasicActionParams(normalizedQuestion, actionType, lastAssistant) : {};
       for (const [k, v] of Object.entries(basic)) {
         if (v !== undefined && v !== '' && (params[k] === undefined || params[k] === null || params[k] === '')) {
           params[k] = v;
+        }
+      }
+
+      if (actionType === 'createExpense' || actionType === 'modifyExpense') {
+        const userHint = basic.usuario || basic.ejecutivo;
+        if (
+          userHint &&
+          /\busuario\b/i.test(normalizedQuestion) &&
+          !/\b(?:cliente|contacto)\b/i.test(normalizedQuestion) &&
+          typeof params.cliente === 'string' &&
+          params.cliente.trim()
+        ) {
+          const normTokens = (s: string) =>
+            s
+              .toLowerCase()
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .replace(/[._-]+/g, ' ')
+              .split(/\s+/)
+              .filter(t => t.length >= 2 && t !== 'punto');
+          const cToks = normTokens(params.cliente);
+          const uToks = normTokens(userHint);
+          const overlaps = cToks.some(ct =>
+            uToks.some(ut => ct === ut || (ct.length >= 4 && ut.length >= 4 && (ct.startsWith(ut) || ut.startsWith(ct)))),
+          );
+          if (overlaps) {
+            delete params.cliente;
+          }
         }
       }
     }
@@ -309,6 +310,11 @@ export class WebchatQueryPlannerService {
   ): RouterClassification {
     const normalizedQuestion = this.normalizeSpokenSpanishText(question);
     const pendingAction = this.detectPendingActionFromHistory(conversationHistory, normalizedQuestion);
+    const lastAssistant =
+      (conversationHistory || [])
+        .filter(m => m && m.role === 'assistant' && m.content)
+        .map(m => m.content)
+        .slice(-1)[0] || '';
     const sanitized = this.aiAgentService.sanitizeJsonOutput(rawLlmResponse);
 
     try {
@@ -332,7 +338,7 @@ export class WebchatQueryPlannerService {
         domain = 'ACTION_EXECUTION';
         intent = 'ACTION_EXECUTION';
         actionPlan.parameters = actionPlan.parameters || (actionPlan as any).params || parsed.parameters || {};
-        this.enrichActionParametersWithNormalizedInput(actionPlan.action, actionPlan.parameters, normalizedQuestion);
+        this.enrichActionParametersWithNormalizedInput(actionPlan.action, actionPlan.parameters, normalizedQuestion, lastAssistant);
         if (!actionPlan.thought) {
           actionPlan.thought = parsed.thought || 'Ruteo estructurado por IA.';
         }
@@ -340,7 +346,7 @@ export class WebchatQueryPlannerService {
         const actionType = parsed.action || pendingAction || this.inferActionTypeFromQuestion(normalizedQuestion);
         if (actionType) {
           const rawParams = parsed.parameters || parsed.params || parsed.data || {};
-          this.enrichActionParametersWithNormalizedInput(actionType, rawParams, normalizedQuestion);
+          this.enrichActionParametersWithNormalizedInput(actionType, rawParams, normalizedQuestion, lastAssistant);
           actionPlan = {
             action: actionType,
             parameters: rawParams,
@@ -356,7 +362,7 @@ export class WebchatQueryPlannerService {
         const resolvedAction = pendingAction || 'createClient';
         actionPlan = {
           action: resolvedAction,
-          parameters: this.extractBasicActionParams(normalizedQuestion, resolvedAction),
+          parameters: this.extractBasicActionParams(normalizedQuestion, resolvedAction, lastAssistant),
           thought: pendingAction
             ? `Recuperación heurística multi-turno para la acción activa ${pendingAction}.`
             : 'Recuperación heurística de dictado de datos de contacto.',
@@ -402,7 +408,7 @@ export class WebchatQueryPlannerService {
             : 'Recuperación de dictado de datos de contacto.',
           actionPlan: {
             action: resolvedAction,
-            parameters: this.extractBasicActionParams(normalizedQuestion, resolvedAction),
+            parameters: this.extractBasicActionParams(normalizedQuestion, resolvedAction, lastAssistant),
             thought: `Continuidad multi-turno para ${resolvedAction}.`,
           },
         };
@@ -559,7 +565,7 @@ export class WebchatQueryPlannerService {
   /**
    * Extrae parámetros básicos de la pregunta en caso de rescate heurístico.
    */
-  private extractBasicActionParams(question: string, actionType: string): Record<string, any> {
+  private extractBasicActionParams(question: string, actionType: string, lastAssistant: string = ''): Record<string, any> {
     const q = this.normalizeSpokenSpanishText(question).trim();
     const params: Record<string, any> = {};
 
@@ -568,9 +574,59 @@ export class WebchatQueryPlannerService {
       if (stageMatch && stageMatch[1]) {
         params.etapa = stageMatch[1].trim();
       }
-      params.nombreProyecto = q.replace(/^(crea|crear|genera|registra|modifica|actualiza|mueve|muevela|pasa|pasala)\s+(una\s+)?(oportunidad|cotizacion|cotización|proyecto)?\s*(para|de)?/i, '').trim();
+      const amountVal = extractExpenseAmountFromText(q);
+      if (amountVal !== null) {
+        params.montoTotal = amountVal;
+      }
+      if (/\b(usd|d[oó]lar(?:es)?)\b/i.test(q)) {
+        params.moneda = 'USD';
+      } else if (/\b(mxn|pesos)\b/i.test(q)) {
+        params.moneda = 'MXN';
+      }
+      const empMatch = q.match(/\b(?:para\s+la\s+empresa|de\s+la\s+empresa|empresa|cuenta)\s+["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|de\s+[$€£]?\d|monto|con|en\s+etapa)|[.,;](?:\s|$)|$)/i);
+      if (empMatch && empMatch[1]) {
+        params.empresa = empMatch[1].trim();
+      }
+      const cliMatch = q.match(/\b(?:para\s+el\s+cliente|del\s+cliente|con\s+(?:el\s+)?cliente|cliente)\s+["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|de\s+[$€£]?\d|monto|para\s+la\s+empresa|empresa|en\s+etapa)|[.,;](?:\s|$)|$)/i);
+      if (cliMatch && cliMatch[1]) {
+        params.cliente = cliMatch[1].trim();
+      }
+      const userExec = extractExpenseUserFromText(q);
+      if (userExec.ejecutivo) params.ejecutivo = userExec.ejecutivo;
+      else if (userExec.usuario) params.ejecutivo = userExec.usuario;
+
+      const assistantHasOppName = /Para poder crear la oportunidad "[^"]+"/i.test(lastAssistant);
+      const cleanedProj = q
+        .replace(/^(?:crea(?:r)?|genera(?:r)?|registra(?:r)?|modifica(?:r)?|actualiza(?:r)?|mueve|muevela|pasa|pasala)\s+(?:una?\s+)?(?:nuev[oa]\s+)?(?:oportunidad(?:es)?|cotizaci[oó]n|proyecto)?\s*(?:para|de)?/i, '')
+        .replace(/\b(?:para\s+la\s+empresa|de\s+la\s+empresa|empresa|cuenta|para\s+el\s+cliente|del\s+cliente|con\s+(?:el\s+)?cliente|cliente)\s+(?:[^,;"'\n]|\.(?=\S))+/gi, ' ')
+        .replace(/\b(?:por|de|con\s+(?:un\s+)?monto\s+de|monto)\s*[$€£]?\s*[\d,]+(?:\.\d{1,2})?\s*(?:pesos|mxn|usd|d[oó]lares)?/gi, ' ')
+        .replace(/\b(?:usd|mxn|pesos|d[oó]lares)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (
+        cleanedProj &&
+        cleanedProj.length >= 2 &&
+        (!assistantHasOppName || /\b(?:la\s+oportunidad|el\s+proyecto|nombre\s+del\s+proyecto)\b/i.test(q)) &&
+        !/^(?:(?:una?|el|la)\s+)?(?:nuev[oa]\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)$/i.test(cleanedProj)
+      ) {
+        params.nombreProyecto = cleanedProj;
+      }
     } else if (actionType === 'createActivity' || actionType === 'modifyActivity') {
-      params.activity = q.replace(/^(crea|crear|agenda|agendar|programa|programar|registra|registrar)\s+(una\s+)?/i, '').trim() || q;
+      const isBareTimeReply =
+        /^(?:mejor\s+|cambia(?:r)?\s+(?:a|para)\s+|mueve(?:la)?\s+a\s+|pasa(?:la)?\s+a\s+)?(?:hoy|ma[ñn]ana|pasado\s+ma[ñn]ana)?\s*(?:a\s+las?\s+|para\s+las?\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i.test(
+          q,
+        ) ||
+        (/Conflicto de Horario:/i.test(lastAssistant) && /^\s*(?:el|la|opci[oó]n|#)?\s*\d+\s*$/i.test(q));
+      const cleanedAct = q
+        .replace(/^(?:crea(?:r)?|agenda(?:r)?|programa(?:r)?|registra(?:r)?|modifica(?:r)?|cambia(?:r)?|reprograma(?:r)?|mueve|muevela)\s+(?:una?\s+|la\s+|el\s+)?/i, '')
+        .trim();
+      if (
+        !isBareTimeReply &&
+        cleanedAct &&
+        !/^(?:nuev[oa]\s+)?(?:actividad|reuni[oó]n|llamada|visita|demostraci[oó]n|cita)$/i.test(cleanedAct)
+      ) {
+        params.activity = cleanedAct;
+      }
 
       // Extraer empresa si se especifica "de la empresa X" o "empresa X"
       const empMatch = q.match(/(?:de\s+la\s+empresa|empresa|cuenta)\s+["']?([^"',]+?)["']?(?:\s+mañana|\s+hoy|\s+el\s+|\s+con\s+|\s+para\s+|$)/i);
@@ -597,8 +653,12 @@ export class WebchatQueryPlannerService {
       const dateSegmentMatch = q.match(/(?:para\s+el\s+|el\s+|para\s+)?\b(pasado\s+mañana|pasado\s+manana|pasadomañana|pasadomanana|hoy|mañana|manana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}(?:\s+de|\s+)[a-záéíóú]+|\d{4}-\d{2}-\d{2})\b.*$/i)
         || q.match(/\b(?:a\s+las?\s+|a\s+la\s+|para\s+las?\s+)\d{1,2}(?::\d{2})?\s*(?:am|pm)?.*$/i);
       if (dateSegmentMatch && dateSegmentMatch[0]) {
-        params.date = dateSegmentMatch[0].trim();
-      } else {
+        if (actionType === 'modifyActivity') {
+          params.newDate = dateSegmentMatch[0].trim();
+        } else {
+          params.date = dateSegmentMatch[0].trim();
+        }
+      } else if (actionType === 'createActivity') {
         params.date = 'mañana a las 10am';
       }
 
@@ -610,7 +670,34 @@ export class WebchatQueryPlannerService {
         params.recordatorio = true;
       }
     } else if (actionType === 'createTicket') {
-      params.title = q.replace(/^(crea|crear|levanta|levantar|abre|abrir|reporta)\s+(un\s+)?(ticket|incidencia|reporte)?\s*(por|de)?/i, '').trim() || q;
+      const cliMatch = q.match(/\b(?:para\s+el\s+cliente|del\s+cliente|con\s+(?:el\s+)?cliente|cliente)\s+["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|con|prioridad|urgente|responsable|asignad[oa])|[.,;](?:\s|$)|$)/i);
+      if (cliMatch && cliMatch[1]) {
+        params.cliente = cliMatch[1].trim();
+      }
+      const userExec = extractExpenseUserFromText(q);
+      if (userExec.ejecutivo) params.responsable = userExec.ejecutivo;
+      else if (userExec.usuario) params.responsable = userExec.usuario;
+      if (/\burgente\b|\bprioridad\s+alta\b/i.test(q)) {
+        params.priority = 3;
+      }
+      const askingDescriptionOnly =
+        /Descripci[oó]n del Problema/i.test(lastAssistant) && !/T[ií]tulo o Asunto/i.test(lastAssistant);
+      if (askingDescriptionOnly && q.length >= 5) {
+        params.description = q;
+      } else {
+        const cleanedTicket = q
+          .replace(/^(?:crea(?:r)?|levanta(?:r)?|abre|abrir|reporta(?:r)?|registra(?:r)?|nuev[oa])\s+(?:un\s+|una\s+|el\s+)?(?:nuev[oa]\s+)?(?:ticket|incidencia|reporte)?(?:\s+de\s+soporte)?\s*(?:por|de|sobre)?\s*/i, '')
+          .replace(/\b(?:para\s+el\s+cliente|del\s+cliente|con\s+(?:el\s+)?cliente|cliente)\s+(?:[^,;"'\n]|\.(?=\S))+/gi, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (
+          cleanedTicket &&
+          cleanedTicket.length >= 3 &&
+          !/^(?:(?:un|una|el|la)\s+)?(?:nuev[oa]\s+)?(?:ticket|incidencia|reporte)(?:\s+de\s+soporte)?$/i.test(cleanedTicket)
+        ) {
+          params.title = cleanedTicket;
+        }
+      }
     } else if (actionType === 'modifyTicket') {
       const folioMatch =
         q.match(/(?:ticket|folio|incidencia)\s*(?:n[uú]mero|num|no\.?|#)?\s*(\d+)/i) ||
@@ -873,23 +960,13 @@ export class WebchatQueryPlannerService {
       }
     } else if (actionType === 'createExpense' || actionType === 'modifyExpense') {
       const cleanedRaw = q.trim();
-      if (/^\s*\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(cleanedRaw)) {
+      if (/^\s*[$€£₽]?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(cleanedRaw)) {
         params.monto = Number(cleanedRaw.replace(/[^\d.]/g, ''));
       }
 
-      const amountMatch =
-        cleanedRaw.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/i) ||
-        cleanedRaw.match(/\bmonto(?:\s+de)?\s*:?\s*\$?\s*([\d,]+(?:\.\d{1,2})?)\b/i) ||
-        cleanedRaw.match(
-          /\b(?:de|por|a)\s+\$?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)?\b(?!\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b)/i,
-        ) ||
-        cleanedRaw.match(/\b([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)\b/i);
-
-      if (amountMatch && amountMatch[1]) {
-        const parsedAmount = Number(amountMatch[1].replace(/,/g, ''));
-        if (!Number.isNaN(parsedAmount) && parsedAmount > 0) {
-          params.monto = parsedAmount;
-        }
+      const extractedAmount = extractExpenseAmountFromText(cleanedRaw);
+      if (extractedAmount !== null) {
+        params.monto = extractedAmount;
       }
 
       const dateMatch = cleanedRaw.match(
@@ -900,33 +977,34 @@ export class WebchatQueryPlannerService {
       }
 
       const oppMatch = cleanedRaw.match(
-        /\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+|en\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de|monto|fecha|hoy|ayer|anteayer|antier|el\s+\d|con\s+(?:el\s+)?cliente|para\s+el\s+ejecutivo|asignad[oa])|$|[,.])/i,
+        /\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+|en\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|de|con\s+(?:un\s+)?monto|monto|fecha|hoy|ayer|anteayer|antier|el\s+\d|con\s+(?:el\s+)?cliente|para\s+el\s+(?:ejecutivo|usuario)|del\s+usuario|asignad[oa])|[.,;](?:\s|$)|$)/i,
       );
       if (oppMatch && oppMatch[1]) {
         params.oportunidad = oppMatch[1].trim();
       }
 
       const clientMatch = cleanedRaw.match(
-        /\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de\s+\$?\d|monto|fecha|hoy|ayer|anteayer|antier|el\s+\d|para\s+(?:la\s+)?oportunidad|asignad[oa]|ejecutivo)|$|[,.])/i,
+        /\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|de\s+[$€£]?\d|con\s+(?:un\s+)?monto|monto|fecha|hoy|ayer|anteayer|antier|el\s+\d|para\s+(?:la\s+)?oportunidad|asignad[oa]|ejecutivo|usuario)|[.,;](?:\s|$)|$)/i,
       );
       if (clientMatch && clientMatch[1]) {
         params.cliente = clientMatch[1].trim();
       }
 
-      const execMatch = cleanedRaw.match(
-        /\b(?:para\s+el\s+|asignad[oa]\s+(?:a|al)\s+)?ejecutivo\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de|monto|fecha|hoy|ayer|cliente|oportunidad)|$|[,.])/i,
-      );
-      if (execMatch && execMatch[1]) {
-        params.ejecutivo = execMatch[1].trim();
+      const userExec = extractExpenseUserFromText(cleanedRaw);
+      if (userExec.ejecutivo) {
+        params.ejecutivo = userExec.ejecutivo;
+      }
+      if (userExec.usuario) {
+        params.usuario = userExec.usuario;
       }
 
       if (actionType === 'modifyExpense') {
         const targetMatch = cleanedRaw.match(
-          /\b(?:el\s+|del\s+|los\s+)?(?:gastos?|vi[aá]ticos?|reembolsos?)\s+(?:de\s+|del\s+)?["']?([^,.;"'\n]+?)["']?(?=\s+(?:a\s+\$?\d|a\s+hoy|a\s+ayer|por\s+\$?\d|para\s+(?:el\s+cliente|la\s+oportunidad)|al\s+cliente|a\s+la\s+oportunidad|monto|concepto|fecha|con\s+(?:nuevo|el))|$|[,.])/i,
+          /\b(?:el\s+|del\s+|los\s+)?(?:gastos?|vi[aá]ticos?|reembolsos?)\s+(?:de\s+|del\s+)?["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:a\s+[$€£]?\d|a\s+hoy|a\s+ayer|por\s+[$€£]?\d|para\s+(?:el\s+cliente|la\s+oportunidad)|al\s+cliente|a\s+la\s+oportunidad|monto|concepto|fecha|con\s+(?:nuevo|el))|[.,;](?:\s|$)|$)/i,
         );
         if (targetMatch && targetMatch[1]) {
           const candidateTarget = targetMatch[1]
-            .replace(/\b(?:que\s+(?:era|cost[oó]|fue)|de\s+\$?\d+(?:[.,]\d{1,2})?)\b/gi, '')
+            .replace(/\b(?:que\s+(?:era|cost[oó]|fue)|de\s+[$€£]?\d+(?:[.,]\d{1,2})?)\b/gi, '')
             .trim();
           if (candidateTarget && !/^(hoy|ayer|anteayer|antier|\d+)$/i.test(candidateTarget)) {
             params.targetExpense = candidateTarget;
@@ -940,37 +1018,9 @@ export class WebchatQueryPlannerService {
           params.concepto = newConceptMatch[1].trim();
         }
       } else {
-        const conceptMatch = cleanedRaw.match(
-          /\bconcepto\s*:?\s*["']?([^,.;"'\n]+?)["']?(?=\s+(?:monto|por\s+\$?\d|de\s+\$?\d|fecha|hoy|ayer|cliente|oportunidad)|$|[,.])/i,
-        );
-        if (conceptMatch && conceptMatch[1]) {
-          params.concepto = conceptMatch[1].trim();
-        } else if (
-          /\b(crea(?:r)?|registra(?:r)?|apunta(?:r)?|anota(?:r)?|carga(?:r)?|captura(?:r)?|agrega(?:r)?|genera(?:r)?|gastos?|vi[aá]ticos?|reembolsos?)\b/i.test(
-            cleanedRaw,
-          )
-        ) {
-          const extractedConcept = cleanedRaw
-            .replace(
-              /^(?:crea(?:r)?|registra(?:r)?|apunta(?:r)?|anota(?:r)?|carga(?:r)?|captura(?:r)?|agrega(?:r)?|genera(?:r)?)\s+(?:un\s+|unos\s+)?(?:nuevo\s+)?(?:gastos?|vi[aá]ticos?|reembolsos?)\s*(?:de|por|en)?\s*/i,
-              '',
-            )
-            .replace(/\$?\s*[\d,]+(?:\.\d{1,2})?\s*(?:pesos|mxn|usd|d[oó]lares)?/gi, ' ')
-            .replace(/\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+|en\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+[^,.;]+/gi, ' ')
-            .replace(/\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+[^,.;]+/gi, ' ')
-            .replace(/\b(?:para\s+el\s+|asignad[oa]\s+(?:a|al)\s+)?ejecutivo\s+[^,.;]+/gi, ' ')
-            .replace(
-              /\b(?:fecha(?:\s+(?:del|a|para|en|:))?\s*)?(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|hoy|ayer|anteayer|antier|hace\s+\d+\s+d[ií]as?|\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+de\s+\d{4})?|(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+pasado)\b/gi,
-              ' ',
-            )
-            .replace(/\s+/g, ' ')
-            .trim()
-            .replace(/^(?:de|por|en|con|para|y)\s+/i, '')
-            .replace(/\s+(?:de|por|en|con|para|a|del|al|y)$/i, '')
-            .trim();
-          if (extractedConcept && extractedConcept.length >= 2) {
-            params.concepto = extractedConcept;
-          }
+        const extractedConcept = extractExpenseConceptFromText(cleanedRaw);
+        if (extractedConcept) {
+          params.concepto = extractedConcept;
         }
       }
     }

@@ -525,3 +525,15 @@ Para garantizar que ningún mensaje entrante desde canales externos (WhatsApp, F
 5. **Protección de Endpoints y Salas WebSocket (`ConversationsController` & `ConversationsGateway`):**
    - El endpoint `POST /conversations/test-receive` exige `@UseGuards(AuthGuard('jwt'))`.
    - Los eventos `set_tenant` y `join_tenant` en `ConversationsGateway` verifican que el usuario del socket sea `superadmin` o pertenezca al `tenantSchema` solicitado.
+
+---
+
+## 6. Endurecimiento de Schemas Zod, Sub-Agentes, RAG y Tool Execution (Bloque 3)
+* **Validación Estricta Zod Compartida (`AI_AGENT_TOOL_SCHEMAS` en `ai-agent-tools.schema.ts`):**
+  * **Acotamiento y Normalización Anti-Alucinación:** Todos los esquemas (`RegisterContactSchema`, `UpdateContactSchema`, `OpportunityItemSchema`, `CreateOpportunitySchema`, `ModifyOpportunitySchema`, `CheckAvailabilitySchema`, `CreateActivitySchema`, `CreateTicketSchema`, `ConsultProductCatalogSchema`, `SendQuotationPdfSchema`, `RequestHumanHandoffSchema`) normalizan vacíos (`'' -> null/undefined`) y aplican topes alineados a PostgreSQL (`nombre/empresa/correo <= 255`, `telefono 7..50`, `descripcion <= 1000`, `activityText <= 5000`, `reminderTitle <= 100`, `montoTotal 0..99999999.99`, `cantidad 0.01..999999`, `priority 1..3`, máximo `50` items).
+  * **Compatibilidad AI-First Preservada:** En `OpportunityItemSchema`, `productId` se mantiene flexible (`string <= 255`) para resolver calibres y nombres semánticos sin romper cotizaciones si el LLM omite el UUID; en `ConsultProductCatalogSchema` se conservan `products`, `search`, `productName` e `items` y en fechas ISO (`CheckAvailabilitySchema` / `CreateActivitySchema`) se habilita `datetime({ offset: true })`.
+  * **Validación en Doble Capa:** Tanto `AiAgentOrchestratorService.executeToolNode` como `AiAgentToolsHandlerService.executeTool` ejecutan `.safeParse()` sobre `AI_AGENT_TOOL_SCHEMAS` antes de tocar servicios/TypeORM. Además, `modifyOpportunity` hidrata al `User` completo (`resolveUserEntity`) y recorta/acota montos y campos.
+* **Sub-Agentes y Configuración (`SaveSubAgentDto` / `UpdateAiConfigDto`):**
+  * `POST /api/conversations/sub-agents` y `DELETE /api/conversations/sub-agents/:id` exigen rol `Admin`/`SuperAdmin` y validan `SaveSubAgentDto`: `key` `/^[a-z0-9_]+$/` (`<= 50` chars único), `name <= 255`, `description <= 2000`, `context <= 25000`, `temperature` `0..1` y `tools` acotado estrictamente a `ALLOWED_AI_AGENT_TOOLS`.
+* **RAG Vectorial y Consultas (`RagService`, `UploadRagDto`, `SearchRagQueryDto`, `WebchatEntityMatcherService`):**
+  * `RagService.initializeVectorStore()` valida `TenantContextService.validateSchemaName` antes de construir `search_path` y `searchSimilar()` acota `limit` en `1..20`; `UploadRagDto`/`SearchRagQueryDto` aplican `trim` (`productKey <= 150`, `query <= 500`). `WebchatEntityMatcherService` recorta `searchTerm` a `200` caracteres antes de consultas transversales.

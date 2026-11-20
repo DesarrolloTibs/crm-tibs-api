@@ -115,7 +115,7 @@ export class PipelinesService {
   async updateMainPipeline(
     updateDto: {
       strname?: string;
-      strdescription?: string;
+      strdescription?: string | null;
       blnstatus?: boolean;
       stages?: Array<{
         id?: string;
@@ -190,6 +190,9 @@ export class PipelinesService {
             const foundStage = await manager.findOne(Stage, { where: { id: stageInput.id } });
             if (!foundStage) {
               throw new NotFoundException(`La etapa con ID ${stageInput.id} no existe.`);
+            }
+            if (foundStage.pipeline_id !== pipeline.id) {
+              throw new BadRequestException(`La etapa con ID ${stageInput.id} no pertenece al pipeline principal.`);
             }
             stage = foundStage;
           } else {

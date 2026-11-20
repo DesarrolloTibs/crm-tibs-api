@@ -32,6 +32,7 @@ import { PlansModule } from './plans/plans.module';
 import { TenantsModule } from './tenants/tenants.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { TenantMiddleware } from './tenancy/tenant.middleware';
+import { TenantContextService } from './tenancy/tenant-context.service';
 import { CalendarIntegrationsModule } from './calendar-integrations/calendar-integrations.module';
 
 @Module({
@@ -274,7 +275,7 @@ export class AppModule implements OnApplicationBootstrap, NestModule {
         const tenants = await queryRunner.query('SELECT schema_name FROM public.tenants WHERE is_active = true');
         for (const tenant of tenants) {
           const schema = tenant.schema_name;
-          if (schema === 'public') continue;
+          if (!schema || schema === 'public' || !TenantContextService.validateSchemaName(schema)) continue;
 
           this.logger.log(`Upgrading schema "${schema}" for external calendar integrations...`);
 

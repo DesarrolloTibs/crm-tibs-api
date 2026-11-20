@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CreateInteractionDto } from './dto/create-interaction.dto';
@@ -25,15 +25,18 @@ export class InteractionsService {
   }
 
   async update(id: string, updateInteractionDto: UpdateInteractionDto): Promise<Interaction> {
-    await this.interactionRepository.update(id, updateInteractionDto);
-    const updatedInteraction = await this.interactionRepository.findOne({ where: { id } });
-    if (!updatedInteraction) {
-      throw new Error('Interaction not found');
+    const existing = await this.interactionRepository.findOne({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Interacción con ID "${id}" no encontrada.`);
     }
-    return updatedInteraction;
+    Object.assign(existing, updateInteractionDto);
+    return this.interactionRepository.save(existing);
   }
 
   async remove(id: string): Promise<void> {
-    await this.interactionRepository.delete(id);
+    const result = await this.interactionRepository.delete(id);
+    if (!result.affected) {
+      throw new NotFoundException(`Interacción con ID "${id}" no encontrada.`);
+    }
   }
 }

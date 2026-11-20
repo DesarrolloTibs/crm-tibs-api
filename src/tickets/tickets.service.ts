@@ -69,8 +69,8 @@ export class TicketsService {
     }
     ticket.stage_id = stage.id;
 
-    // Lógica especial si la etapa inicial es "Resuelto"
-    if (stage.strname === 'Resuelto') {
+    // Lógica especial si la etapa inicial es Resuelta (stage_type === 1)
+    if (stage.stage_type === 1 || stage.strname === 'Resuelto') {
       const notes = createTicketDto.notas_resolucion;
       if (!notes || !notes.trim()) {
         throw new BadRequestException('Las notas de resolución son obligatorias al resolver el ticket.');
@@ -111,11 +111,11 @@ export class TicketsService {
         }
 
         const newClient = this.clientRepository.create({
-          nombre: firstName,
-          apellido: lastName,
-          correo: email,
-          telefono: createTicketDto.contactPhone || '',
-          empresa: createTicketDto.companyName || '',
+          nombre: firstName.slice(0, 255),
+          apellido: lastName.slice(0, 255),
+          correo: email.slice(0, 255),
+          telefono: (createTicketDto.contactPhone || '').trim().slice(0, 50),
+          empresa: (createTicketDto.companyName || '').trim().slice(0, 255),
           category: ClientCategory.CONTACTO,
           estatus: true,
         });
@@ -124,18 +124,23 @@ export class TicketsService {
         ticket.cliente_id = savedClient.id;
       }
       // Guardamos la info de contacto directo también
-      ticket.contactName = createTicketDto.contactName || null;
-      ticket.contactEmail = email;
-      ticket.contactPhone = createTicketDto.contactPhone || null;
+      ticket.contactName = createTicketDto.contactName?.slice(0, 255) || null;
+      ticket.contactEmail = email.slice(0, 255);
+      ticket.contactPhone = createTicketDto.contactPhone?.slice(0, 50) || null;
     } else {
       // Campos de contacto opcionales
-      ticket.contactName = createTicketDto.contactName || null;
+      ticket.contactName = createTicketDto.contactName?.slice(0, 255) || null;
       ticket.contactEmail = null;
-      ticket.contactPhone = createTicketDto.contactPhone || null;
+      ticket.contactPhone = createTicketDto.contactPhone?.slice(0, 50) || null;
     }
 
     if (createTicketDto.responsable_id) {
-      ticket.responsable_id = createTicketDto.responsable_id;
+      const userRepo = this.ticketRepository.manager.getRepository(User);
+      const assignedAgent = await userRepo.findOne({ where: { id: createTicketDto.responsable_id } });
+      if (!assignedAgent) {
+        throw new NotFoundException(`El usuario responsable con ID "${createTicketDto.responsable_id}" no existe.`);
+      }
+      ticket.responsable_id = assignedAgent.id;
     }
 
     const savedTicket = await this.ticketRepository.save(ticket);
@@ -255,7 +260,10 @@ export class TicketsService {
       if (updateTicketDto.responsable_id) {
         const userRepo = this.ticketRepository.manager.getRepository(User);
         const newAgent = await userRepo.findOne({ where: { id: updateTicketDto.responsable_id } });
-        newAgentName = newAgent ? newAgent.username : 'Sin asignar';
+        if (!newAgent) {
+          throw new NotFoundException(`El usuario responsable con ID "${updateTicketDto.responsable_id}" no existe.`);
+        }
+        newAgentName = newAgent.username;
         ticket.responsable = newAgent;
       } else {
         ticket.responsable = null;
@@ -269,8 +277,12 @@ export class TicketsService {
       const oldClientName = ticket.cliente ? `${ticket.cliente.nombre} ${ticket.cliente.apellido}` : 'Sin asignar';
       let newClientName = 'Sin asignar';
       if (updateTicketDto.cliente_id) {
-        ticket.cliente = await this.clientRepository.findOne({ where: { id: updateTicketDto.cliente_id } });
-        newClientName = ticket.cliente ? `${ticket.cliente.nombre} ${ticket.cliente.apellido}` : 'Sin asignar';
+        const existingClient = await this.clientRepository.findOne({ where: { id: updateTicketDto.cliente_id } });
+        if (!existingClient) {
+          throw new NotFoundException(`El cliente con ID "${updateTicketDto.cliente_id}" no existe.`);
+        }
+        ticket.cliente = existingClient;
+        newClientName = `${existingClient.nombre} ${existingClient.apellido || ''}`.trim();
       } else {
         ticket.cliente = null;
       }
@@ -284,9 +296,12 @@ export class TicketsService {
       if (!newStage) {
         throw new NotFoundException(`La etapa con ID "${updateTicketDto.stage_id}" no existe.`);
       }
+      if (newStage.helpdesk_id !== ticket.helpdesk_id) {
+        throw new BadRequestException(`La etapa seleccionada no pertenece a la mesa de ayuda del ticket.`);
+      }
       
-      // Si la nueva etapa es "Resuelto"
-      if (newStage.strname === 'Resuelto') {
+      // Si la nueva etapa es Resuelta (stage_type === 1)
+      if (newStage.stage_type === 1 || newStage.strname === 'Resuelto') {
         const notes = updateTicketDto.notas_resolucion ?? ticket.notas_resolucion;
         if (!notes || !notes.trim()) {
           throw new BadRequestException('Las notas de resolución son obligatorias al resolver el ticket.');
@@ -300,7 +315,7 @@ export class TicketsService {
       ticket.stage_id = newStage.id;
       ticket.stage = newStage;
       ticket.stage_entered_at = new Date();
-    } else if (ticket.stage && ticket.stage.strname === 'Resuelto') {
+    } else if (ticket.stage && (ticket.stage.stage_type === 1 || ticket.stage.strname === 'Resuelto')) {
       // Si ya estaba resuelto pero no cambió de etapa, igual verificamos que no limpien las notas
       const notes = updateTicketDto.notas_resolucion !== undefined ? updateTicketDto.notas_resolucion : ticket.notas_resolucion;
       if (!notes || !notes.trim()) {
@@ -419,8 +434,12 @@ export class TicketsService {
       .leftJoinAndSelect('ticket.responsable', 'responsable');
 
     if (ticketNumber) {
-      const cleanNumber = parseInt(ticketNumber.replace('#', '').trim(), 10);
-      if (isNaN(cleanNumber)) {
+      const rawNumber = ticketNumber.trim();
+      if (!/^#?\d{1,10}$/.test(rawNumber)) {
+        throw new BadRequestException('El número de ticket no es válido.');
+      }
+      const cleanNumber = parseInt(rawNumber.replace('#', ''), 10);
+      if (isNaN(cleanNumber) || cleanNumber <= 0) {
         throw new BadRequestException('El número de ticket no es válido.');
       }
       qb.andWhere('ticket.ticket_number = :cleanNumber', { cleanNumber });

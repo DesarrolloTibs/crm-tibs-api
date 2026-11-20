@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
 import * as fs from 'fs';
 import type { Response } from 'express';
 import { join } from 'path';
@@ -54,6 +54,24 @@ export class ExpensesService implements OnModuleInit {
         return expense;
     }
 
+    private async assertExpenseAccess(expense: Expense, user?: any): Promise<void> {
+        if (!user) return;
+        const userId = user.id || user.userId;
+        let userRole = user.role;
+        if (!userRole && userId) {
+            try {
+                const fullUser = await this.usersService.findOneById(userId);
+                userRole = fullUser?.role;
+            } catch {
+                // fallback silently
+            }
+        }
+        const isAdminOrSuper = userRole === Role.Admin || userRole === Role.SuperAdmin || (userRole as string) === 'superadmin';
+        if (!isAdminOrSuper && userId && expense.usuario_id && expense.usuario_id !== userId) {
+            throw new ForbiddenException('No tienes permiso para acceder o modificar este gasto.');
+        }
+    }
+
     async create(createExpenseDto: CreateExpenseDto, user: any): Promise<Expense> {
         const { client_id, opportunity_id, ...expenseData } = createExpenseDto;
 
@@ -62,6 +80,23 @@ export class ExpensesService implements OnModuleInit {
             throw new BadRequestException(
                 'El gasto debe estar asociado a un Cliente O a una Oportunidad, pero no a ambos ni a ninguno.',
             );
+        }
+
+        if (expenseData.monto !== undefined && (isNaN(Number(expenseData.monto)) || Number(expenseData.monto) <= 0)) {
+            throw new BadRequestException('El monto del gasto debe ser mayor a 0.');
+        }
+
+        if (client_id) {
+            const clientExists = await this.expensesRepository.manager.getRepository(Client).findOne({ where: { id: client_id } });
+            if (!clientExists) {
+                throw new NotFoundException(`Cliente con ID "${client_id}" no encontrado.`);
+            }
+        }
+        if (opportunity_id) {
+            const oppExists = await this.expensesRepository.manager.getRepository(Opportunity).findOne({ where: { id: opportunity_id } });
+            if (!oppExists) {
+                throw new NotFoundException(`Oportunidad con ID "${opportunity_id}" no encontrada.`);
+            }
         }
 
         const userId = user ? (user.id || user.userId) : null;
@@ -130,7 +165,7 @@ export class ExpensesService implements OnModuleInit {
         return expenses.map((exp) => this.formatExpense(exp));
     }
 
-    async findOne(id: string): Promise<Expense> {
+    async findOne(id: string, user?: any): Promise<Expense> {
         const expense = await this.expensesRepository.findOne({
             where: { id },
             relations: ['client', 'opportunity', 'usuario'],
@@ -140,13 +175,18 @@ export class ExpensesService implements OnModuleInit {
             throw new NotFoundException(`Expense with ID ${id} not found`);
         }
 
+        await this.assertExpenseAccess(expense, user);
         return this.formatExpense(expense);
     }
 
-    async update(id: string, updateExpenseDto: UpdateExpenseDto): Promise<Expense> {
-        const expense = await this.findOne(id);
+    async update(id: string, updateExpenseDto: UpdateExpenseDto, user?: any): Promise<Expense> {
+        const expense = await this.findOne(id, user);
 
         const { client_id, opportunity_id, ...updateData } = updateExpenseDto;
+
+        if (updateData.monto !== undefined && (isNaN(Number(updateData.monto)) || Number(updateData.monto) <= 0)) {
+            throw new BadRequestException('El monto del gasto debe ser mayor a 0.');
+        }
 
         // Lógica de actualización de relaciones si se enviaron en el DTO
         if (client_id !== undefined || opportunity_id !== undefined) {
@@ -174,11 +214,19 @@ export class ExpensesService implements OnModuleInit {
             }
 
             if (newClientId) {
+                const clientExists = await this.expensesRepository.manager.getRepository(Client).findOne({ where: { id: newClientId } });
+                if (!clientExists) {
+                    throw new NotFoundException(`Cliente con ID "${newClientId}" no encontrado.`);
+                }
                 expense.client_id = newClientId;
                 expense.client = { id: newClientId } as Client;
                 expense.opportunity_id = null;
                 expense.opportunity = null;
             } else if (newOpportunityId) {
+                const oppExists = await this.expensesRepository.manager.getRepository(Opportunity).findOne({ where: { id: newOpportunityId } });
+                if (!oppExists) {
+                    throw new NotFoundException(`Oportunidad con ID "${newOpportunityId}" no encontrada.`);
+                }
                 expense.opportunity_id = newOpportunityId;
                 expense.opportunity = { id: newOpportunityId } as Opportunity;
                 expense.client_id = null;
@@ -189,11 +237,11 @@ export class ExpensesService implements OnModuleInit {
         Object.assign(expense, updateData);
 
         await this.expensesRepository.save(expense);
-        return this.findOne(id);
+        return this.findOne(id, user);
     }
 
-    async remove(id: string): Promise<void> {
-        const expense = await this.findOne(id);
+    async remove(id: string, user?: any): Promise<void> {
+        const expense = await this.findOne(id, user);
         if (expense.receiptUrl) {
             if (this.storageService) {
                 await this.storageService.deleteFile(expense.receiptUrl);
@@ -207,15 +255,16 @@ export class ExpensesService implements OnModuleInit {
         await this.expensesRepository.remove(expense);
     }
 
-    async uploadReceiptFile(id: string, file: Express.Multer.File): Promise<Expense> {
+    async uploadReceiptFile(id: string, file: Express.Multer.File, user?: any): Promise<Expense> {
         if (!file) {
             throw new BadRequestException('Se requiere un archivo de comprobante.');
         }
+        const expense = await this.findOne(id, user);
         const relativePath = file.path.replace(/\\/g, '/');
         const storedUrl = this.storageService
             ? await this.storageService.uploadFile(file.path, `/${relativePath}`)
             : `/${relativePath}`;
-        return this.uploadReceipt(id, storedUrl);
+        return this.uploadReceipt(expense.id, storedUrl);
     }
 
     async uploadReceipt(id: string, receiptUrl: string): Promise<Expense> {
@@ -242,8 +291,8 @@ export class ExpensesService implements OnModuleInit {
         return this.findOne(id);
     }
 
-    async removeReceipt(id: string): Promise<Expense> {
-        const expense = await this.findOne(id);
+    async removeReceipt(id: string, user?: any): Promise<Expense> {
+        const expense = await this.findOne(id, user);
 
         if (expense.receiptUrl) {
             if (this.storageService) {
@@ -260,14 +309,14 @@ export class ExpensesService implements OnModuleInit {
             }
             expense.receiptUrl = null;
             await this.expensesRepository.save(expense);
-            return this.findOne(id);
+            return this.findOne(id, user);
         }
 
         return expense;
     }
 
-    async downloadReceipt(id: string, res: Response): Promise<void> {
-        const filePath = await this.getReceiptPath(id);
+    async downloadReceipt(id: string, res: Response, user?: any): Promise<void> {
+        const filePath = await this.getReceiptPath(id, user);
         if (this.storageService) {
             return this.storageService.downloadFile(filePath, res);
         }
@@ -276,8 +325,8 @@ export class ExpensesService implements OnModuleInit {
         return res.sendFile(absolutePath);
     }
 
-    async getReceiptPath(id: string): Promise<string> {
-        const expense = await this.findOne(id);
+    async getReceiptPath(id: string, user?: any): Promise<string> {
+        const expense = await this.findOne(id, user);
         if (!expense.receiptUrl) {
             throw new NotFoundException(`Receipt not found for expense with ID "${id}"`);
         }

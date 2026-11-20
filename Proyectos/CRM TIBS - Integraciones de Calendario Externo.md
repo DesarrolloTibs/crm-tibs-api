@@ -117,3 +117,11 @@ Para resolver este desafío arquitectónico sin romper el aislamiento multi-tena
   - Microsoft Graph limita la vigencia a 2.9 días y exige `changeType = 'created,updated,deleted'`.
   - El sistema auto-renueva preventivamente la suscripción push tanto en el cron bi-diario como en el flujo interactivo de consulta del usuario (`syncExternalChangesToCRM`).
 * **Normalización de Fechas UTC (`parseExternalEventDate`):** Concatena el sufijo `Z` cuando Graph entrega cadenas sin offset con `timeZone: 'UTC'` (`2026-10-12T16:00:00.0000000Z`), previniendo desfases horarios al ser parseadas por Node.js en zonas horarias locales.
+
+---
+
+## 7. Validación de OAuth State, Proveedores y Webhooks Push (Bloque 3)
+* **`CalendarIntegrationsController` (`GetCalendarAuthUrlQueryDto`):** El endpoint `GET /api/calendar-integrations/auth-url` valida `provider` mediante DTO (`@IsIn(['google', 'outlook'])` con normalización a minúsculas).
+* **`CalendarWebhooksController`:**
+  * En `GET /api/calendar-webhooks/oauth-callback`, antes de invocar `TenantContextService.run`, se valida estrictamente que el `state` decodificado contenga `tenantSchema` válido (`'public'` o `TenantContextService.validateSchemaName`), `userId` UUID válido (`isUUID`) y `provider` en `['google', 'outlook']`, redirigiendo de forma segura ante estados manipulados.
+  * En `POST /api/calendar-webhooks/google` y `POST /api/calendar-webhooks/outlook`, se acotan `x-goog-channel-id` y `clientState` (`string`, máx. 255 chars) y se verifica `Array.isArray(payload.value)` antes de consultar `public.calendar_webhooks_mapping`.

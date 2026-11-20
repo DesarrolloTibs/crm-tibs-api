@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
 
 export class RefreshTokenDto {
   @ApiProperty({
@@ -8,5 +8,6 @@ export class RefreshTokenDto {
   })
   @IsNotEmpty({ message: 'El refresh_token es obligatorio' })
   @IsString({ message: 'El refresh_token debe ser una cadena de texto' })
+  @MaxLength(2048, { message: 'El refresh_token excede la longitud máxima permitida' })
   refresh_token: string;
 }

@@ -10,6 +10,7 @@ import { ProductFile } from '../products/entities/product-file.entity';
 import { Product } from '../products/entities/product.entity';
 import { OpportunitiesService } from '../opportunities/opportunities.service';
 import { ActivitiesService } from '../activities/activities.service';
+import { TypeActivity } from '../activities/entities/type-activity.entity';
 import { TicketsService } from '../tickets/tickets.service';
 import { ClientsService } from '../clients/clients.service';
 import { RagService } from '../rag/rag.service';
@@ -23,6 +24,7 @@ import { UsersService } from '../users/users.service';
 import { User } from '../users/entities/user.entity';
 import { QUOTATION_EVENTS } from '../common/events/quotation.events';
 import { ConsumptionAuditContext } from '../subscriptions/subscription-validator.service';
+import { AI_AGENT_TOOL_SCHEMAS } from './dto/ai-agent-tools.schema';
 
 /**
  * Handles the execution of all AI agent tools that interact with CRM services.
@@ -48,6 +50,15 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  private async resolveUserEntity(userId?: string | null): Promise<User | undefined> {
+    if (!userId || !this.isValidUuid(userId)) return undefined;
+    if (typeof this.usersService?.findOneById === 'function') {
+      const fullUser = await this.usersService.findOneById(userId).catch(() => null);
+      if (fullUser) return fullUser;
+    }
+    return { id: userId } as User;
+  }
+
   async onModuleInit() {
     // Sincronizar en segundo plano fichas técnicas PDF y catálogo al vector store pgvector
     setTimeout(() => {
@@ -62,6 +73,23 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
    */
   async executeTool(name: string, input: any, conversation: Conversation, config: AiAgentConfig, auditContext?: ConsumptionAuditContext): Promise<any> {
     try {
+      const canonicalName = name === 'consultProductCatalog' ? 'consult_product_catalog' : name;
+      const toolSchema = AI_AGENT_TOOL_SCHEMAS[canonicalName];
+      if (!toolSchema) {
+        return { status: 'ERROR', message: `Herramienta '${name}' no reconocida.` };
+      }
+
+      const parsedArgs = toolSchema.safeParse(input || {});
+      if (!parsedArgs.success) {
+        this.logger.warn(`Error de validación Zod en AiAgentToolsHandlerService ('${canonicalName}'): ${JSON.stringify(parsedArgs.error.format())}`);
+        return {
+          status: 'ERROR',
+          message: `Argumentos inválidos para la herramienta '${canonicalName}'.`,
+          details: parsedArgs.error.flatten().fieldErrors,
+        };
+      }
+      input = parsedArgs.data;
+
       switch (name) {
         case 'consult_product_catalog':
         case 'consultProductCatalog': {
@@ -215,7 +243,7 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
         }
 
         case 'createOpportunity': {
-          const userEntity = conversation.assignedUserId ? { id: conversation.assignedUserId } as User : undefined;
+          const userEntity = await this.resolveUserEntity(conversation.assignedUserId);
 
           // 0. VALIDACIÓN Y RECONCILIACIÓN ESTRICTA DE CONTACTO PARA COTIZACIÓN Y SEGUIMIENTO COMERCIAL
           const clientId = conversation.clientId;
@@ -225,9 +253,9 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
           }
 
           // Si se proporcionó correo, teléfono o empresa en input, actualizar el cliente en el CRM
-          const providedEmail = (input.correo || input.email || '').toString().trim().toLowerCase();
-          const providedPhone = (input.telefono || input.phone || '').toString().trim();
-          const providedEmpresa = (input.empresa || '').toString().trim();
+          const providedEmail = (input.correo || input.email || '').toString().trim().toLowerCase().slice(0, 255);
+          const providedPhone = (input.telefono || input.phone || '').toString().trim().slice(0, 50);
+          const providedEmpresa = (input.empresa || '').toString().trim().slice(0, 255);
 
           if (client) {
             let changed = false;
@@ -299,6 +327,8 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
               cleanMonto = isNaN(parsed) ? 0 : parsed;
             }
           }
+          if (!Number.isFinite(cleanMonto) || cleanMonto < 0) cleanMonto = 0;
+          if (cleanMonto > 99999999.99) cleanMonto = 99999999.99;
 
           // Parsear nombres de productos legacy
           const rawProductNames = input.nombreProducto
@@ -562,8 +592,8 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
           }
 
           const opp = await this.opportunitiesService.create({
-            nombre_proyecto: input.nombreProyecto,
-            description: input.descripcion || 'Creado por Agente IA',
+            nombre_proyecto: (input.nombreProyecto || 'Oportunidad CRM').toString().trim().slice(0, 255),
+            description: (input.descripcion || 'Creado por Agente IA').toString().trim().slice(0, 1000),
             monto_total: cleanMonto,
             moneda: input.moneda || Currency.USD,
             cliente_id: conversation.clientId || undefined,
@@ -681,17 +711,23 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
             }
           }
 
+          if (cleanMonto !== undefined) {
+            if (!Number.isFinite(cleanMonto) || cleanMonto < 0) cleanMonto = 0;
+            if (cleanMonto > 99999999.99) cleanMonto = 99999999.99;
+          }
+
           const updatedProductItems = Array.from(itemMap.entries()).map(([productId, cantidad]) => ({
             productId,
-            cantidad,
+            cantidad: Math.min(999999, Math.max(1, Number(cantidad) || 1)),
           }));
 
+          const userEntity = await this.resolveUserEntity(conversation.assignedUserId);
           const opp = await this.opportunitiesService.update(input.id, {
-            nombre_proyecto: input.nombreProyecto || undefined,
-            description: input.descripcion || undefined,
-            monto_total: cleanMonto || undefined,
+            nombre_proyecto: input.nombreProyecto ? String(input.nombreProyecto).trim().slice(0, 255) : undefined,
+            description: input.descripcion ? String(input.descripcion).trim().slice(0, 1000) : undefined,
+            monto_total: cleanMonto !== undefined ? cleanMonto : undefined,
             productItems: updatedProductItems.length > 0 ? updatedProductItems : undefined,
-          });
+          }, userEntity);
 
           this.eventEmitter.emit(QUOTATION_EVENTS.SEND_TO_CHANNEL, {
             opportunityId: opp.id,
@@ -745,23 +781,23 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
             const isPlaceholderName = !client.nombre || /^(visitante|prospecto|contacto|usuario|cliente)\b/i.test(client.nombre.trim());
             if (input.nombre && !input.nombre.toLowerCase().includes('visitante') && (isSameConversationClient || isPlaceholderName)) {
               const names = this.splitFullName(input.nombre);
-              client.nombre = names.nombre;
-              if (names.apellido) client.apellido = names.apellido;
+              client.nombre = names.nombre.slice(0, 255);
+              if (names.apellido) client.apellido = names.apellido.slice(0, 255);
             }
-            if (email && (isSameConversationClient || !client.correo || !client.correo.trim())) client.correo = email;
-            if (phone && (isSameConversationClient || !client.telefono || !client.telefono.trim())) client.telefono = phone;
-            if (empresa && (isSameConversationClient || !client.empresa || !client.empresa.trim())) client.empresa = empresa;
+            if (email && (isSameConversationClient || !client.correo || !client.correo.trim())) client.correo = email.slice(0, 255);
+            if (phone && (isSameConversationClient || !client.telefono || !client.telefono.trim())) client.telefono = phone.slice(0, 50);
+            if (empresa && (isSameConversationClient || !client.empresa || !client.empresa.trim())) client.empresa = empresa.slice(0, 255);
             await this.clientRepository.save(client);
           } else if (conversation.clientId) {
             client = await this.clientRepository.findOne({ where: { id: conversation.clientId } });
             if (client) {
-              if (phone) client.telefono = phone;
-              if (email) client.correo = email;
-              if (empresa) client.empresa = empresa;
+              if (phone) client.telefono = phone.slice(0, 50);
+              if (email) client.correo = email.slice(0, 255);
+              if (empresa) client.empresa = empresa.slice(0, 255);
               if (input.nombre && !input.nombre.toLowerCase().includes('visitante')) {
                 const names = this.splitFullName(input.nombre);
-                client.nombre = names.nombre;
-                if (names.apellido) client.apellido = names.apellido;
+                client.nombre = names.nombre.slice(0, 255);
+                if (names.apellido) client.apellido = names.apellido.slice(0, 255);
               }
               await this.clientRepository.save(client);
             }
@@ -770,11 +806,11 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
           if (!client) {
             const names = this.splitFullName(input.nombre || 'Visitante');
             client = await this.clientsService.create({
-              nombre: names.nombre,
-              apellido: names.apellido,
-              correo: email,
-              telefono: phone,
-              empresa: empresa || undefined,
+              nombre: names.nombre.slice(0, 255),
+              apellido: names.apellido?.slice(0, 255),
+              correo: email?.slice(0, 255),
+              telefono: phone?.slice(0, 50),
+              empresa: empresa ? empresa.slice(0, 255) : undefined,
               ejecutivo_id: conversation.assignedUserId || undefined,
             } as any);
           }
@@ -845,6 +881,26 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
             }
           }
 
+          const parsedTypeId = Number(input.typeActivityId);
+          if (!Number.isInteger(parsedTypeId) || parsedTypeId <= 0) {
+            return {
+              status: 'ERROR',
+              message: 'El identificador del tipo de actividad (typeActivityId) es inválido.',
+            };
+          }
+          const typeActRepo = this.aiAgentConfigRepository.manager.getRepository(TypeActivity);
+          const validTypeAct = await typeActRepo.findOne({ where: { id: parsedTypeId } }).catch(() => null);
+          if (!validTypeAct) {
+            const activeTypes = await typeActRepo.find({ where: { blnstatus: true }, order: { id: 'ASC' } }).catch(() => []);
+            const optionsHint = activeTypes.length > 0
+              ? ` Tipos disponibles: ${activeTypes.map(t => `${t.id} (${t.strname})`).join(', ')}.`
+              : '';
+            return {
+              status: 'ERROR',
+              message: `El tipo de actividad con ID ${parsedTypeId} no existe.${optionsHint}`,
+            };
+          }
+
           let targetUserId = conversation.assignedUserId || config.defaultUserId;
           if (!targetUserId) {
             const activeUsers = await this.usersService.findAllActive().catch(() => []);
@@ -852,7 +908,13 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
               targetUserId = activeUsers[0].id;
             }
           }
-          const userEntity = targetUserId ? ({ id: targetUserId } as User) : ({ id: conversation.assignedUserId } as User);
+          const userEntity = await this.resolveUserEntity(targetUserId || conversation.assignedUserId);
+          if (!userEntity) {
+            return {
+              status: 'ERROR',
+              message: 'No hay un usuario/ejecutivo válido disponible para asignar la actividad.',
+            };
+          }
 
           let remDate = input.reminderDate;
           if (input.reminderTitle && !remDate) {
@@ -862,27 +924,32 @@ export class AiAgentToolsHandlerService implements OnModuleInit {
           }
 
           const activity = await this.activitiesService.create({
-            activity: input.activityText,
+            activity: String(input.activityText || 'Actividad agendada').trim().slice(0, 5000),
             date: input.date,
-            typeActivityId: input.typeActivityId,
+            typeActivityId: parsedTypeId,
             opportunityId: finalOpportunityId || null,
             clientId,
-            reminder: input.reminderTitle ? { title: input.reminderTitle, date: remDate } : undefined,
+            reminder: input.reminderTitle
+              ? { title: String(input.reminderTitle).trim().slice(0, 100), date: remDate }
+              : undefined,
           } as any, userEntity);
 
           return { status: 'SUCCESS', message: `Actividad agendada con éxito en el CRM (el recordatorio es exclusivamente interno del sistema para el ejecutivo, NO para el cliente) ${finalOpportunityId ? 'y asociada a la oportunidad ' + finalOpportunityId : ''}`, activityId: activity.id };
         }
 
         case 'createTicket': {
-          const userEntity = conversation.assignedUserId ? { id: conversation.assignedUserId } as User : undefined;
+          const userEntity = await this.resolveUserEntity(conversation.assignedUserId);
+          const rawPriority = Number(input.priority);
+          const safePriority = Number.isFinite(rawPriority) ? Math.min(3, Math.max(0, Math.trunc(rawPriority))) : 1;
+          const rawPhone = (conversation.channel?.toLowerCase() === 'whatsapp' ? conversation.externalId : conversation.client?.telefono) || undefined;
           const ticket = await this.ticketsService.create({
-            strtitle: input.title,
-            tipo_incidencia: input.category || 'Soporte Técnico',
-            description: input.description || 'Creado por Agente IA',
-            priority: input.priority || 1,
+            strtitle: (input.title || 'Ticket de soporte técnico').toString().trim().slice(0, 255),
+            tipo_incidencia: (input.category || 'Soporte Técnico').toString().trim().slice(0, 255),
+            description: (input.description || 'Creado por Agente IA').toString().trim(),
+            priority: safePriority,
             cliente_id: conversation.clientId || undefined,
-            contactName: conversation.clientName || undefined,
-            contactPhone: (conversation.channel?.toLowerCase() === 'whatsapp' ? conversation.externalId : conversation.client?.telefono) || undefined,
+            contactName: conversation.clientName ? String(conversation.clientName).trim().slice(0, 255) : undefined,
+            contactPhone: rawPhone ? String(rawPhone).trim().slice(0, 50) : undefined,
             responsable_id: conversation.assignedUserId || undefined,
           } as any, userEntity);
           return { status: 'SUCCESS', message: 'Ticket de soporte técnico creado con éxito', ticketId: ticket.id, ticketNumber: ticket.ticket_number };

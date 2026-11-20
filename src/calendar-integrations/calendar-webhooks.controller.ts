@@ -15,6 +15,7 @@ import { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { isUUID } from 'class-validator';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { UserCalendarIntegration } from './entities/user-calendar-integration.entity';
 import { CalendarWebhookMapping } from './entities/calendar-webhook-mapping.entity';
@@ -52,22 +53,22 @@ export class CalendarWebhooksController {
     }
 
     try {
-      // 1. Decodificar estado
+      // 1. Decodificar estado y validar esquema/usuario/proveedor
       const statePayload = Buffer.from(state, 'base64').toString('utf8');
-      const { tenantSchema, userId } = JSON.parse(statePayload);
+      const parsedState = JSON.parse(statePayload);
+      const { tenantSchema, userId, provider } = parsedState || {};
 
-      if (!tenantSchema || !userId) {
-        throw new Error('Estado de OAuth2 inválido.');
+      if (
+        !tenantSchema ||
+        typeof tenantSchema !== 'string' ||
+        (tenantSchema !== 'public' && !TenantContextService.validateSchemaName(tenantSchema))
+      ) {
+        throw new Error('Esquema de tenant inválido en estado de OAuth2.');
       }
-
-      // Determinar si es Google o Outlook analizando las variables de entorno o el flujo
-      // Para saber el proveedor, podemos usar un identificador en el state, o intentar inferir.
-      // Modificamos el state al generarse para incluir el provider: { tenantSchema, userId, provider }
-      // Pero dado que Google redirect URI es diferente a Outlook, podemos inferirlo por la URL o guardar el proveedor en el state.
-      // Vamos a asumir que podemos guardar el proveedor en el state. Actualizamos la estructura:
-      // statePayload = { tenantSchema, userId, provider }
-      const { provider } = JSON.parse(statePayload);
-      if (!provider) {
+      if (!userId || !isUUID(userId)) {
+        throw new Error('Usuario inválido en estado de OAuth2.');
+      }
+      if (provider !== 'google' && provider !== 'outlook') {
         throw new Error('Proveedor no identificado en el estado de OAuth2.');
       }
 
@@ -163,8 +164,8 @@ export class CalendarWebhooksController {
     @Headers('x-goog-channel-id') channelId: string,
     @Headers('x-goog-resource-state') state: string,
   ) {
-    if (!channelId || state === 'sync') {
-      return; // Omitir notificaciones de sincronización inicial
+    if (!channelId || typeof channelId !== 'string' || channelId.length > 255 || state === 'sync') {
+      return; // Omitir notificaciones inválidas o de sincronización inicial
     }
 
     this.logger.log(`Recibido webhook de Google para canal: ${channelId}`);
@@ -201,10 +202,10 @@ export class CalendarWebhooksController {
     }
 
     // 2. Procesar notificaciones de cambios
-    if (payload && payload.value) {
+    if (payload && Array.isArray(payload.value)) {
       for (const notification of payload.value) {
-        const clientState = notification.clientState; // En Outlook, nos devuelve el subscriptionId interno que enviamos
-        if (!clientState) continue;
+        const clientState = notification?.clientState; // En Outlook, nos devuelve el subscriptionId interno que enviamos
+        if (!clientState || typeof clientState !== 'string' || clientState.length > 255) continue;
 
         this.logger.log(`Recibido webhook de Outlook para clientState: ${clientState}`);
 

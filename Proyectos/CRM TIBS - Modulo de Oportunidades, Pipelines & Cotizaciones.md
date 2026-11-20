@@ -106,3 +106,16 @@ Las cotizaciones y oportunidades registran el canal exacto desde el cual fueron 
 * `manual`: Creada manualmente por un ejecutivo comercial desde el botón "Nueva Oportunidad" en el tablero de Pipelines del CRM.
 
 Este atributo alimenta los filtros de canal en el Tablero Kanban y se expone como dimensión semántica en Cube (`canalOrigen`).
+
+---
+
+## 11. Validaciones Estrictas, RBAC y Límites PostgreSQL (Bloque 2)
+* **Configuración de Pipeline (`PipelinesController` / `UpdateMainPipelineDto`):** El endpoint `PATCH /api/pipelines/main` restringe mutaciones a `Admin` y `SuperAdmin`, valida arreglos anidados `stages` (`PipelineStageInputDto` con `strname` ≤ 120, `strcolor` ≤ 20, `intmaxdays` entero `0..365`, `stage_type` `0..2`, `display_order >= 0`) y verifica en `PipelinesService.updateMainPipeline` que toda etapa con `id` pertenezca al `pipeline.id` principal.
+* **Oportunidades, Filtros y Cotizaciones (`CreateOpportunityDto`, `UpdateOpportunityDto`, `GetOpportunitiesFilterDto`, `SendQuotationPdfDto`, `UploadOpportunityFileDto`):**
+  * Límites alineados al esquema PostgreSQL: `nombre_proyecto` / `empresa` ≤ 255, `description` ≤ 1000, `canal_origen` enum en `['whatsapp', 'facebook', 'instagram', 'webchat', 'manual']` ≤ 50 y montos/tasas acotados a `99999999.99` (`decimal(10, 2)`).
+  * `tipoCambio` permite `0` u omisión en `MXN`, pero exige ser `> 0` cuando `moneda === Currency.USD`.
+  * `GET /api/opportunities` valida `startDate` y `endDate` como ISO `@IsDateString()`, `POST /api/opportunities/:id/quotation-pdf/send` exige `conversationId` UUID (`SendQuotationPdfDto`) y `POST /api/opportunities/:id/files` valida `title` ≤ 255 y `date` ISO (`UploadOpportunityFileDto`).
+* **Catálogos, Etiquetas e Indicadores (`OpportunityCatalogsController`, `OpportunityLabelsController`, `ReportsController`):**
+  * Mutaciones (`POST`/`PATCH`/`DELETE`) en catálogos de oportunidad (`business-lines`, `delivery-types`, `licensings`) y edición de etiquetas (`PATCH /api/opportunity-labels/:id`) restringidas a `Admin`/`SuperAdmin` con `strname` ≤ 255.
+  * `POST /api/reports/indicators` y `PATCH /api/reports/indicators/:id` usan `CreateIndicatorDto` / `UpdateIndicatorDto` (`title` ≤ 255, `type` en `['count', 'sum']`, UUIDs en `pipeline_id`/`helpdesk_id`/`stage_ids`, `color` ≤ 50, `display_order` `0..1000`).
+* **Compatibilidad con Tool Execution de IA:** `AiAgentToolsHandlerService` hidrata el `User` completo desde `UsersService.findOneById` en `createOpportunity` (evitando stubs parciales) y recorta campos/montos a los límites de columna antes de persistir vía `OpportunitiesService`, preservando la tolerancia del sentinel `'default'` para catálogos.

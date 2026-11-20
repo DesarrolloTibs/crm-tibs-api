@@ -1,10 +1,15 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsBoolean, IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class UpdateTenantDto {
   @ApiPropertyOptional({ example: 'Empresa Demo S.A.' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsOptional()
   @IsString()
+  @IsNotEmpty({ message: 'El nombre de la organización no puede estar vacío.' })
+  @MinLength(2, { message: 'El nombre de la organización debe tener al menos 2 caracteres.' })
+  @MaxLength(255, { message: 'El nombre de la organización no debe exceder 255 caracteres.' })
   name?: string;
 
   @ApiPropertyOptional({ example: true })

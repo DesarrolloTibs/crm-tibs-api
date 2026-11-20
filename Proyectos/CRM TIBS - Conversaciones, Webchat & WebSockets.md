@@ -102,6 +102,9 @@ El Webchat Interno asiste a ejecutivos y administradores para consultar métrica
   * `GET /api/webchat/audio-status` (JWT) informa `{ globalProvider, rawModelProvider, usesIbmStt, ibmAudioEnabled, audioEnabled, transcribeEndpointEnabled }` según el proveedor global y `public.tenants.ibm_audio_enabled`.
   * `POST /api/webchat/transcribe` rechaza con `403 ForbiddenException` cualquier intento de envío de audio cuando el proveedor global es `ibm` y el add-on del tenant está deshabilitado (`ibm_audio_enabled = false`); cuando está habilitado, transcribe con `transcribeWithMetrics()`, audita la duración en `public.audio_transcription_logs` (`channel: 'webchat_interno'`, `user_id`) sin descontar tokens del plan y devuelve `{ text, transcript, durationSeconds }`. Cuando el proveedor global es `gemini` o `azure_openai`, no invoca IBM Speech-to-Text y retorna `501 NotImplementedException`.
 
+* **Cobertura Multi-Turno Completa en Todas las Acciones Mutables (`WebchatActionExecutorService.executeAction` + `mergeHistoryContext`):**
+  * `executeAction()` propaga `conversationHistory` y `originalQuestion` a todos los handlers mutables, extendiendo el rescate multi-turno mediante `mergeHistoryContext()` y `WebchatQueryPlannerService.detectPendingActionFromHistory()` hacia `createOpportunity` (nombre de proyecto, empresa/cliente, monto, moneda `USD`/`MXN` y coincidencia natural contra opciones activas de catálogos dinámicos), `modifyActivity` (rescate tras `Conflicto de Horario` por índice o nueva hora sin sobrescribir el título con horarios sueltos), `createTicket` (preservación de `Título:` ante solicitud exclusiva de `Descripción del Problema`), `createClient` y `createCompany` (conservación de correo, teléfono, empresa, puesto, web, dirección y asignación de usuario/ejecutivo sin aceptar placeholders genéricos como `"nuevo cliente"` o `"nueva oportunidad"`).
+
 ## 5. Canales Externos (WhatsApp Cloud API, Meta, Instagram & Messenger)
 
 ### 5.1. Regla de Ventana de Atención (24h con Margen de Seguridad de 23 Horas)
@@ -228,6 +231,10 @@ Para garantizar que las consultas analíticas en lenguaje natural sobre interval
   * **Proveedor global `ibm` con `ibm_audio_enabled = true`:** Descargan y persisten el audio, calculan su duración exacta en segundos (WAV RIFF o `ffmpeg-static` probe) mediante `transcribeWithMetrics()`, auditan el consumo en `public.audio_transcription_logs` (sin descontar tokens del plan), almacenan `mediaDuration` en `messages` y entregan el texto transcrito al LLM si el bot está activo y se detectó habla.
   * **Proveedor global multimodal (`gemini` / `openai` / `azure_openai`):** El add-on IBM no bloquea el canal ni invoca `SpeechToTextService`; los audios recibidos se descargan y persisten en almacenamiento sin pasar por IBM STT (en espera de la fase de envío de audio nativo en `callGemini` / `callOpenAI`).
 
+* **Post-procesamiento y Normalización de Transcripciones (`src/common/utils/spoken-spanish.util.ts`):**
+  * `SpeechToTextService.transcribeWithMetrics()` aplica `normalizeSpokenSpanishText()` sobre el texto devuelto por IBM Watson antes de entregarlo al WebChat o canales externos.
+  * Corrige símbolos monetarios extranjeros alucinados por `smart_formatting=true` (`₽`, `₱`, `₹`, etc. → `$`) y convierte separadores hablados (`punto`, `guion`, `guion bajo`, `arroba`) tanto en correos como en usernames/identificadores y dominios dictados (p. ej. *"el nombre del usuario es marco punto tráfico"* → `marco.tráfico`) sin alterar prosa común (*"en punto"*, *"punto de venta"*).
+
 
 ### 4.1. Sincronización en Tiempo Real de Acciones en la UI (WebSockets Multi-Tenant)
 Para garantizar que cualquier acción ejecutada desde el Webchat Interno (crear/modificar oportunidades, programar actividades o levantar tickets) se refleje instantáneamente en las pantallas activas del CRM (Tablero Kanban de Pipeline, Calendario de Actividades, Helpdesk) sin requerir recargar la página (F5):
@@ -312,6 +319,10 @@ Para homologar la experiencia de usuario con la conexión simple de Facebook e I
   * Búsqueda tolerante a acentos (`public.f_unaccent_immutable`) y ranking semántico (`rankEntitiesByRelevance`) con desambiguación numerada y selección multi-turno por índice (`"el 1"`, `"el 2"`).
   * Soporte de montos hablados en español (`parseSpokenSpanishNumber`, ej. *"quinientos pesos"* → `500`), extracción heurística priorizada en `WebchatQueryPlannerService` (`gasto`/`viático`/`reembolso` evaluado antes de `oportunidad`) y fechas relativas calculadas en la zona horaria del tenant (`America/Mexico_City`: `hoy`, `ayer`, `anteayer`, `hace N días`, días de la semana y `DD de mes`).
 
+* **Normalización de Voz, Distinción `usuario` vs `cliente` y Rescate Multi-Turno (`spoken-spanish.util.ts`):**
+  * `WebchatQueryPlannerService` y `WebchatActionExecutorService` comparten las utilidades de `src/common/utils/spoken-spanish.util.ts` (`extractExpenseAmountFromText`, `extractExpenseConceptFromText`, `extractExpenseUserFromText`, `isInvalidOrGenericExpenseConcept`) para soportar montos provenientes de STT con símbolos extraños (`₽600` → `600`), bloquear conceptos genéricos o corruptos (*"nuevo gasto"*, restos de *"del usuario..."* o *"con un monto de..."*) y extraer `usuario`/`ejecutivo` sin confundirlo con `cliente`.
+  * `WebchatActionExecutorService.resolveUser()` normaliza tildes Unicode NFD y separadores (`marco.tráfico` / `marco punto tráfico` / `marcó` → `marco.trafico`). Si un Administrador especifica un usuario inexistente, solicita verificar el username preservando `Concepto` y `Monto`; además, `detectPendingActionFromHistory` y `mergeHistoryContext` mantienen activo `createExpense` ante respuestas tras *"No encontré ningún cliente/usuario..."* conservando `Responsable:`, `Monto:` y `Concepto:`.
+
 
 ### 4.5. Herramientas de Creación/Modificación de Productos y Actualización de Tickets en Webchat Interno (`createProduct`, `modifyProduct`, `modifyTicket`)
 * **Política Estricta Create / Update sin Impacto en Capa Semántica ni Multicanal:**
@@ -324,3 +335,15 @@ Para homologar la experiencia de usuario con la conexión simple de Facebook e I
   * **Búsqueda por Folio o Asunto (`resolveTicketResolution`):** Localiza tickets de forma directa por número de folio (`#12`, `folio 12`) o mediante ranking semántico por título (`strtitle`) y cliente.
   * **Validación Conversacional de Notas de Resolución en Etapa `"Resuelto"`:** En apego a las reglas de negocio de `TicketsService.update()`, si el usuario solicita mover un ticket a la etapa `"Resuelto"` (o `stage_type === 1`) y el ticket carece de `notas_resolucion`, el asistente detiene la transición y solicita las notas de cierre en lenguaje natural; al recibirlas en el siguiente turno, completa automáticamente el cambio de etapa y las notas.
   * **Control de Acceso Basado en Roles (RBAC) y Tiempo Real:** Los usuarios con rol `executive` / `ejecutivo` solo pueden modificar tickets asignados a su propio `user.id` (`ticket.responsable_id === user.id`), mientras que `admin` / `superadmin` pueden actualizar y reasignar cualquier ticket. La actualización registra la trazabilidad en `ticket_interactions`, envía notificaciones internas y emite `emitTicketUpdated` vía `TicketsGateway`.
+
+---
+
+## 10. Validación de Canales, Webhooks, WebChat y Auditoría DTO vs TypeORM (Bloque 3)
+* **Canales Omnicanal y Plantillas Meta (`ConversationsController` / `conversations.dto.ts`):**
+  * `SaveChannelConfigDto` valida `POST /api/conversations/channels` alineado a `ChannelConfig` (`channel` en `ALLOWED_CHANNEL_TYPES`, `name <= 255`, `accessToken <= 2048`, `appId`/`accountId`/`phoneNumberId`/`verifyToken <= 255`).
+  * `TestReceiveMessageDto` tipa `POST /api/conversations/test-receive` (`text <= 4096`, `channel` permitido) y tanto canales, sub-agentes, plantillas base, Meta OAuth (`auth-url`, `embedded-callback`) como `test-receive` exigen `Admin` o `SuperAdmin`.
+  * `AssignUserDto` valida `assignedUserId` como UUID v4 (con normalización `'' -> null`); `SendManualMessageDto` (`<= 4096`), `UpsertBaseTemplateDto` (`bodyText <= 1024`, `headerText`/`footerText <= 60`), `SelectExistingBaseTemplateDto`, `ConnectWhatsAppEmbeddedDto`, `GetMetaAuthUrlQueryDto` y `GetTemplatesQueryDto` acotan todas las entradas.
+  * Los endpoints de webhook (`/webhook/:channel`) validan `:channel` dentro de `ALLOWED_CHANNEL_TYPES`, y tanto `MetaOauthService.handleCallback` como las búsquedas cross-tenant validan `TenantContextService.validateSchemaName` e `isUUID(userId)` antes de ejecutar SQL dinámico por esquema.
+* **WebChat Interno y Público (`WebchatQueryDto`, `SendPublicWebchatMessageDto`, `GetPublicWebchatQueryDto`):**
+  * `POST /api/webchat/query` acota `question` (`<= 4000`) y `conversationHistory` (`@ArrayMaxSize(100)`, `role` en `['user', 'assistant', 'system']`, `content <= 20000`).
+  * `SendPublicWebchatMessageDto` limita `visitorId` (`<= 150`), `text` (`<= 4000`), `nickname` (`<= 120`), `email` (`<= 255`) y `phone` (`<= 50`). `GetPublicWebchatQueryDto` quedó conectado en `GET /webchat/public/init` y `GET /webchat/public/messages/:visitorId` (validando también longitud de `visitorId`).

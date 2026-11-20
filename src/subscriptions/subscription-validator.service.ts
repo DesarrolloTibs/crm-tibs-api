@@ -1,6 +1,7 @@
-import { Injectable, HttpException, HttpStatus, OnModuleInit } from '@nestjs/common';
+import { Injectable, HttpException, HttpStatus, OnModuleInit, BadRequestException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { subtractBillingMonths } from '../common/utils/billing-date.util';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 export interface CheckSubscriptionResult {
   is_extra: boolean;
@@ -150,6 +151,18 @@ export class SubscriptionValidatorService implements OnModuleInit {
     baseCourtesy: number;
     extraCourtesy: number;
   }> {
+    if (!TenantContextService.validateSchemaName(schemaName) && schemaName !== 'public') {
+      return {
+        tokensUsed: 0,
+        tokensExtraUsed: 0,
+        tokensCourtesyUsed: 0,
+        totalAccumulated: 0,
+        baseTotal: 0,
+        extraTotal: 0,
+        baseCourtesy: 0,
+        extraCourtesy: 0,
+      };
+    }
     try {
       const result = await this.dataSource.query(
         `SELECT 
@@ -218,6 +231,9 @@ export class SubscriptionValidatorService implements OnModuleInit {
    * Obtiene el acumulado total de tokens consumidos en el período activo.
    */
   async getTokensUsedInPeriod(schemaName: string, periodStart: Date, periodEnd: Date): Promise<number> {
+    if (!TenantContextService.validateSchemaName(schemaName) && schemaName !== 'public') {
+      return 0;
+    }
     try {
       const result = await this.dataSource.query(
         `SELECT COALESCE(SUM(total_tokens), 0) AS total 
@@ -358,6 +374,9 @@ export class SubscriptionValidatorService implements OnModuleInit {
     actionName?: string,
     auditContext?: ConsumptionAuditContext
   ): Promise<CourtesyVerdict | null> {
+    if (schemaName !== 'public' && !TenantContextService.validateSchemaName(schemaName)) {
+      throw new BadRequestException(`Esquema inválido '${schemaName}' para registro de consumo.`);
+    }
     let calculatedIsExtra = isExtra;
     if (!calculatedIsExtra) {
       try {

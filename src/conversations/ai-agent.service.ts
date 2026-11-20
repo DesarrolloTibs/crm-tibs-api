@@ -6,6 +6,7 @@ import { AiAgentOrchestratorService, AgentStateAnnotation, AgentState } from './
 import { AiSubAgentMigrationService } from './ai-sub-agent-migration.service';
 import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
 import { ConsumptionAuditContext, TurnTokenAccumulator, CourtesyVerdict } from '../subscriptions/subscription-validator.service';
+import { SaveSubAgentDto } from './dto/ai-config.dto';
 
 // Re-export types consumed by other modules (WebchatService, etc.)
 export type { AgentState };
@@ -56,8 +57,8 @@ export class AiAgentService implements OnModuleInit {
     return this.orchestrator.getOrInitConfig();
   }
 
-  async saveConfig(data: Partial<AiAgentConfig>): Promise<AiAgentConfig> {
-    return this.orchestrator.saveConfig(data);
+  async saveConfig(data: Partial<AiAgentConfig>, currentUser?: any): Promise<AiAgentConfig> {
+    return this.orchestrator.saveConfig(data, currentUser);
   }
 
   // ── Sub-agent management ────────────────────────────────────────────────
@@ -66,7 +67,7 @@ export class AiAgentService implements OnModuleInit {
     return this.orchestrator.getSubAgents();
   }
 
-  async saveSubAgent(data: any): Promise<AiSubAgent> {
+  async saveSubAgent(data: SaveSubAgentDto): Promise<AiSubAgent> {
     return this.orchestrator.saveSubAgent(data);
   }
 

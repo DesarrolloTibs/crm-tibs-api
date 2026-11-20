@@ -5,6 +5,7 @@ import { NotificationsSchedulerService } from './notifications.scheduler.service
 import { NotificationsService } from './notifications.service';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
+import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 
 @ApiTags('notifications')
 @ApiBearerAuth()
@@ -45,7 +46,8 @@ export class NotificationsController {
 
 
   @Get('trigger-test')
-  @ApiOperation({ summary: 'Dispara manualmente el envío de notificaciones diarias y verificación de semáforos vencidos para pruebas' })
+  @UseGuards(AuthGuard('jwt'), SuperAdminGuard)
+  @ApiOperation({ summary: 'Dispara manualmente el envío de notificaciones diarias y verificación de semáforos vencidos para pruebas (solo SuperAdmin)' })
   async triggerTest() {
     this.logger.log('Disparando manualmente la prueba del cron de notificaciones');
     try {

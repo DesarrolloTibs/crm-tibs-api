@@ -7,6 +7,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { LoginValidationGuard } from './guards/login-validation.guard';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -15,14 +16,14 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @UseGuards(AuthGuard('local'))
+  @UseGuards(LoginValidationGuard, AuthGuard('local'))
   @Post('login')
   @ApiOperation({ summary: 'Iniciar sesión y obtener tokens JWT (access_token y refresh_token)' })
   @ApiBody({ type: LoginDto })
   @ApiResponse({ status: 200, description: 'Login exitoso, retorna access_token y refresh_token.' })
   @ApiResponse({ status: 401, description: 'Credenciales inválidas.' })
   @ApiResponse({ status: 429, description: 'Demasiadas solicitudes.' })
-  async login(@Request() req: any) {
+  async login(@Request() req: any, @Body() _loginDto: LoginDto) {
     return this.authService.login(req.user);
   }
 

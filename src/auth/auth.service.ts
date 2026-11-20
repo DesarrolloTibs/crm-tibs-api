@@ -6,6 +6,7 @@ import { DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { MailService } from '../mail/mail.service';
+import { TenantContextService } from '../tenancy/tenant-context.service';
 
 @Injectable()
 export class AuthService {
@@ -56,6 +57,7 @@ export class AuthService {
       ).catch(() => []);
 
       for (const t of activeTenants) {
+        if (!TenantContextService.validateSchemaName(t.schema_name)) continue;
         try {
           const rows = await this.dataSource.query(
             `SELECT id, username, email, password, role, "isActive" FROM "${t.schema_name}".users WHERE LOWER(email) = LOWER($1)`,
@@ -168,6 +170,9 @@ export class AuthService {
 
       if (!tenantCheck || tenantCheck.length === 0 || !tenantCheck[0].is_active) {
         throw new UnauthorizedException('La organización asociada al token se encuentra inactiva.');
+      }
+      if (!TenantContextService.validateSchemaName(tenant)) {
+        throw new UnauthorizedException('El identificador de organización del token es inválido.');
       }
 
       const rows = await this.dataSource.query(

@@ -1,4 +1,4 @@
-import { Injectable, Logger, HttpException } from '@nestjs/common';
+import { Injectable, Logger, HttpException, ForbiddenException, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -17,18 +17,8 @@ import { SubscriptionValidatorService, ConsumptionAuditContext, TurnTokenAccumul
 import { TenantConcurrencyService } from '../subscriptions/tenant-concurrency.service';
 import { AiAgentToolsHandlerService } from './ai-agent-tools-handler.service';
 import { CONVERSATION_EVENTS } from '../common/events/conversation.events';
-import {
-  RegisterContactSchema,
-  UpdateContactSchema,
-  CreateOpportunitySchema,
-  ModifyOpportunitySchema,
-  CheckAvailabilitySchema,
-  CreateActivitySchema,
-  CreateTicketSchema,
-  ConsultProductCatalogSchema,
-  SendQuotationPdfSchema,
-  RequestHumanHandoffSchema,
-} from './dto/ai-agent-tools.schema';
+import { AI_AGENT_TOOL_SCHEMAS } from './dto/ai-agent-tools.schema';
+import { SaveSubAgentDto } from './dto/ai-config.dto';
 
 export const AgentStateAnnotation = Annotation.Root({
   messages: Annotation<any[]>({
@@ -155,14 +145,57 @@ export class AiAgentOrchestratorService {
     return config;
   }
 
-  /** Persists AI config for the current tenant, propagating global credentials to public schema. */
-  async saveConfig(data: Partial<AiAgentConfig>): Promise<AiAgentConfig> {
-    const hasGlobalFields =
-      'modelProvider' in data || 'openaiApiKey' in data || 'geminiApiKey' in data || 'watsonxApiKey' in data || 'maxNewTokens' in data;
+  /** Persists AI config for the current tenant, propagating global credentials to public schema (SuperAdmin only). */
+  async saveConfig(data: Partial<AiAgentConfig>, currentUser?: any): Promise<AiAgentConfig> {
+    const globalKeys: Array<keyof AiAgentConfig> = [
+      'modelProvider',
+      'modelName',
+      'openaiApiKey',
+      'openaiEndpoint',
+      'openaiApiVersion',
+      'openaiEmbeddingModel',
+      'geminiApiKey',
+      'watsonxApiKey',
+      'watsonxProjectId',
+      'watsonxRegion',
+      'watsonxEmbeddingModel',
+      'maxNewTokens',
+    ];
+    const hasGlobalFields = globalKeys.some((k) => data[k] !== undefined);
 
     if (hasGlobalFields) {
+      const callerRole = (currentUser?.role || '').toString().toLowerCase().trim();
+      if (currentUser && callerRole !== 'superadmin') {
+        throw new ForbiddenException(
+          'Solo los usuarios con rol SuperAdmin pueden modificar las credenciales o parámetros globales de IA.',
+        );
+      }
+
+      const publicRows = await this.aiAgentConfigRepository.manager.query(
+        `SELECT id, "modelProvider", "modelName", "openaiApiKey", "openaiEndpoint", "geminiApiKey", "watsonxApiKey", "watsonxProjectId" FROM public.ai_agent_configs LIMIT 1`,
+      );
+      const currentGlobal = publicRows?.[0] || {};
+      const nextProvider = (data.modelProvider ?? currentGlobal.modelProvider ?? 'gemini').toString().toLowerCase().trim();
+
+      if (data.modelProvider !== undefined) {
+        if (!['gemini', 'openai', 'watsonx'].includes(nextProvider)) {
+          throw new BadRequestException('modelProvider debe ser gemini, openai o watsonx.');
+        }
+        if (nextProvider === 'gemini' && !(data.geminiApiKey ?? currentGlobal.geminiApiKey)) {
+          throw new BadRequestException('Se requiere geminiApiKey al activar el proveedor Gemini.');
+        }
+        if (nextProvider === 'openai' && !(data.openaiApiKey ?? currentGlobal.openaiApiKey)) {
+          throw new BadRequestException('Se requiere openaiApiKey al activar el proveedor OpenAI.');
+        }
+        if (
+          nextProvider === 'watsonx' &&
+          (!(data.watsonxApiKey ?? currentGlobal.watsonxApiKey) || !(data.watsonxProjectId ?? currentGlobal.watsonxProjectId))
+        ) {
+          throw new BadRequestException('Se requieren watsonxApiKey y watsonxProjectId al activar el proveedor Watsonx.');
+        }
+      }
+
       try {
-        const publicRows = await this.aiAgentConfigRepository.manager.query(`SELECT id FROM public.ai_agent_configs LIMIT 1`);
         if (publicRows && publicRows.length > 0) {
           await this.aiAgentConfigRepository.manager.query(
             `UPDATE public.ai_agent_configs SET
@@ -179,12 +212,39 @@ export class AiAgentOrchestratorService {
               "watsonxEmbeddingModel" = COALESCE($11, "watsonxEmbeddingModel"),
               "maxNewTokens" = COALESCE($12, "maxNewTokens")
              WHERE id = $13`,
-            [data.modelProvider ?? null, data.modelName ?? null, data.openaiApiKey ?? null, data.openaiEndpoint ?? null, data.openaiApiVersion ?? null, data.openaiEmbeddingModel ?? null, data.geminiApiKey ?? null, data.watsonxApiKey ?? null, data.watsonxProjectId ?? null, data.watsonxRegion ?? null, data.watsonxEmbeddingModel ?? null, data.maxNewTokens ?? null, publicRows[0].id],
+            [
+              data.modelProvider ?? null,
+              data.modelName ?? null,
+              data.openaiApiKey ?? null,
+              data.openaiEndpoint ?? null,
+              data.openaiApiVersion ?? null,
+              data.openaiEmbeddingModel ?? null,
+              data.geminiApiKey ?? null,
+              data.watsonxApiKey ?? null,
+              data.watsonxProjectId ?? null,
+              data.watsonxRegion ?? null,
+              data.watsonxEmbeddingModel ?? null,
+              data.maxNewTokens ?? null,
+              publicRows[0].id,
+            ],
           );
         } else {
           await this.aiAgentConfigRepository.manager.query(
             `INSERT INTO public.ai_agent_configs ("modelProvider","modelName","openaiApiKey","openaiEndpoint","openaiApiVersion","openaiEmbeddingModel","geminiApiKey","watsonxApiKey","watsonxProjectId","watsonxRegion","watsonxEmbeddingModel","maxNewTokens") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-            [data.modelProvider || 'gemini', data.modelName || 'gemini-1.5-flash', data.openaiApiKey || null, data.openaiEndpoint || null, data.openaiApiVersion || null, data.openaiEmbeddingModel || 'text-embedding-ada-002', data.geminiApiKey || null, data.watsonxApiKey || null, data.watsonxProjectId || null, data.watsonxRegion || 'us-south', data.watsonxEmbeddingModel || 'ibm/slate-125m-english-rtrvr', data.maxNewTokens || 2048],
+            [
+              data.modelProvider || 'gemini',
+              data.modelName || 'gemini-1.5-flash',
+              data.openaiApiKey || null,
+              data.openaiEndpoint || null,
+              data.openaiApiVersion || null,
+              data.openaiEmbeddingModel || 'text-embedding-ada-002',
+              data.geminiApiKey || null,
+              data.watsonxApiKey || null,
+              data.watsonxProjectId || null,
+              data.watsonxRegion || 'us-south',
+              data.watsonxEmbeddingModel || 'ibm/slate-125m-english-rtrvr',
+              data.maxNewTokens || 2048,
+            ],
           );
         }
       } catch (err: any) {
@@ -197,21 +257,22 @@ export class AiAgentOrchestratorService {
       existing = this.aiAgentConfigRepository.create({
         isActive: data.isActive ?? true,
         context: data.context ?? '',
+        defaultReplies: data.defaultReplies ?? null,
         temperature: data.temperature ?? 0.7,
         reminderOffsetMinutes: data.reminderOffsetMinutes ?? 60,
         historyMessageLimit: data.historyMessageLimit ?? 10,
         defaultUserId: data.defaultUserId ?? null,
       });
     } else {
-      this.aiAgentConfigRepository.merge(existing, {
-        isActive: data.isActive,
-        context: data.context,
-        defaultReplies: data.defaultReplies,
-        temperature: data.temperature,
-        reminderOffsetMinutes: data.reminderOffsetMinutes,
-        historyMessageLimit: data.historyMessageLimit,
-        defaultUserId: data.defaultUserId,
-      });
+      const patch: Partial<AiAgentConfig> = {};
+      if (data.isActive !== undefined) patch.isActive = data.isActive;
+      if (data.context !== undefined) patch.context = data.context;
+      if (data.defaultReplies !== undefined) patch.defaultReplies = data.defaultReplies;
+      if (data.temperature !== undefined) patch.temperature = data.temperature;
+      if (data.reminderOffsetMinutes !== undefined) patch.reminderOffsetMinutes = data.reminderOffsetMinutes;
+      if (data.historyMessageLimit !== undefined) patch.historyMessageLimit = data.historyMessageLimit;
+      if (data.defaultUserId !== undefined) patch.defaultUserId = data.defaultUserId;
+      this.aiAgentConfigRepository.merge(existing, patch);
     }
     await this.aiAgentConfigRepository.save(existing);
     return this.getOrInitConfig();
@@ -229,21 +290,45 @@ export class AiAgentOrchestratorService {
   }
 
   /** Creates or updates a sub-agent configuration. */
-  async saveSubAgent(data: any): Promise<AiSubAgent> {
+  async saveSubAgent(data: SaveSubAgentDto): Promise<AiSubAgent> {
+    if (data.temperature !== undefined && (Number(data.temperature) < 0 || Number(data.temperature) > 1)) {
+      throw new BadRequestException('La temperatura del sub-agente debe estar entre 0 y 1.');
+    }
+
     if (data.id) {
       const existing = await this.aiSubAgentRepository.findOne({ where: { id: data.id } });
-      if (existing) {
-        const updated = this.aiSubAgentRepository.merge(existing, data);
-        return this.aiSubAgentRepository.save(updated);
+      if (!existing) {
+        throw new NotFoundException(`Sub-agente con ID "${data.id}" no encontrado.`);
       }
+      if (data.key && data.key !== existing.key) {
+        const collision = await this.aiSubAgentRepository.findOne({ where: { key: data.key } });
+        if (collision && collision.id !== existing.id) {
+          throw new ConflictException(`Ya existe otro sub-agente con la clave "${data.key}".`);
+        }
+      }
+      const updated = this.aiSubAgentRepository.merge(existing, data as Partial<AiSubAgent>);
+      return this.aiSubAgentRepository.save(updated);
     }
+
+    if (!data.key || !data.name) {
+      throw new BadRequestException('La clave (key) y el nombre (name) son obligatorios para crear un sub-agente.');
+    }
+
+    const existingByKey = await this.aiSubAgentRepository.findOne({ where: { key: data.key } });
+    if (existingByKey) {
+      throw new ConflictException(`Ya existe un sub-agente con la clave "${data.key}".`);
+    }
+
     const created = this.aiSubAgentRepository.create(data as Partial<AiSubAgent>);
     return this.aiSubAgentRepository.save(created);
   }
 
   /** Deletes a sub-agent by ID. */
   async deleteSubAgent(id: string): Promise<void> {
-    await this.aiSubAgentRepository.delete(id);
+    const result = await this.aiSubAgentRepository.delete(id);
+    if (result.affected === 0) {
+      throw new NotFoundException(`Sub-agente con ID "${id}" no encontrado.`);
+    }
   }
 
   // ─── LLM Invocation ───────────────────────────────────────────────────────
@@ -1379,15 +1464,8 @@ REGLAS ESTRICTAS PARA ESTE TURNO:
         this.logger.log(`[LangGraph - Tool Executor] Ejecutando: '${state.toolCallName}'`);
         const input = state.toolCallInput || {};
         try {
-          const schemaMap: Record<string, any> = {
-            registerContact: RegisterContactSchema, updateContact: UpdateContactSchema,
-            createOpportunity: CreateOpportunitySchema, modifyOpportunity: ModifyOpportunitySchema,
-            checkAvailability: CheckAvailabilitySchema, createActivity: CreateActivitySchema,
-            createTicket: CreateTicketSchema, consult_product_catalog: ConsultProductCatalogSchema,
-            sendQuotationPdf: SendQuotationPdfSchema, requestHumanHandoff: RequestHumanHandoffSchema,
-          };
           const toolName = state.toolCallName!;
-          const schema = schemaMap[toolName];
+          const schema = AI_AGENT_TOOL_SCHEMAS[toolName];
           if (!schema) return { toolCallResult: { status: 'ERROR', message: `Herramienta '${toolName}' no reconocida.` } };
           const validationResult = schema.safeParse(input);
           if (!validationResult.success) {

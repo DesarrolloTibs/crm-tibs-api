@@ -1,7 +1,19 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleInit, Logger, Optional } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+  OnModuleInit,
+  Logger,
+  Optional,
+  Inject,
+} from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import { Role } from '../role.enum';
 import { Tenant } from './entities/tenant.entity';
 import { TenantRenewalQueue } from './entities/tenant-renewal-queue.entity';
 import { TenantBillingCycle } from './entities/tenant-billing-cycle.entity';
@@ -41,7 +53,82 @@ export class TenantsService implements OnModuleInit {
     private readonly storageService?: StorageService,
     @Optional()
     private readonly audioAuditService?: AudioAuditService,
+    @Optional()
+    @Inject(CACHE_MANAGER)
+    private readonly cacheManager?: Cache,
   ) {}
+
+  private assertValidSchemaIdentifier(schemaName: string): void {
+    if (schemaName !== 'public' && !TenantContextService.validateSchemaName(schemaName)) {
+      throw new BadRequestException(`Nombre de esquema de organización inválido '${schemaName}'.`);
+    }
+  }
+
+  private parseValidDateOrThrow(raw: string, fieldName: string, endOfDay = false): Date {
+    const parsed = new Date(raw);
+    if (isNaN(parsed.getTime())) {
+      throw new BadRequestException(`El parámetro ${fieldName} no tiene una fecha válida.`);
+    }
+    if (endOfDay && raw.length <= 10) {
+      parsed.setHours(23, 59, 59, 999);
+    }
+    return parsed;
+  }
+
+  /**
+   * Resuelve el esquema permitido para una consulta de consumo/ciclos según el rol del usuario autenticado.
+   */
+  async resolveAuthorizedSchemaForUser(
+    user: any,
+    requestedSchema?: string,
+    requestedTenantId?: number,
+  ): Promise<string> {
+    const role = (user?.role || '').toString().toLowerCase().trim();
+    const userTenant = (user?.tenant || TenantContextService.getTenantSchema() || 'public').toString().trim();
+
+    if (requestedSchema) {
+      this.assertValidSchemaIdentifier(requestedSchema);
+    }
+
+    if (role === Role.SuperAdmin) {
+      if (requestedSchema) return requestedSchema;
+      if (requestedTenantId) {
+        const tenant = await this.findOne(Number(requestedTenantId));
+        return tenant.schema_name;
+      }
+      return TenantContextService.getTenantSchema() || 'public';
+    }
+
+    if (requestedSchema && requestedSchema !== userTenant) {
+      throw new ForbiddenException('No tienes permiso para consultar otra organización.');
+    }
+
+    if (requestedTenantId) {
+      const tenant = await this.findOne(Number(requestedTenantId));
+      if (tenant.schema_name !== userTenant) {
+        throw new ForbiddenException('No tienes permiso para consultar otra organización.');
+      }
+      return tenant.schema_name;
+    }
+
+    return userTenant;
+  }
+
+  /**
+   * Verifica que un usuario no SuperAdmin pertenezca al tenant indicado y tenga rol Admin.
+   */
+  async assertUserCanManageTenant(tenantId: number, user: any): Promise<void> {
+    const role = (user?.role || '').toString().toLowerCase().trim();
+    if (role === Role.SuperAdmin) return;
+    if (role !== Role.Admin) {
+      throw new ForbiddenException('Solo los administradores pueden modificar la configuración de la organización.');
+    }
+    const tenant = await this.findOne(tenantId);
+    const userTenant = (user?.tenant || TenantContextService.getTenantSchema() || 'public').toString().trim();
+    if (tenant.schema_name !== userTenant) {
+      throw new ForbiddenException('No tienes permiso para modificar otra organización.');
+    }
+  }
 
   formatLogoUrl(logo: string | null): string | null {
     if (!logo) return null;
@@ -59,6 +146,7 @@ export class TenantsService implements OnModuleInit {
     overridePeriod?: { startDate: Date; endDate: Date; cycleId?: number }
   ) {
     const activeSchema = schemaName || TenantContextService.getTenantSchema() || 'public';
+    this.assertValidSchemaIdentifier(activeSchema);
 
     // 1. Obtener información del plan de la organización
     const tenantInfo = await this.subscriptionValidator.getTenantPlanInfo(activeSchema);
@@ -262,6 +350,7 @@ export class TenantsService implements OnModuleInit {
     if (!targetSchema) {
       targetSchema = TenantContextService.getTenantSchema() || 'public';
     }
+    this.assertValidSchemaIdentifier(targetSchema);
 
     let periodStart: Date | null = null;
     let periodEnd: Date | null = null;
@@ -278,12 +367,11 @@ export class TenantsService implements OnModuleInit {
 
     // 2. Si se solicitó un rango de fechas personalizado
     if (!selectedCycle && startDate && endDate) {
-      periodStart = new Date(startDate);
-      const end = new Date(endDate);
-      if (endDate.length <= 10) {
-        end.setHours(23, 59, 59, 999);
+      periodStart = this.parseValidDateOrThrow(startDate, 'startDate', false);
+      periodEnd = this.parseValidDateOrThrow(endDate, 'endDate', true);
+      if (periodStart > periodEnd) {
+        throw new BadRequestException('startDate no puede ser posterior a endDate.');
       }
-      periodEnd = end;
     }
 
     // 3. Si no hay periodo especificado, resolver el ciclo activo por defecto
@@ -629,7 +717,7 @@ export class TenantsService implements OnModuleInit {
           tenant_id VARCHAR(63) NOT NULL,
           plan_id INTEGER NULL,
           plan_name VARCHAR(255) NOT NULL,
-          tokens_limit INTEGER NOT NULL DEFAULT 0,
+          tokens_limit BIGINT NOT NULL DEFAULT 0,
           price NUMERIC(10, 2) NOT NULL DEFAULT 0,
           billing_period_months INTEGER NOT NULL DEFAULT 1,
           start_date TIMESTAMPTZ NOT NULL,
@@ -638,12 +726,18 @@ export class TenantsService implements OnModuleInit {
           status VARCHAR(20) NOT NULL DEFAULT 'active',
           close_reason VARCHAR(50) NULL,
           allow_extra BOOLEAN NOT NULL DEFAULT false,
-          tokens_used_at_close INTEGER NULL DEFAULT 0,
-          tokens_extra_used_at_close INTEGER NULL DEFAULT 0,
-          tokens_courtesy_at_close INTEGER NULL DEFAULT 0,
+          tokens_used_at_close BIGINT NULL DEFAULT 0,
+          tokens_extra_used_at_close BIGINT NULL DEFAULT 0,
+          tokens_courtesy_at_close BIGINT NULL DEFAULT 0,
           created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
           CONSTRAINT fk_billing_cycle_plan FOREIGN KEY (plan_id) REFERENCES public.plans(plan_id) ON DELETE SET NULL
         );
+
+        ALTER TABLE public.tenant_billing_cycles
+          ALTER COLUMN tokens_limit TYPE BIGINT,
+          ALTER COLUMN tokens_used_at_close TYPE BIGINT,
+          ALTER COLUMN tokens_extra_used_at_close TYPE BIGINT,
+          ALTER COLUMN tokens_courtesy_at_close TYPE BIGINT;
       `);
 
       // Backfill automático para tenants existentes que aún no tengan ciclo registrado
@@ -694,6 +788,9 @@ export class TenantsService implements OnModuleInit {
    * calculando el consumo dinámico en tiempo real para el ciclo activo.
    */
   async getBillingCycles(tenantId?: number, schemaName?: string) {
+    if (schemaName) {
+      this.assertValidSchemaIdentifier(schemaName);
+    }
     let targetTenant: Tenant | null = null;
     if (tenantId) {
       targetTenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
@@ -1287,13 +1384,10 @@ export class TenantsService implements OnModuleInit {
       };
     }
 
-    const parsedStart = options?.startDate ? new Date(options.startDate) : undefined;
-    let parsedEnd: Date | undefined;
-    if (options?.endDate) {
-      parsedEnd = new Date(options.endDate);
-      if (options.endDate.length <= 10) {
-        parsedEnd.setHours(23, 59, 59, 999);
-      }
+    const parsedStart = options?.startDate ? this.parseValidDateOrThrow(options.startDate, 'startDate', false) : undefined;
+    const parsedEnd = options?.endDate ? this.parseValidDateOrThrow(options.endDate, 'endDate', true) : undefined;
+    if (parsedStart && parsedEnd && parsedStart > parsedEnd) {
+      throw new BadRequestException('startDate no puede ser posterior a endDate.');
     }
 
     return this.audioAuditService.getAudioUsageSummary({
@@ -1321,7 +1415,11 @@ export class TenantsService implements OnModuleInit {
     if (dto.ibm_audio_enabled !== undefined) {
       tenant.ibm_audio_enabled = Boolean(dto.ibm_audio_enabled);
     }
-    return this.tenantRepository.save(tenant);
+    const saved = await this.tenantRepository.save(tenant);
+    if (dto.is_active !== undefined && this.cacheManager && tenant.schema_name) {
+      await this.cacheManager.del(`tenant_active:${tenant.schema_name}`).catch(() => {});
+    }
+    return saved;
   }
 
   async remove(id: number) {
@@ -1332,7 +1430,11 @@ export class TenantsService implements OnModuleInit {
     await this.queueRepository.delete({ tenant_id: String(tenant.id) });
     await this.tenantRepository.remove(tenant);
 
-    if (schemaName && schemaName !== 'public' && /^[a-z0-9_]+$/.test(schemaName)) {
+    if (this.cacheManager && schemaName) {
+      await this.cacheManager.del(`tenant_active:${schemaName}`).catch(() => {});
+    }
+
+    if (schemaName && schemaName !== 'public' && TenantContextService.validateSchemaName(schemaName)) {
       try {
         await this.dataSource.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
       } catch (err) {

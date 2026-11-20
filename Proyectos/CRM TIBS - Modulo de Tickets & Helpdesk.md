@@ -68,3 +68,16 @@ El módulo `ticket-interactions` gestiona el hilo de conversación de cada incid
 ## 4. Monitoreo de SLAs y Notificaciones en Tiempo Real
 * **Cron de SLAs (`helpdesk_cron_configs`):** Proceso en segundo plano que evalúa periódicamente los tickets abiertos próximos a vencer su plazo de resolución. Si un ticket rebasa el 80% del tiempo de SLA sin resolver, escala la prioridad y genera una notificación al supervisor.
 * **TicketsGateway (`src/tickets/tickets.gateway.ts`):** Gateway de Socket.IO en el namespace `/tickets` que transmite eventos de creación de tickets, reasignaciones y cambios de etapa hacia los paneles de los operadores en vivo.
+
+---
+
+## 5. Validación de Etapas Semánticas, Portal Público y RBAC (Bloque 2)
+* **Configuración de Mesa de Ayuda (`HelpdesksController` / `UpdateMainHelpdeskDto`):**
+  * `PATCH /api/helpdesks/main` y `PATCH /api/helpdesks/cron-config` restringen el acceso a usuarios `Admin` y `SuperAdmin`.
+  * `UpdateMainHelpdeskDto` valida arreglos anidados `stages` (`HelpdeskStageInputDto`: `strname` ≤ 120, `strcolor` ≤ 20, `intmaxdays` `0..365`, `stage_type` en `0..1`, `display_order >= 0`) y `HelpdesksService.updateMainHelpdesk` valida que toda etapa con `id` pertenezca al `helpdesk.id` principal.
+* **Tickets y Consulta Pública (`TicketsController`, `CreateTicketDto`, `UpdateTicketDto`, `GetTicketsFilterDto`, `PublicTicketQueryDto`):**
+  * `GET /api/tickets` valida `stage_id` (UUID) y `showArchived` (boolean) vía `GetTicketsFilterDto`; `GET /api/tickets/public/query` valida `email` y exige formato estricto `/^#?\d{1,10}$/` en `ticketNumber` vía `PublicTicketQueryDto` (bloqueando cadenas parciales como `'12abc'`).
+  * `CreateTicketDto` y `UpdateTicketDto` normalizan textos y vacíos (`'' -> null`/`undefined`) y acotan `strtitle`, `tipo_incidencia`, `contactName`, `contactEmail`, `companyName` ≤ 255 y `contactPhone` ≤ 50 (compatible con `clients.telefono`).
+* **Reglas de Negocio en `TicketsService` e Integración IA:**
+  * La exigencia obligatoria de `notas_resolucion` y asignación de `fecha_cierre` evalúa `stage.stage_type === 1 || stage.strname === 'Resuelto'` (resiliencia aunque se renombre la etapa en el tablero), además de validar que la nueva etapa pertenezca al `helpdesk_id` del ticket y que `responsable_id` / `cliente_id` existan antes de guardar.
+  * Al crear automáticamente un `Client` desde un ticket externo o de IA, `TicketsService` aplica recorte preventivo (`nombre`/`apellido`/`empresa` ≤ 255, `telefono` ≤ 50) y tanto `AiAgentToolsHandlerService` como `WebchatActionExecutorService` hidratan el usuario responsable y sanean longitudes antes de delegar en `TicketsService.create`.

@@ -19,7 +19,7 @@ import type { Response } from 'express';
 import { join } from 'path';
 
 import { ProductsService } from './products.service';
-import { CreateProductDto } from './dto/create-product.dto';
+import { CreateProductDto, UploadProductFileDto } from './dto/create-product.dto';
 import { UpdateProductDto, UpdateProductStatusDto } from './dto/update-product.dto';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { User } from 'src/users/entities/user.entity';
@@ -115,13 +115,13 @@ export class ProductsController {
   async uploadFile(
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File,
-    @Body('title') title?: string,
+    @Body() bodyDto: UploadProductFileDto,
   ) {
     if (!file) {
       throw new BadRequestException('Se requiere un archivo.');
     }
     const decodedFileName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-    return this.productsService.addProductFile(id, decodedFileName, file, title);
+    return this.productsService.addProductFile(id, decodedFileName, file, bodyDto?.title);
   }
 
   @Get(':id/files/:fileId/download')

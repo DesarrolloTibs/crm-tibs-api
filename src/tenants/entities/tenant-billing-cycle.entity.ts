@@ -1,6 +1,12 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { Plan } from '../../plans/entities/plan.entity';
 
+const numericTransformer = {
+  to: (value: number | null | undefined) => value,
+  from: (value: string | number | null | undefined) =>
+    value === null || value === undefined ? value : Number(value),
+};
+
 @Entity({ name: 'tenant_billing_cycles', schema: 'public' })
 export class TenantBillingCycle {
   @PrimaryGeneratedColumn()
@@ -19,7 +25,7 @@ export class TenantBillingCycle {
   @Column({ type: 'varchar', length: 255, nullable: false })
   plan_name: string;
 
-  @Column({ type: 'integer', nullable: false, default: 0 })
+  @Column({ type: 'bigint', nullable: false, default: 0, transformer: numericTransformer })
   tokens_limit: number;
 
   @Column({ type: 'numeric', precision: 10, scale: 2, nullable: false, default: 0 })
@@ -46,13 +52,13 @@ export class TenantBillingCycle {
   @Column({ type: 'boolean', default: false })
   allow_extra: boolean;
 
-  @Column({ type: 'integer', nullable: true, default: 0 })
+  @Column({ type: 'bigint', nullable: true, default: 0, transformer: numericTransformer })
   tokens_used_at_close: number;
 
-  @Column({ type: 'integer', nullable: true, default: 0 })
+  @Column({ type: 'bigint', nullable: true, default: 0, transformer: numericTransformer })
   tokens_extra_used_at_close: number;
 
-  @Column({ type: 'integer', nullable: true, default: 0 })
+  @Column({ type: 'bigint', nullable: true, default: 0, transformer: numericTransformer })
   tokens_courtesy_at_close: number;
 
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })

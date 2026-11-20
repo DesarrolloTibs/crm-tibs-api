@@ -105,7 +105,7 @@ export class HelpdesksService {
   async updateMainHelpdesk(
     updateDto: {
       strname?: string;
-      strdescription?: string;
+      strdescription?: string | null;
       stages?: Array<{
         id?: string;
         strname: string;
@@ -203,6 +203,9 @@ export class HelpdesksService {
             const found = await manager.findOne(TicketStage, { where: { id: stageInput.id } });
             if (!found) {
               throw new NotFoundException(`La etapa con ID ${stageInput.id} no existe.`);
+            }
+            if (found.helpdesk_id !== helpdesk.id) {
+              throw new BadRequestException(`La etapa con ID ${stageInput.id} no pertenece a la mesa de ayuda principal.`);
             }
             stage = found;
           } else {

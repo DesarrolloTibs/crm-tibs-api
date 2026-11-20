@@ -140,5 +140,51 @@ describe('SpeechToTextService', () => {
       expect(res.durationSeconds).toBe(3);
       expect(res.mimeType).toBe('audio/wav');
     });
+
+    it('sanitizes Watson STT currency artifacts (₽ -> $) and spoken usernames with "punto" without mangling normal prose', async () => {
+      const wavBuf = Buffer.alloc(44 + 32000);
+      wavBuf.write('RIFF', 0, 'ascii');
+      wavBuf.write('WAVE', 8, 'ascii');
+      wavBuf.write('fmt ', 12, 'ascii');
+      wavBuf.writeUInt32LE(16, 16);
+      wavBuf.writeUInt32LE(32000, 28);
+      wavBuf.write('data', 36, 'ascii');
+      wavBuf.writeUInt32LE(32000, 40);
+
+      jest
+        .spyOn(global, 'fetch' as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            results: [{ alternatives: [{ transcript: 'crea un gasto del usuario marcó con un monto de ₽600' }] }],
+          }),
+        } as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            results: [{ alternatives: [{ transcript: 'el nombre del usuario es marco punto tráfico' }] }],
+          }),
+        } as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            results: [{ alternatives: [{ transcript: 'reunión en punto de las cinco sobre el punto de venta' }] }],
+          }),
+        } as any);
+
+      const service = buildService(undefined, {
+        IBM_SPEECH_TO_TEXT_APIKEY: 'test-key',
+        IBM_SPEECH_TO_TEXT_URL: 'https://api.us-south.speech-to-text.watson.cloud.ibm.com',
+      });
+
+      const r1 = await service.transcribeWithMetrics(wavBuf, 'audio/wav');
+      expect(r1.transcript).toBe('crea un gasto del usuario marcó con un monto de $600');
+
+      const r2 = await service.transcribeWithMetrics(wavBuf, 'audio/wav');
+      expect(r2.transcript).toBe('el nombre del usuario es marco.tráfico');
+
+      const r3 = await service.transcribeWithMetrics(wavBuf, 'audio/wav');
+      expect(r3.transcript).toBe('reunión en punto de las cinco sobre el punto de venta');
+    });
   });
 });

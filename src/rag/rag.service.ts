@@ -133,7 +133,11 @@ export class RagService implements OnModuleInit {
    * Inicializa la base de datos vectorial de pgvector aislada por tenantSchema en Supabase.
    */
   private async initializeVectorStore(): Promise<PGVectorStore> {
-    const tenantSchema = TenantContextService.getTenantSchema() || 'public';
+    const rawSchema = TenantContextService.getTenantSchema() || 'public';
+    const tenantSchema =
+      rawSchema === 'public' || TenantContextService.validateSchemaName(rawSchema)
+        ? rawSchema
+        : 'public';
 
     const config = await this.getAgentConfig();
 
@@ -366,10 +370,11 @@ export class RagService implements OnModuleInit {
 
 
     // Ejecutar búsqueda por similitud con filtro por metadata si aplica
+    const safeLimit = Math.min(20, Math.max(1, Number.isFinite(Number(limit)) ? Math.trunc(Number(limit)) : 3));
     const results = await store.similaritySearch(
-      query,
-      limit,
-      productKey ? { product: productKey } : undefined
+      query.trim(),
+      safeLimit,
+      productKey ? { product: productKey.trim() } : undefined
     );
 
     // Registrar consumo de tokens del query para tenants

@@ -41,20 +41,37 @@ async function bootstrap() {
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   }));
 
-  // --- CORS: Habilitar ANTES de archivos estáticos para permitir descarga de logos/archivos y widget público ---
+  // --- CORS: Restricción por orígenes permitidos para rutas CRM en producción; abierto para widget/portales públicos ---
   const rawOrigins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173,http://localhost:3000';
-  const allowedOrigins = rawOrigins.split(',').map((o) => o.trim());
-  app.enableCors({
-    origin: (origin, callback) => {
-      // Permitir peticiones sin origen (mobile, server-to-server) o si está en orígenes permitidos
-      if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      // Permitir dinámicamente cualquier origen para que los tenants puedan incrustar el widget en sus landing pages
-      return callback(null, true);
-    },
-    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    credentials: true,
+  const allowedOrigins = rawOrigins.split(',').map((o) => o.trim()).filter(Boolean);
+  const isProd = process.env.NODE_ENV === 'production';
+
+  app.enableCors((req: any, callback: any) => {
+    const url: string = req.originalUrl || req.url || '';
+    const isPublicSurface =
+      url.startsWith('/api/webchat/public') ||
+      url.startsWith('/api/tickets/public') ||
+      url.startsWith('/api/public/') ||
+      url.startsWith('/uploads') ||
+      url.startsWith('/backend/uploads');
+
+    callback(null, {
+      origin: (origin: string | undefined, originCb: (err: Error | null, allow?: boolean) => void) => {
+        if (
+          !origin ||
+          !isProd ||
+          isPublicSurface ||
+          allowedOrigins.includes('*') ||
+          allowedOrigins.includes(origin)
+        ) {
+          return originCb(null, true);
+        }
+        logger.warn(`CORS bloqueado en producción para origen no autorizado: ${origin} (${url})`);
+        return originCb(null, false);
+      },
+      methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+      credentials: true,
+    });
   });
 
   // --- Archivos estáticos desde 'uploads' (rutas con y sin /backend) ---
@@ -164,6 +181,10 @@ async function bootstrap() {
       transform: true,
       whitelist: true,
       forbidNonWhitelisted: true,
+      stopAtFirstError: false,
+      transformOptions: {
+        enableImplicitConversion: false,
+      },
     }),
   );
   app.useGlobalFilters(new GlobalExceptionFilter());

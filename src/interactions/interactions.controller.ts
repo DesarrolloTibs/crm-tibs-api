@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, ParseUUIDPipe } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { InteractionsService } from './interactions.service';
 import { CreateInteractionDto } from './dto/create-interaction.dto';
@@ -20,20 +20,20 @@ export class InteractionsController {
 
   @Get('opportunity/:opportunityId')
   @ApiParam({ name: 'opportunityId', type: String, description: 'ID de la oportunidad' })
-  findAllByOpportunity(@Param('opportunityId') opportunityId: string) {
+  findAllByOpportunity(@Param('opportunityId', ParseUUIDPipe) opportunityId: string) {
     return this.interactionsService.findAllByOpportunity(opportunityId);
   }
 
   @Patch(':id')
   @ApiParam({ name: 'id', type: String, description: 'ID de la interacción' })
   @ApiBody({ type: UpdateInteractionDto })
-  update(@Param('id') id: string, @Body() updateInteractionDto: UpdateInteractionDto) {
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() updateInteractionDto: UpdateInteractionDto) {
     return this.interactionsService.update(id, updateInteractionDto);
   }
 
   @Delete(':id')
   @ApiParam({ name: 'id', type: String, description: 'ID de la interacción' })
-  remove(@Param('id') id: string) {
+  remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.interactionsService.remove(id);
   }
 }

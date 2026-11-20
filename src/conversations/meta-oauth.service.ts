@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { isUUID } from 'class-validator';
 import { ChannelConfig } from './entities/channel-config.entity';
 import { WhatsAppTemplate } from './entities/whatsapp-template.entity';
 import { TenantContextService } from '../tenancy/tenant-context.service';
@@ -100,6 +101,7 @@ export class MetaOauthService {
     );
 
     for (const t of tenants) {
+      if (!t.schema_name || !TenantContextService.validateSchemaName(t.schema_name)) continue;
       try {
         const query =
           channel === 'whatsapp'
@@ -138,6 +140,12 @@ export class MetaOauthService {
       tenantSchema = decodedState.tenantSchema || 'public';
       userId = decodedState.userId || '';
       targetChannel = (decodedState.channel || 'facebook').toLowerCase();
+      if (tenantSchema !== 'public' && !TenantContextService.validateSchemaName(tenantSchema)) {
+        return { success: false, message: 'Esquema de organización inválido en estado OAuth2.' };
+      }
+      if (userId && !isUUID(userId)) {
+        return { success: false, message: 'Identificador de usuario inválido en estado OAuth2.' };
+      }
     } catch (err: any) {
       this.logger.error(`[handleCallback] Error decodificando state: ${err.message}`);
       return { success: false, message: 'Estado OAuth2 inválido o corrupto.' };

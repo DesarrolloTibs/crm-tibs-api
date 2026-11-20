@@ -295,6 +295,16 @@ export class ActivitiesService implements OnModuleInit {
     }
 
     const parsedDate = parseActivityDate(createActivityDto.date);
+    if (isNaN(parsedDate.getTime())) {
+      throw new BadRequestException('La fecha de la actividad no es válida.');
+    }
+
+    if (dtoWithoutContacts.typeActivityId !== undefined && dtoWithoutContacts.typeActivityId !== null) {
+      const validType = await this.typeActivityRepository.findOne({ where: { id: dtoWithoutContacts.typeActivityId } });
+      if (!validType) {
+        throw new NotFoundException(`Tipo de actividad con ID "${dtoWithoutContacts.typeActivityId}" no encontrado.`);
+      }
+    }
 
     const activity = this.activityRepository.create({
       ...dtoWithoutContacts,
@@ -463,8 +473,20 @@ export class ActivitiesService implements OnModuleInit {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada.`);
     }
 
-    if (fullCurrentUser.role !== Role.Admin && originalActivity.userId !== currentUserId) {
+    const isAdminOrSuper =
+      fullCurrentUser.role === Role.Admin ||
+      fullCurrentUser.role === Role.SuperAdmin ||
+      (fullCurrentUser.role as string) === 'superadmin';
+
+    if (!isAdminOrSuper && originalActivity.userId !== currentUserId) {
       throw new ForbiddenException('No tienes permiso para editar esta actividad.');
+    }
+
+    if (updateActivityDto.typeActivityId !== undefined && updateActivityDto.typeActivityId !== null) {
+      const validType = await this.typeActivityRepository.findOne({ where: { id: updateActivityDto.typeActivityId } });
+      if (!validType) {
+        throw new NotFoundException(`Tipo de actividad con ID "${updateActivityDto.typeActivityId}" no encontrado.`);
+      }
     }
 
     if (updateActivityDto.opportunityId === '') {
@@ -482,6 +504,9 @@ export class ActivitiesService implements OnModuleInit {
     const { contactIds, ...dtoWithoutContacts } = updateActivityDto;
 
     const parsedDate = updateActivityDto.date ? parseActivityDate(updateActivityDto.date) : undefined;
+    if (parsedDate && isNaN(parsedDate.getTime())) {
+      throw new BadRequestException('La fecha de la actividad no es válida.');
+    }
 
     const activityToUpdate = await this.activityRepository.preload({
       id,
@@ -616,9 +641,14 @@ export class ActivitiesService implements OnModuleInit {
       throw new NotFoundException(`Actividad con ID "${id}" no encontrada.`);
     }
 
-    /* if (fullCurrentUser.role !== Role.Admin && activity.userId !== currentUserId) {
-       throw new ForbiddenException('No tienes permiso para eliminar esta actividad.');
-     }*/
+    const isAdminOrSuper =
+      fullCurrentUser.role === Role.Admin ||
+      fullCurrentUser.role === Role.SuperAdmin ||
+      (fullCurrentUser.role as string) === 'superadmin';
+
+    if (!isAdminOrSuper && activity.userId !== currentUserId) {
+      throw new ForbiddenException('No tienes permiso para eliminar esta actividad.');
+    }
 
     // Notificar al ejecutivo de la oportunidad antes de eliminar
     if (activity.opportunity && activity.opportunity.ejecutivo_id) {

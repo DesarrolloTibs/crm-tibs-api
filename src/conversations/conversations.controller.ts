@@ -11,11 +11,14 @@ import {
   UseGuards,
   ParseUUIDPipe,
   Res,
+  BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { ConversationsService } from './conversations.service';
 import { AiAgentService } from './ai-agent.service';
+import { UpdateAiConfigDto, SaveSubAgentDto } from './dto/ai-config.dto';
 import {
   AssignUserDto,
   ToggleBotStatusDto,
@@ -24,6 +27,11 @@ import {
   UpsertBaseTemplateDto,
   SelectExistingBaseTemplateDto,
   ConnectWhatsAppEmbeddedDto,
+  SaveChannelConfigDto,
+  TestReceiveMessageDto,
+  GetMetaAuthUrlQueryDto,
+  GetTemplatesQueryDto,
+  ALLOWED_CHANNEL_TYPES,
 } from './dto/conversations.dto';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
@@ -43,6 +51,13 @@ export class ConversationsController {
     private readonly metaOauthService: MetaOauthService,
   ) {}
 
+  private checkAdmin(user: User, msg = 'Solo los administradores pueden realizar esta operación.') {
+    const role = (user?.role || '').toString().toLowerCase().trim();
+    if (role !== Role.Admin && role !== Role.SuperAdmin) {
+      throw new ForbiddenException(msg);
+    }
+  }
+
   @Get()
   @UseGuards(AuthGuard('jwt'))
   @ApiOperation({ summary: 'Obtener todas las conversaciones de los canales' })
@@ -60,9 +75,13 @@ export class ConversationsController {
 
   @Post('ai-config')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Guardar/Actualizar la configuración global del Agente de IA' })
-  async updateAiConfig(@Body() body: any) {
-    return this.aiAgentService.saveConfig(body);
+  @ApiOperation({ summary: 'Guardar/Actualizar la configuración del Agente de IA (parámetros globales solo SuperAdmin)' })
+  async updateAiConfig(@Body() body: UpdateAiConfigDto, @GetUser() user: User) {
+    const role = (user?.role || '').toString().toLowerCase().trim();
+    if (role !== Role.Admin && role !== Role.SuperAdmin) {
+      throw new ForbiddenException('Solo los administradores pueden modificar la configuración del Agente de IA.');
+    }
+    return this.aiAgentService.saveConfig(body, user);
   }
 
   @Get('sub-agents')
@@ -74,15 +93,17 @@ export class ConversationsController {
 
   @Post('sub-agents')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Crear o actualizar la configuración de un sub-agente' })
-  async saveSubAgent(@Body() body: any) {
+  @ApiOperation({ summary: 'Crear o actualizar la configuración de un sub-agente (solo Admin)' })
+  async saveSubAgent(@Body() body: SaveSubAgentDto, @GetUser() user: User) {
+    this.checkAdmin(user, 'Solo los administradores pueden configurar los sub-agentes de IA.');
     return this.aiAgentService.saveSubAgent(body);
   }
 
   @Delete('sub-agents/:id')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Eliminar un sub-agente' })
-  async deleteSubAgent(@Param('id', ParseUUIDPipe) id: string) {
+  @ApiOperation({ summary: 'Eliminar un sub-agente (solo Admin)' })
+  async deleteSubAgent(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+    this.checkAdmin(user, 'Solo los administradores pueden eliminar sub-agentes de IA.');
     return this.aiAgentService.deleteSubAgent(id);
   }
 
@@ -95,15 +116,17 @@ export class ConversationsController {
 
   @Post('channels')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Crear o actualizar la configuración de un canal' })
-  async saveChannel(@Body() body: any) {
+  @ApiOperation({ summary: 'Crear o actualizar la configuración de un canal (solo Admin)' })
+  async saveChannel(@Body() body: SaveChannelConfigDto, @GetUser() user: User) {
+    this.checkAdmin(user, 'Solo los administradores pueden configurar canales externos.');
     return this.conversationsService.saveChannel(body);
   }
 
   @Delete('channels/:id')
   @UseGuards(AuthGuard('jwt'))
-  @ApiOperation({ summary: 'Eliminar la configuración de un canal' })
-  async deleteChannel(@Param('id', ParseUUIDPipe) id: string) {
+  @ApiOperation({ summary: 'Eliminar la configuración de un canal (solo Admin)' })
+  async deleteChannel(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+    this.checkAdmin(user, 'Solo los administradores pueden eliminar canales externos.');
     return this.conversationsService.deleteChannel(id);
   }
 
@@ -112,10 +135,11 @@ export class ConversationsController {
   @ApiOperation({ summary: 'Obtener la URL de autorización oficial de Meta OAuth2 para Facebook o Instagram' })
   async getMetaAuthUrl(
     @GetUser() user: User,
-    @Query('channel') channel?: string,
+    @Query() query: GetMetaAuthUrlQueryDto,
   ) {
+    this.checkAdmin(user, 'Solo los administradores pueden vincular canales Meta.');
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
-    const authUrl = this.metaOauthService.getAuthUrl(tenantSchema, user.id, channel);
+    const authUrl = this.metaOauthService.getAuthUrl(tenantSchema, user.id, query?.channel);
     return { authUrl };
   }
 
@@ -146,6 +170,7 @@ export class ConversationsController {
     @Body() body: ConnectWhatsAppEmbeddedDto,
     @GetUser() user: User,
   ) {
+    this.checkAdmin(user, 'Solo los administradores pueden vincular canales WhatsApp.');
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     return this.metaOauthService.connectWhatsAppEmbedded(body, tenantSchema, user.id);
   }
@@ -167,7 +192,9 @@ export class ConversationsController {
   async upsertBaseTemplate(
     @Param('channelConfigId', ParseUUIDPipe) channelConfigId: string,
     @Body() body: UpsertBaseTemplateDto,
+    @GetUser() user: User,
   ) {
+    this.checkAdmin(user, 'Solo los administradores pueden editar la plantilla base de WhatsApp.');
     return this.conversationsService.upsertBaseTemplate(channelConfigId, body);
   }
 
@@ -177,7 +204,9 @@ export class ConversationsController {
   async selectBaseTemplate(
     @Param('channelConfigId', ParseUUIDPipe) channelConfigId: string,
     @Body() body: SelectExistingBaseTemplateDto,
+    @GetUser() user: User,
   ) {
+    this.checkAdmin(user, 'Solo los administradores pueden seleccionar la plantilla base de WhatsApp.');
     return this.conversationsService.selectExistingAsBaseTemplate(channelConfigId, body);
   }
 
@@ -188,11 +217,15 @@ export class ConversationsController {
     @Query() query: any,
     @Res() res: any,
   ) {
+    const normalizedChannel = (channel || '').toLowerCase().trim();
+    if (!ALLOWED_CHANNEL_TYPES.includes(normalizedChannel as any)) {
+      throw new BadRequestException('Canal de webhook inválido.');
+    }
     const mode = query['hub.mode'] || query.hub?.mode;
     const token = query['hub.verify_token'] || query.hub?.verify_token;
     const challenge = query['hub.challenge'] || query.hub?.challenge;
 
-    const verifiedChallenge = await this.conversationsService.verifyMetaWebhook(channel, mode, token, challenge);
+    const verifiedChallenge = await this.conversationsService.verifyMetaWebhook(normalizedChannel, mode, token, challenge);
     return res.status(200).send(verifiedChallenge);
   }
 
@@ -202,29 +235,31 @@ export class ConversationsController {
     @Param('channel') channel: string,
     @Body() body: any,
   ) {
-    return this.conversationsService.handleIncomingWebhook(channel, body);
+    const normalizedChannel = (channel || '').toLowerCase().trim();
+    if (!ALLOWED_CHANNEL_TYPES.includes(normalizedChannel as any)) {
+      throw new BadRequestException('Canal de webhook inválido.');
+    }
+    return this.conversationsService.handleIncomingWebhook(normalizedChannel, body);
   }
 
   @Post('test-receive')
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Simular mensaje entrante para pruebas locales' })
+  @ApiOperation({ summary: 'Simular mensaje entrante para pruebas locales (solo Admin)' })
   async testReceive(
-    @Body('channel') channel: string,
-    @Body('externalId') externalId: string,
-    @Body('clientNickname') clientNickname: string,
-    @Body('text') text: string,
-    @Body('messageType') messageType?: string,
+    @Body() body: TestReceiveMessageDto,
+    @GetUser() user: User,
   ) {
+    this.checkAdmin(user, 'Solo los administradores pueden simular mensajes entrantes.');
     return this.conversationsService.receiveIncomingMessage(
-      channel,
-      externalId,
-      clientNickname,
-      text,
+      body.channel,
+      body.externalId,
+      body.clientNickname,
+      body.text,
       undefined,
       undefined,
       undefined,
-      messageType || 'text',
+      body.messageType || 'text',
     );
   }
 
@@ -251,9 +286,9 @@ export class ConversationsController {
   @ApiOperation({ summary: 'Obtener la plantilla base aprobada de WhatsApp para la conversación' })
   async getTemplates(
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('all') all?: string,
+    @Query() query: GetTemplatesQueryDto,
   ) {
-    const fetchAll = all === 'true' || all === '1';
+    const fetchAll = query?.all === 'true' || query?.all === '1';
     return this.conversationsService.getWhatsAppTemplates(id, fetchAll);
   }
 
@@ -301,6 +336,9 @@ export class ConversationsController {
   @ApiOperation({ summary: 'Descargar o reproducir archivo multimedia de audio de una conversación' })
   async getMediaFile(@Param('filename') filename: string, @Res() res: Response) {
     const sanitizedFilename = basename(filename);
+    if (!sanitizedFilename || sanitizedFilename.startsWith('.') || !/^[a-zA-Z0-9._-]+$/.test(sanitizedFilename)) {
+      throw new BadRequestException('Nombre de archivo multimedia inválido.');
+    }
     const filePath = `uploads/conversations/audios/${sanitizedFilename}`;
     return this.conversationsService.streamMediaFile(filePath, res, sanitizedFilename);
   }

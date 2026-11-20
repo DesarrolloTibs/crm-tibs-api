@@ -6,7 +6,7 @@ import { ReportsService } from './reports.service';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../role.enum';
-import { DashboardIndicator } from './entities/dashboard-indicator.entity';
+import { CreateIndicatorDto, UpdateIndicatorDto } from './dto/indicator.dto';
 
 @ApiTags('reports')
 @ApiBearerAuth()
@@ -30,7 +30,7 @@ export class ReportsController {
 
   @Post('indicators')
   @ApiOperation({ summary: 'Crear un nuevo indicador de dashboard (solo Admin)' })
-  createIndicator(@Body() body: any, @GetUser() user: User) {
+  createIndicator(@Body() body: CreateIndicatorDto, @GetUser() user: User) {
     this.checkAdmin(user);
     return this.reportsService.createIndicator(body);
   }
@@ -39,7 +39,7 @@ export class ReportsController {
   @ApiOperation({ summary: 'Actualizar un indicador de dashboard existente (solo Admin)' })
   updateIndicator(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: any,
+    @Body() body: UpdateIndicatorDto,
     @GetUser() user: User,
   ) {
     this.checkAdmin(user);

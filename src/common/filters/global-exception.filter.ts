@@ -20,6 +20,12 @@ export class GlobalExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger('GlobalExceptionFilter');
 
   catch(exception: unknown, host: ArgumentsHost): void {
+    if (host.getType() !== 'http') {
+      const msg = exception instanceof Error ? exception.message : String(exception);
+      this.logger.error(`[${host.getType().toUpperCase()}] Excepción no HTTP: ${msg}`);
+      return;
+    }
+
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
@@ -38,10 +44,41 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode = HttpStatus.UNAUTHORIZED;
       message = 'Token de sesión inválido.';
     } else if (exception instanceof QueryFailedError) {
-      statusCode = HttpStatus.BAD_REQUEST;
-      // Exponer solo el constraint, no el SQL completo
-      const detail = (exception as any).detail as string | undefined;
-      message = detail ?? 'Error en la consulta a la base de datos.';
+      const driverError = (exception as any).driverError || exception;
+      const pgCode = driverError?.code as string | undefined;
+      const isProd = process.env.NODE_ENV === 'production';
+      const detail = !isProd ? (driverError?.detail as string | undefined) : undefined;
+
+      switch (pgCode) {
+        case '23505':
+          statusCode = HttpStatus.CONFLICT;
+          message = detail ?? 'Ya existe un registro con los mismos datos únicos.';
+          break;
+        case '23503':
+          statusCode = HttpStatus.BAD_REQUEST;
+          message = detail ?? 'La referencia relacionada no existe o está en uso.';
+          break;
+        case '23502':
+          statusCode = HttpStatus.BAD_REQUEST;
+          message = detail ?? 'Falta un campo obligatorio requerido por la base de datos.';
+          break;
+        case '22001':
+          statusCode = HttpStatus.BAD_REQUEST;
+          message = 'Uno de los campos excede la longitud máxima permitida.';
+          break;
+        case '22003':
+          statusCode = HttpStatus.BAD_REQUEST;
+          message = 'Uno de los valores numéricos excede el rango permitido.';
+          break;
+        case '22P02':
+          statusCode = HttpStatus.BAD_REQUEST;
+          message = 'Formato de identificador o tipo de dato inválido.';
+          break;
+        default:
+          statusCode = HttpStatus.BAD_REQUEST;
+          message = detail ?? 'Error en la consulta a la base de datos.';
+          break;
+      }
     }
 
     const stack = process.env.NODE_ENV !== 'production'

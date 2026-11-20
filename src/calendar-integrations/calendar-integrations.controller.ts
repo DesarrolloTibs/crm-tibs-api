@@ -20,6 +20,7 @@ import { CalendarWebhookMapping } from './entities/calendar-webhook-mapping.enti
 import { GoogleCalendarService } from './services/google-calendar.service';
 import { OutlookCalendarService } from './services/outlook-calendar.service';
 import { CalendarSyncCoordinatorService } from './services/calendar-sync-coordinator.service';
+import { GetCalendarAuthUrlQueryDto } from './dto/calendar-integrations.dto';
 
 @UseGuards(AuthGuard('jwt'))
 @Controller('calendar-integrations')
@@ -60,10 +61,8 @@ export class CalendarIntegrationsController {
    * Obtiene la URL de autenticación de OAuth2 para Google o Outlook.
    */
   @Get('auth-url')
-  async getAuthUrl(@GetUser() user: User, @Query('provider') provider: string) {
-    if (!provider || (provider !== 'google' && provider !== 'outlook')) {
-      throw new BadRequestException('Proveedor inválido o no especificado.');
-    }
+  async getAuthUrl(@GetUser() user: User, @Query() query: GetCalendarAuthUrlQueryDto) {
+    const provider = query.provider;
 
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     const userId = user.id;

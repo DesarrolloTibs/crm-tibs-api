@@ -9,9 +9,13 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
-import * as jwt from 'jsonwebtoken';
+import { Logger, UsePipes } from '@nestjs/common';
 import { Notification } from './entities/notification.entity';
+import {
+  authenticateTenantSocket,
+  createWsValidationPipe,
+  WsRegisterUserDto,
+} from '../common/utils/ws-tenant.util';
 
 @WebSocketGateway({
   namespace: 'notifications',
@@ -31,59 +35,28 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection,
   }
 
   handleConnection(client: Socket) {
-    const token =
-      (client.handshake.auth?.token as string) ||
-      (client.handshake.headers?.authorization?.startsWith('Bearer ')
-        ? client.handshake.headers.authorization.substring(7)
-        : undefined) ||
-      (client.handshake.query?.token as string);
-
-    if (!token) {
-      this.logger.warn(`Client ${client.id} rechazado en Notifications WS: Token JWT ausente`);
-      client.disconnect(true);
-      return;
-    }
-
-    try {
-      const secret = process.env.JWT_SECRET;
-      if (!secret) throw new Error('JWT_SECRET no configurado');
-
-      const decoded: any = jwt.verify(token, secret);
-      const tenantSchema = decoded.tenantSchema || decoded.tenant || 'public';
-      const userId = decoded.sub || decoded.userId || decoded.id;
-
-      if (!userId) {
-        throw new Error('ID de usuario no presente en payload JWT');
-      }
-
-      (client as any).tenantSchema = tenantSchema;
-      (client as any).userId = userId;
-
-      client.join(`tenant:${tenantSchema}`);
-      client.join(`user_${userId}`);
-      client.join(`user:${userId}`);
-
-      this.logger.log(`Client ${client.id} conectado a Notifications WS (tenant: ${tenantSchema}, user: ${userId})`);
-    } catch (err: any) {
-      this.logger.warn(`Client ${client.id} rechazado en Notifications WS: JWT inválido (${err.message})`);
-      client.disconnect(true);
-    }
+    authenticateTenantSocket(client, this.logger, 'Notifications', { requireUserId: true });
   }
 
   handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected from Notifications WebSocket: ${client.id}`);
   }
 
+  @UsePipes(createWsValidationPipe())
   @SubscribeMessage('register')
-  handleRegister(@MessageBody() data: { userId: string }, @ConnectedSocket() client: Socket) {
+  handleRegister(@MessageBody() data: WsRegisterUserDto, @ConnectedSocket() client: Socket) {
     const authenticatedUserId = (client as any).userId;
-    const targetUserId = authenticatedUserId || data?.userId;
-    if (targetUserId) {
-      client.join(`user_${targetUserId}`);
-      client.join(`user:${targetUserId}`);
-      this.logger.log(`Client ${client.id} registered for user_${targetUserId}`);
-      return { status: 'ok', room: `user_${targetUserId}` };
+    if (!authenticatedUserId) {
+      return { status: 'unauthorized' };
     }
+    if (data?.userId && data.userId !== authenticatedUserId) {
+      this.logger.warn(`Client ${client.id} (${authenticatedUserId}) intentó registrarse en notificaciones de ${data.userId}`);
+      return { status: 'forbidden' };
+    }
+    client.join(`user_${authenticatedUserId}`);
+    client.join(`user:${authenticatedUserId}`);
+    this.logger.log(`Client ${client.id} registered for user_${authenticatedUserId}`);
+    return { status: 'ok', room: `user_${authenticatedUserId}` };
   }
 
   emitNotificationToUser(userId: string, notification: Notification) {

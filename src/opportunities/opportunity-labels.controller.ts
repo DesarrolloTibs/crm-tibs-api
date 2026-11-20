@@ -1,10 +1,11 @@
-import { Controller, Get, Body, Patch, Param, UseGuards, ParseUUIDPipe } from '@nestjs/common';
+import { Controller, Get, Body, Patch, Param, UseGuards, ParseUUIDPipe, ForbiddenException } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { OpportunityLabelsService } from './opportunity-labels.service';
 import { UpdateOpportunityLabelDto } from './dto/update-opportunity-label.dto';
-import { GetUser } from 'src/auth/decorators/get-user.decorator';
-import { User } from 'src/users/entities/user.entity';
+import { GetUser } from '../auth/decorators/get-user.decorator';
+import { User } from '../users/entities/user.entity';
+import { Role } from '../role.enum';
 
 @ApiTags('opportunity-labels')
 @ApiBearerAuth()
@@ -26,6 +27,9 @@ export class OpportunityLabelsController {
     @Body() updateDto: UpdateOpportunityLabelDto,
     @GetUser() user: User,
   ) {
+    if (user.role !== Role.Admin && user.role !== Role.SuperAdmin && (user.role as any) !== 'superadmin') {
+      throw new ForbiddenException('Solo los administradores pueden editar las etiquetas.');
+    }
     const userId = user.id || (user as any).userId;
     return this.labelsService.update(id, updateDto.strname, userId);
   }

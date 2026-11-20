@@ -57,7 +57,7 @@ export class WebchatEntityMatcherService {
    * (Clientes, Empresas, Usuarios, Productos, Oportunidades, Tickets).
    */
   buildMultiEntityCubeQueries(searchTerm: string, userRole: string, userId: string): CubeQuery[] {
-    const cleanSearch = searchTerm.trim();
+    const cleanSearch = searchTerm.trim().slice(0, 200);
     if (!cleanSearch) return [];
 
     const isExec = this.securityService.isExecutive(userRole);
@@ -199,7 +199,7 @@ export class WebchatEntityMatcherService {
     userRole: string,
     userId: string,
   ): Promise<EntityMatchItem[]> {
-    const rawTerms = searchTerm.trim().split(/\s+/).filter(t => t.length >= 2);
+    const rawTerms = searchTerm.trim().slice(0, 200).split(/\s+/).filter(t => t.length >= 2);
     if (rawTerms.length === 0) return [];
 
     const normTerms = rawTerms.map(t => normalizeText(t)).filter(t => t.length >= 2);

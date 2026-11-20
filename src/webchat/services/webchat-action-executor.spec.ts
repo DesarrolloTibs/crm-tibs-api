@@ -1960,6 +1960,93 @@ describe('WebchatActionExecutorService', () => {
       expect(res.answer).not.toContain('*');
     });
 
+    it('debe manejar voz con ₽600, username "marco punto tráfico" / "marcó" y no corromper el concepto a "l usuario marcó..."', async () => {
+      const marcoUser: User = {
+        id: '44444444-4444-4444-4444-444444444444',
+        username: 'marco.trafico',
+        email: 'marco.trafico@empresa.com',
+        role: Role.Executive,
+      } as User;
+      mockUsersService.findAllActive.mockResolvedValue([adminUser, executiveUser, otherExecutiveUser, marcoUser]);
+
+      // Turno 1: "nuevo gasto" no debe aceptarse como concepto real
+      const turn1 = await service.handleCreateExpense({ concepto: 'nuevo gasto' }, adminUser, [], 'nuevo gasto');
+      expect(turn1.answer).toContain('necesito al menos el concepto, el monto y el cliente u oportunidad');
+      expect(turn1.answer).not.toContain('¿Cuál es el monto del gasto de "nuevo gasto"');
+
+      // Turno 2: Recupera $600 a pesar de ₽600, resuelve usuario "marcó" -> marco.trafico sin buscarlo como cliente y pide concepto
+      const turn2 = await service.handleCreateExpense(
+        { monto: 600, usuario: 'marcó' },
+        adminUser,
+        [
+          { role: 'user', content: 'nuevo gasto' },
+          { role: 'assistant', content: turn1.answer },
+        ],
+        'crea un gasto del usuario marcó con un monto de ₽600',
+      );
+      expect(turn2.answer).toContain('¿Cuál es el concepto del gasto por $600.00 MXN?');
+      expect(turn2.answer).toContain('marco.trafico');
+      expect(turn2.answer).not.toContain('No encontré ningún cliente');
+      expect(turn2.answer).not.toContain('l usuario');
+
+      // Rescate multi-turno incluso si venía de un historial con ₽600 y error previo de cliente + "marco punto tráfico"
+      const legacyHistory = [
+        { role: 'user' as const, content: 'nuevo gasto' },
+        { role: 'assistant' as const, content: '¿Cuál es el monto del gasto de "nuevo gasto"? (ej. "$500 pesos")' },
+        { role: 'user' as const, content: 'crea un gasto del usuario marcó con un monto de ₽600' },
+        { role: 'assistant' as const, content: '⚠️ No encontré ningún cliente que coincida con "Marcos".\n\n¿Podrías verificar el nombre o indicarme la oportunidad para asociar el gasto?' },
+        { role: 'user' as const, content: 'el nombre del usuario es marco punto tráfico' },
+        { role: 'assistant' as const, content: '⚠️ No encontré ningún cliente que coincida con "Marco Punto Tráfico".\n\n¿Podrías verificar el nombre o indicarme la oportunidad para asociar el gasto?' },
+      ];
+      const turn4Recovery = await service.handleCreateExpense({}, adminUser, legacyHistory, 'marco.trafico');
+      expect(turn4Recovery.answer).toContain('¿Cuál es el concepto del gasto por $600.00 MXN?');
+      expect(turn4Recovery.answer).toContain('marco.trafico');
+      expect(turn4Recovery.answer).not.toContain('l usuario marcó con un monto de ₽');
+      expect(turn4Recovery.answer).not.toContain('¿Cuál es el monto del gasto de');
+
+      // Aclaración si el Admin indicó un usuario inexistente, luego completa en turno siguiente
+      const missingUserTurn = await service.handleCreateExpense(
+        { concepto: 'Comida', monto: 600, usuario: 'usuario_inexistente' },
+        adminUser,
+        [],
+        'crea un gasto de comida por 600 del usuario usuario_inexistente',
+      );
+      expect(missingUserTurn.answer).toContain('No encontré ningún usuario o ejecutivo');
+
+      mockClientRepo.find.mockResolvedValue([
+        { id: 'cli-marco-1', nombre: 'Carlos', apellido: 'Ruiz', ejecutivo_id: marcoUser.id },
+      ]);
+      mockExpensesService.create.mockResolvedValue({
+        id: 'exp-marco-1',
+        concepto: 'Comida',
+        monto: 600,
+        fecha: '2026-11-20',
+        client_id: 'cli-marco-1',
+      });
+
+      const resolvedAfterUserFix = await service.handleCreateExpense(
+        { cliente: 'Carlos Ruiz' },
+        adminUser,
+        [
+          { role: 'user', content: 'crea un gasto de comida por 600 del usuario usuario_inexistente' },
+          { role: 'assistant', content: missingUserTurn.answer },
+          { role: 'user', content: 'marco.trafico' },
+          { role: 'assistant', content: '⚠️ Todo gasto debe asociarse a un cliente o a una oportunidad (no ambos).\n\nTengo anotado:\n- Concepto: Comida\n- Monto: $600.00 MXN\n- Fecha: 2026-11-20\n- Responsable: marco.trafico\n\n¿A qué cliente o oportunidad deseas asociar este gasto?' },
+        ],
+        'cliente Carlos Ruiz',
+      );
+      expect(mockExpensesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          concepto: 'Comida',
+          monto: 600,
+          client_id: 'cli-marco-1',
+          opportunity_id: null,
+        }),
+        expect.objectContaining({ id: marcoUser.id, username: 'marco.trafico' }),
+      );
+      expect(resolvedAfterUserFix.answer).toContain('marco.trafico');
+    });
+
     it('debe bloquear peticiones destructivas de eliminación sobre gastos y bloquear acciones fuera del catálogo (como consultExpense)', async () => {
       const delRes = await service.executeAction(
         { action: 'modifyExpense', parameters: { targetExpense: 'Comida' } },
@@ -2171,6 +2258,199 @@ describe('WebchatActionExecutorService', () => {
 
       expect(mockTicketsService.update).not.toHaveBeenCalled();
       expect(res.answer).toContain('Acceso Denegado');
+    });
+  });
+
+  describe('10. Rescate Multi-Turno Extendido (Oportunidades, Actividades, Tickets, Clientes y Empresas)', () => {
+    it('createOpportunity: debe rescatar proyecto, empresa, monto USD y catálogos mencionados en respuesta natural', async () => {
+      mockCompanyRepo.find.mockResolvedValue([{ id: 'comp-alfa-1', nombre: 'Grupo Alfa' }]);
+      mockOpportunitiesService.create.mockResolvedValue({
+        id: 'opp-mt-1',
+        nombre_proyecto: 'Red Magic',
+        monto_total: 50000,
+        moneda: 'USD',
+        pipeline_id: 'pipe-1',
+      });
+
+      const history = [
+        { role: 'user' as const, content: 'crea oportunidad Red Magic para Grupo Alfa por 50000 USD' },
+        {
+          role: 'assistant' as const,
+          content:
+            'Para poder crear la oportunidad "Red Magic" para Grupo Alfa, por favor indícame los siguientes datos requeridos:\n\n• Línea de Negocio: Selecciona una de las opciones activas en el CRM:\n  - Desarrollo',
+        },
+      ];
+
+      const res = await service.executeAction(
+        { action: 'createOpportunity', parameters: {} },
+        executiveUser,
+        'Desarrollo, Proyecto, Anual',
+        history,
+      );
+
+      expect(mockOpportunitiesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nombre_proyecto: 'Red Magic',
+          companyId: 'comp-alfa-1',
+          monto_total: 50000,
+          moneda: 'USD',
+          linea_negocio_id: 'bl-default-uuid',
+          tipo_entrega_id: 'dt-default-uuid',
+          licenciamiento_id: 'lic-default-uuid',
+        }),
+        executiveUser,
+      );
+      expect(res.answer).toContain('Oportunidad Creada con Éxito');
+    });
+
+    it('modifyActivity: debe rescatar actividad objetivo tras Conflicto de Horario al elegir opción "el 1" sin sobreescribir el título', async () => {
+      const today3pm = new Date();
+      today3pm.setHours(15, 0, 0, 0);
+      const existingAct = {
+        id: 'act-mt-1',
+        userId: executiveUser.id,
+        activity: 'Demo con Carlos',
+        date: today3pm.toISOString(),
+      };
+
+      const qbMock: any = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([existingAct]),
+        getOne: jest.fn().mockResolvedValue(existingAct),
+      };
+      mockActivityRepo.createQueryBuilder.mockReturnValue(qbMock);
+      mockActivitiesService.findByUserAndDate.mockResolvedValue([]);
+      mockActivitiesService.update.mockResolvedValue({
+        ...existingAct,
+        date: new Date(today3pm.getTime() + 60 * 60 * 1000).toISOString(),
+      });
+
+      const history = [
+        { role: 'user' as const, content: 'cambia la reunión Demo con Carlos de las 3 a las 4 pm' },
+        {
+          role: 'assistant' as const,
+          content:
+            'Conflicto de Horario: La nueva fecha propuesta (hoy 16:00) ya está ocupada en la agenda.\n\n Horarios libres sugeridos:\n- mañana a las 16:00',
+        },
+      ];
+
+      const res = await service.executeAction(
+        { action: 'modifyActivity', parameters: {} },
+        executiveUser,
+        'el 1',
+        history,
+      );
+
+      expect(mockActivitiesService.update).toHaveBeenCalledWith(
+        'act-mt-1',
+        expect.objectContaining({
+          date: expect.any(String),
+        }),
+        executiveUser,
+      );
+      const updatePayload = mockActivitiesService.update.mock.calls[0][1];
+      expect(updatePayload.activity).toBeUndefined();
+      expect(res.answer).toContain('Actividad Modificada con Éxito');
+    });
+
+    it('createTicket: debe conservar Título entre turnos cuando primero falta la descripción', async () => {
+      mockTicketsService.create.mockResolvedValue({
+        id: 'tkt-mt-1',
+        ticket_number: 201,
+        strtitle: 'Error login',
+        tipo_incidencia: 'Soporte Técnico',
+        priority: 1,
+        helpdesk_id: 'hd-1',
+      });
+
+      const turn1 = await service.executeAction(
+        { action: 'createTicket', parameters: { title: 'Error login' } },
+        executiveUser,
+        'crea ticket Error login',
+        [],
+      );
+      expect(turn1.answer).toContain('Descripción del Problema');
+      expect(turn1.answer).toContain('- Título: Error login');
+
+      const turn2 = await service.executeAction(
+        { action: 'createTicket', parameters: { description: 'Al ingresar marca error 500' } },
+        executiveUser,
+        'Al ingresar marca error 500',
+        [
+          { role: 'user', content: 'crea ticket Error login' },
+          { role: 'assistant', content: turn1.answer },
+        ],
+      );
+      expect(mockTicketsService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          strtitle: 'Error login',
+          description: 'Al ingresar marca error 500',
+        }),
+        executiveUser,
+      );
+      expect(turn2.answer).toContain('Ticket de Soporte Creado');
+    });
+
+    it('createClient y createCompany: deben conservar correo/empresa/web de turnos previos al recibir el nombre en turno siguiente', async () => {
+      mockClientRepo.findOne.mockResolvedValueOnce(null);
+      mockClientsService.findByPhone.mockResolvedValue(null);
+      mockClientsService.create.mockResolvedValue({
+        id: 'cli-mt-1',
+        nombre: 'Sofía',
+        apellido: 'Lozano',
+        correo: 'sofia@acme.com',
+        empresa: 'Acme Corp',
+        category: 'Lead',
+        ejecutivo_id: executiveUser.id,
+      });
+
+      const cliRes = await service.executeAction(
+        { action: 'createClient', parameters: { nombre: 'Sofía Lozano' } },
+        executiveUser,
+        'Sofía Lozano',
+        [
+          { role: 'user', content: 'crea un cliente con correo sofia@acme.com para empresa Acme Corp' },
+          { role: 'assistant', content: 'Para registrar al cliente o contacto, por favor indícame al menos su Nombre.' },
+        ],
+      );
+      expect(mockClientsService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nombre: 'Sofía',
+          apellido: 'Lozano',
+          correo: 'sofia@acme.com',
+        }),
+      );
+      expect(cliRes.answer).toContain('Cliente Registrado Exitosamente');
+
+      mockCompanyRepo.findOne.mockResolvedValueOnce(null);
+      mockCompaniesService.create.mockResolvedValue({
+        id: 'comp-mt-1',
+        nombre: 'Acme Norte',
+        correo: 'contacto@acmenorte.mx',
+        website: 'www.acmenorte.mx',
+        ejecutivo_id: executiveUser.id,
+      });
+
+      const compRes = await service.executeAction(
+        { action: 'createCompany', parameters: { nombre: 'Acme Norte' } },
+        executiveUser,
+        'Acme Norte',
+        [
+          { role: 'user', content: 'crea una empresa con correo contacto@acmenorte.mx web www.acmenorte.mx' },
+          { role: 'assistant', content: 'Para registrar una nueva empresa, por favor indícame al menos su Nombre comercial o razón social.' },
+        ],
+      );
+      expect(mockCompaniesService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nombre: 'Acme Norte',
+          correo: 'contacto@acmenorte.mx',
+          website: 'www.acmenorte.mx',
+        }),
+      );
+      expect(compRes.answer).toContain('Empresa Registrada Exitosamente');
     });
   });
 });

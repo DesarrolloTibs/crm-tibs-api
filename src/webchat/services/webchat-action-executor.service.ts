@@ -10,6 +10,14 @@ import {
   CRM_ENTITY_STOPWORDS,
   PG_TRANSLATE_EXPRESSION,
 } from './webchat-entity-ranker.util';
+import {
+  normalizeSpokenSpanishText,
+  parseSpokenSpanishAmount,
+  extractExpenseAmountFromText,
+  extractExpenseConceptFromText,
+  extractExpenseUserFromText,
+  isInvalidOrGenericExpenseConcept,
+} from '../../common/utils/spoken-spanish.util';
 import { OpportunitiesService } from '../../opportunities/opportunities.service';
 import { ActivitiesService } from '../../activities/activities.service';
 import { TicketsService } from '../../tickets/tickets.service';
@@ -182,23 +190,23 @@ export class WebchatActionExecutorService {
 
     switch (actionPlan.action) {
       case 'createOpportunity':
-        return this.handleCreateOpportunity(params, user);
+        return this.handleCreateOpportunity(params, user, conversationHistory, originalQuestion);
       case 'modifyOpportunity':
         return this.handleModifyOpportunity(params, user);
       case 'createActivity':
         return this.handleCreateActivity(params, user, originalQuestion, conversationHistory);
       case 'modifyActivity':
-        return this.handleModifyActivity(params, user);
+        return this.handleModifyActivity(params, user, conversationHistory, originalQuestion);
       case 'createTicket':
-        return this.handleCreateTicket(params, user);
+        return this.handleCreateTicket(params, user, conversationHistory, originalQuestion);
       case 'modifyTicket':
         return this.handleModifyTicket(params, user, conversationHistory, originalQuestion);
       case 'createClient':
-        return this.handleCreateClient(params, user, originalQuestion);
+        return this.handleCreateClient(params, user, originalQuestion, conversationHistory);
       case 'modifyClient':
         return this.handleModifyClient(params, user, conversationHistory);
       case 'createCompany':
-        return this.handleCreateCompany(params, user, originalQuestion);
+        return this.handleCreateCompany(params, user, originalQuestion, conversationHistory);
       case 'modifyCompany':
         return this.handleModifyCompany(params, user, conversationHistory);
       case 'createExpense':
@@ -226,10 +234,32 @@ export class WebchatActionExecutorService {
     conversationHistory: ConversationHistoryMessage[],
   ): any {
     const merged = { ...params };
+    const rawCurrentInput = (merged.__rawUserInput || '').toString().trim();
+    delete merged.__rawUserInput;
     const userMessages = conversationHistory
       .filter(m => m.role === 'user')
       .map(m => m.content)
       .reverse();
+    const assistantMessages = conversationHistory
+      .filter(m => m.role === 'assistant')
+      .map(m => m.content)
+      .reverse();
+    const lastAssistantMsg = assistantMessages[0] || '';
+
+    if (action === 'createOpportunity' && lastAssistantMsg) {
+      if (!merged.nombreProyecto && !merged.nombre_proyecto && !merged.title && !merged.proyecto) {
+        const oppFromAssistant = lastAssistantMsg.match(/Para poder crear la oportunidad "([^"]+)"/i);
+        if (oppFromAssistant && oppFromAssistant[1]) {
+          merged.nombreProyecto = oppFromAssistant[1].trim();
+        }
+      }
+      if (!merged.empresa && !merged.cliente && !merged.cuenta && !merged.companyId && !merged.clienteId) {
+        const compFromAssistant = lastAssistantMsg.match(/Para poder crear(?:\s+la\s+oportunidad\s+"[^"]+"|\s+una\s+nueva\s+oportunidad)\s+para\s+([^,\n]+?),/i);
+        if (compFromAssistant && compFromAssistant[1]) {
+          merged.empresa = compFromAssistant[1].trim();
+        }
+      }
+    }
 
     for (const msg of userMessages) {
       if (action === 'createActivity') {
@@ -285,19 +315,48 @@ export class WebchatActionExecutorService {
           }
         }
       } else if (action === 'createOpportunity') {
-        // Extraer nombreProyecto si falta
+        // Extraer nombreProyecto si falta (comillas o después de "oportunidad/proyecto")
         if (!merged.nombreProyecto && !merged.nombre_proyecto && !merged.title && !merged.proyecto) {
           const quoteMatch = msg.match(/["']([^"']{3,})["']/);
           if (quoteMatch && quoteMatch[1]) {
             merged.nombreProyecto = quoteMatch[1].trim();
+          } else {
+            const oppHist = msg.match(
+              /\b(?:oportunidad|cotizaci[oó]n|proyecto)\s+([^,.;"\n]+?)(?=\s+(?:para\s+(?:el\s+cliente|la\s+empresa)|cliente|empresa|por\s+[$€£]?\d|monto|de\s+[$€£]?\d)|[.,;]|$)/i,
+            );
+            if (
+              oppHist &&
+              oppHist[1] &&
+              !/^(?:nuev[oa]|una?\s+nuev[oa]|el|la)$/i.test(oppHist[1].trim())
+            ) {
+              merged.nombreProyecto = oppHist[1].trim();
+            }
           }
         }
         // Extraer empresa/cliente si falta
         if (!merged.cliente && !merged.empresa && !merged.cuenta) {
-          const empMatch = msg.match(/(?:para\s+el\s+cliente|para\s+la\s+empresa|cliente|empresa|cuenta)\s+["']?([^"',]+?)["']?/i);
+          const empMatch = msg.match(/(?:para\s+el\s+cliente|para\s+la\s+empresa|cliente|empresa|cuenta)\s+["']?((?:[^,"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|de\s+[$€£]?\d|monto|con\s+monto|usd|mxn)|[,;]|$)/i);
           if (empMatch && empMatch[1]) {
             merged.empresa = empMatch[1].trim();
           }
+        }
+        if (merged.montoTotal === undefined && merged.monto_total === undefined && merged.monto === undefined && merged.valor === undefined) {
+          const oppAmt = extractExpenseAmountFromText(msg);
+          if (oppAmt !== null) {
+            merged.montoTotal = oppAmt;
+          }
+        }
+        if (!merged.moneda) {
+          if (/\b(usd|d[oó]lar(?:es)?)\b/i.test(msg)) {
+            merged.moneda = 'USD';
+          } else if (/\b(mxn|pesos)\b/i.test(msg)) {
+            merged.moneda = 'MXN';
+          }
+        }
+        if (!merged.ejecutivo && !merged.ejecutivoId && !merged.responsable) {
+          const userExec = extractExpenseUserFromText(msg);
+          if (userExec.ejecutivo) merged.ejecutivo = userExec.ejecutivo;
+          else if (userExec.usuario) merged.ejecutivo = userExec.usuario;
         }
       } else if (action === 'modifyOpportunity') {
         // 1. Extraer nombre/proyecto si falta
@@ -407,14 +466,6 @@ export class WebchatActionExecutorService {
     }
 
     if (action === 'createExpense' || action === 'modifyExpense') {
-      const assistantMessages = conversationHistory
-        .filter((m) => m.role === 'assistant')
-        .map((m) => m.content)
-        .reverse();
-      const lastAssistantMsg = assistantMessages[0] || '';
-      const rawCurrentInput = (merged.__rawUserInput || '').toString().trim();
-      delete merged.__rawUserInput;
-
       const pickMatch = rawCurrentInput.match(/^\s*(?:el|la|opci[oó]n|n[uú]mero|#)?\s*(\d+)\s*$/i);
       const pickNumber = pickMatch ? parseInt(pickMatch[1], 10) : null;
 
@@ -447,18 +498,25 @@ export class WebchatActionExecutorService {
       }
 
       if (action === 'createExpense') {
+        if (typeof merged.concepto === 'string' && isInvalidOrGenericExpenseConcept(merged.concepto)) {
+          delete merged.concepto;
+        }
+
         if (!merged.concepto) {
           const conceptFromAssistant =
             lastAssistantMsg.match(/[-•]\s*\*{0,2}Concepto:\*{0,2}\s*([^\n]+)/i) ||
             lastAssistantMsg.match(/del gasto de \*{0,2}"([^"]+)"\*{0,2}/i);
           if (conceptFromAssistant && conceptFromAssistant[1]) {
-            merged.concepto = conceptFromAssistant[1].replace(/\*{1,2}/g, '').trim();
+            const candidate = conceptFromAssistant[1].replace(/\*{1,2}/g, '').trim();
+            if (!isInvalidOrGenericExpenseConcept(candidate)) {
+              merged.concepto = candidate;
+            }
           }
         }
         if (merged.monto === undefined || merged.monto === null || merged.monto === '') {
           const amountFromAssistant =
-            lastAssistantMsg.match(/[-•]\s*\*{0,2}Monto:\*{0,2}\s*\$?([\d,]+(?:\.\d{1,2})?)/i) ||
-            lastAssistantMsg.match(/del gasto por \*{0,2}\$?([\d,]+(?:\.\d{1,2})?)/i);
+            lastAssistantMsg.match(/[-•]\s*\*{0,2}Monto:\*{0,2}\s*[$€£₽]?([\d,]+(?:\.\d{1,2})?)/i) ||
+            lastAssistantMsg.match(/del gasto por \*{0,2}[$€£₽]?([\d,]+(?:\.\d{1,2})?)/i);
           if (amountFromAssistant && amountFromAssistant[1]) {
             merged.monto = Number(amountFromAssistant[1].replace(/,/g, ''));
           }
@@ -469,9 +527,35 @@ export class WebchatActionExecutorService {
             merged.fecha = dateFromAssistant[1].trim();
           }
         }
+        if (!merged.ejecutivo && !merged.ejecutivoId && !merged.usuario && !merged.usuarioId && !merged.responsable) {
+          const respFromAssistant = lastAssistantMsg.match(/(?:^|\n)\s*[-•]?\s*\*{0,2}Responsable:\*{0,2}\s*([^\n]+)/i);
+          if (respFromAssistant && respFromAssistant[1]) {
+            merged.usuario = respFromAssistant[1].replace(/\*{1,2}/g, '').trim();
+          }
+        }
+
+        const isAwaitingUserReply =
+          /no encontr[eé] ning[uú]n usuario o ejecutivo que coincida|se encontraron m[uú]ltiples usuarios posibles|verifica el username o nombre del usuario/i.test(
+            lastAssistantMsg,
+          );
+        if (
+          isAwaitingUserReply &&
+          rawCurrentInput &&
+          !merged.usuario &&
+          !merged.ejecutivo &&
+          !/^\s*(?:cliente|oportunidad)\b/i.test(rawCurrentInput) &&
+          !/^\s*[$€£₽]?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(rawCurrentInput)
+        ) {
+          const normReply = normalizeSpokenSpanishText(rawCurrentInput)
+            .replace(/^(?:(?:el\s+)?nombre\s+del?\s+usuario(?:\s+es)?|usuario|ejecutivo|es)\s*:?\s*/i, '')
+            .trim();
+          if (normReply.length >= 2) {
+            merged.usuario = normReply;
+          }
+        }
 
         const isAwaitingAssociation =
-          /todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades) posibles para asociar el gasto/i.test(
+          /todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades) posibles para asociar el gasto|no encontr[eé] ning[uú]n (?:cliente|oportunidad)(?:\s+ni\s+oportunidad)?\s+que\s+coincida/i.test(
             lastAssistantMsg,
           );
 
@@ -494,6 +578,14 @@ export class WebchatActionExecutorService {
               merged.concepto = cleanedHistConcept;
             }
           }
+          if (!merged.ejecutivo && !merged.ejecutivoId && !merged.usuario && !merged.usuarioId && !merged.responsable) {
+            const userFromHist = extractExpenseUserFromText(msg);
+            if (userFromHist.ejecutivo) {
+              merged.ejecutivo = userFromHist.ejecutivo;
+            } else if (userFromHist.usuario) {
+              merged.usuario = userFromHist.usuario;
+            }
+          }
           if (
             !isAwaitingAssociation &&
             !merged.cliente &&
@@ -504,13 +596,13 @@ export class WebchatActionExecutorService {
             !merged.opportunity_id
           ) {
             const oppHist = msg.match(
-              /\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de\s+\$?\d|monto|fecha|hoy|ayer)|$|[,.])/i,
+              /\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|de\s+[$€£₽]?\d|con\s+(?:un\s+)?monto|monto|fecha|hoy|ayer)|[.,;](?:\s|$)|$)/i,
             );
             if (oppHist && oppHist[1]) {
               merged.oportunidad = oppHist[1].trim();
             } else {
               const cliHist = msg.match(
-                /\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+["']?([^,.;"'\n]+?)["']?(?=\s+(?:por|de\s+\$?\d|monto|fecha|hoy|ayer)|$|[,.])/i,
+                /\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|de\s+[$€£₽]?\d|con\s+(?:un\s+)?monto|monto|fecha|hoy|ayer)|[.,;](?:\s|$)|$)/i,
               );
               if (cliHist && cliHist[1]) {
                 merged.cliente = cliHist[1].trim();
@@ -586,14 +678,6 @@ export class WebchatActionExecutorService {
     }
 
     if (action === 'modifyTicket') {
-      const assistantMessages = conversationHistory
-        .filter((m) => m.role === 'assistant')
-        .map((m) => m.content)
-        .reverse();
-      const lastAssistantMsg = assistantMessages[0] || '';
-      const rawCurrentInput = (merged.__rawUserInput || '').toString().trim();
-      delete merged.__rawUserInput;
-
       const pickMatch = rawCurrentInput.match(/^\s*(?:el|la|opci[oó]n|n[uú]mero|#)?\s*(\d+)\s*$/i);
       const pickNumber = pickMatch ? parseInt(pickMatch[1], 10) : null;
 
@@ -692,14 +776,6 @@ export class WebchatActionExecutorService {
     }
 
     if (action === 'createProduct' || action === 'modifyProduct') {
-      const assistantMessages = conversationHistory
-        .filter((m) => m.role === 'assistant')
-        .map((m) => m.content)
-        .reverse();
-      const lastAssistantMsg = assistantMessages[0] || '';
-      const rawCurrentInput = (merged.__rawUserInput || '').toString().trim();
-      delete merged.__rawUserInput;
-
       const pickMatch = rawCurrentInput.match(/^\s*(?:el|la|opci[oó]n|n[uú]mero|#)?\s*(\d+)\s*$/i);
       const pickNumber = pickMatch ? parseInt(pickMatch[1], 10) : null;
 
@@ -770,6 +846,166 @@ export class WebchatActionExecutorService {
       }
     }
 
+    if (action === 'modifyActivity') {
+      if (!merged.targetActivity && !merged.targetDate && !merged.targetTime && !merged.id) {
+        const createdAct =
+          lastAssistantMsg.match(/Actividad (?:Programada|Modificada) (?:Exitosamente|con [ÉE]xito)[\s\S]*?-\s*(?:Detalle|Actividad):\s*([^\n]+)/i);
+        if (createdAct && createdAct[1]) {
+          merged.targetActivity = createdAct[1].trim();
+        }
+        const createdDate =
+          lastAssistantMsg.match(/Actividad (?:Programada|Modificada) (?:Exitosamente|con [ÉE]xito)[\s\S]*?-\s*Fecha(?:\s+y\s+Hora)?:\s*([^\n]+)/i);
+        if (createdDate && createdDate[1]) {
+          merged.targetDate = createdDate[1].trim();
+        }
+      }
+
+      if (/Conflicto de Horario:\s*La nueva fecha propuesta/i.test(lastAssistantMsg)) {
+        const slotPickMatch = rawCurrentInput.match(/^\s*(?:el|la|opci[oó]n|#)?\s*(\d+)\s*$/i);
+        if (slotPickMatch && slotPickMatch[1]) {
+          const slotIdx = parseInt(slotPickMatch[1], 10);
+          const slots = Array.from(lastAssistantMsg.matchAll(/(?:^|\n)\s*-\s+([^\n]+)/g)).map(m => m[1].trim());
+          if (slotIdx > 0 && slots[slotIdx - 1]) {
+            merged.newDate = slots[slotIdx - 1];
+          }
+        } else if (!merged.newDate && !merged.newTime && rawCurrentInput) {
+          const timeCand = rawCurrentInput.match(/(?:a\s+las?\s+|para\s+las?\s+|mejor\s+a\s+las?\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
+          if (timeCand) {
+            merged.newDate = rawCurrentInput;
+          }
+        }
+      }
+
+      for (const msg of userMessages) {
+        if (!merged.targetActivity && !merged.targetDate && !merged.targetTime && !merged.id) {
+          const timeRef = msg.match(/\b(?:de\s+las?|a\s+las?)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
+          if (timeRef && timeRef[1]) {
+            merged.targetTime = timeRef[1].trim();
+          }
+          const actRef = msg.match(
+            /\b(?:la\s+|el\s+)?(?:reuni[oó]n|llamada|visita|demostraci[oó]n|demo|actividad|cita)\s+(?:de\s+|con\s+)?([^,.;\n]+?)(?=\s+(?:de\s+las?|a\s+las?|para\s+|hoy|ma[ñn]ana)|[.,;]|$)/i,
+          );
+          if (actRef && actRef[1] && actRef[1].trim().length >= 3) {
+            merged.targetActivity = actRef[1].trim();
+          }
+        }
+        if (!merged.newDate && !merged.newTime) {
+          const newTimeMatch = msg.match(
+            /\b(?:a\s+|para\s+|mueve(?:la)?\s+a\s+|pasa(?:la)?\s+a\s+|cambia(?:r)?\s+a\s+|reprograma(?:r)?\s+(?:a|para)\s+)((?:hoy|ma[ñn]ana|pasado\s+ma[ñn]ana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)?\s*(?:a\s+las?\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?|ma[ñn]ana|pasado\s+ma[ñn]ana)/i,
+          );
+          if (newTimeMatch && newTimeMatch[1]) {
+            merged.newDate = newTimeMatch[1].trim();
+          }
+        }
+        if (!merged.newActivity && !merged.nuevoNombre) {
+          const renameMatch = msg.match(/\b(?:nuevo\s+t[ií]tulo|nuevo\s+nombre|cambia(?:r)?\s+(?:el\s+)?nombre\s+a|tit[uú]lala)\s+["']?([^"'\n,;]+)["']?/i);
+          if (renameMatch && renameMatch[1]) {
+            merged.newActivity = renameMatch[1].trim();
+          }
+        }
+      }
+    }
+
+    if (action === 'createTicket') {
+      if (!merged.title && !merged.strtitle && !merged.asunto && !merged.titulo && lastAssistantMsg) {
+        const titleFromAssistant = lastAssistantMsg.match(/(?:^|\n)\s*[-•]\s*\*{0,2}T[ií]tulo:\*{0,2}\s*([^\n]+)/i);
+        if (titleFromAssistant && titleFromAssistant[1]) {
+          merged.title = titleFromAssistant[1].replace(/\*{1,2}/g, '').trim();
+        }
+      }
+
+      const askingDescriptionOnly =
+        /Descripci[oó]n del Problema/i.test(lastAssistantMsg) && !/T[ií]tulo o Asunto/i.test(lastAssistantMsg);
+      if (askingDescriptionOnly && !merged.description && !merged.descripcion && !merged.detalle && rawCurrentInput.length >= 5) {
+        merged.description = rawCurrentInput;
+      }
+
+      for (const msg of userMessages) {
+        if (!merged.title && !merged.strtitle && !merged.asunto && !merged.titulo) {
+          const normMsg = normalizeSpokenSpanishText(msg).trim();
+          if (
+            !/^(?:(?:crea(?:r)?|levanta(?:r)?|abre|abrir|reporta(?:r)?|registra(?:r)?|nuev[oa])\s+)?(?:un\s+|una\s+|el\s+)?(?:nuev[oa]\s+)?(?:ticket|incidencia|reporte)(?:\s+de\s+soporte)?$/i.test(
+              normMsg,
+            )
+          ) {
+            const candidateTitle = normMsg
+              .replace(/^(?:crea(?:r)?|levanta(?:r)?|abre|abrir|reporta(?:r)?|registra(?:r)?|nuev[oa])\s+(?:un\s+|una\s+|el\s+)?(?:nuev[oa]\s+)?(?:ticket|incidencia|reporte)?(?:\s+de\s+soporte)?\s*(?:por|de|sobre)?\s*/i, '')
+              .replace(/\b(?:para\s+el\s+cliente|del\s+cliente|con\s+(?:el\s+)?cliente|cliente)\s+(?:[^,;"'\n]|\.(?=\S))+/gi, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+            if (
+              candidateTitle.length >= 3 &&
+              !/^(?:(?:un|una|el|la)\s+)?(?:nuev[oa]\s+)?(?:ticket|incidencia|reporte)(?:\s+de\s+soporte)?$/i.test(candidateTitle)
+            ) {
+              merged.title = candidateTitle;
+            }
+          }
+        }
+        if (!merged.description && !merged.descripcion && !merged.detalle) {
+          const descHist = msg.match(/\b(?:descripci[oó]n|detalle)\s*[:\-]?\s*["']?([^"'\n]+)["']?/i);
+          if (descHist && descHist[1] && descHist[1].trim().length >= 5) {
+            merged.description = descHist[1].trim();
+          }
+        }
+        if (!merged.cliente) {
+          const cliHist = msg.match(/\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+["']?((?:[^,;"'\n]|\.(?=\S))+?)["']?(?=\s+(?:por|con|prioridad|urgente|responsable)|[.,;]|$)/i);
+          if (cliHist && cliHist[1]) {
+            merged.cliente = cliHist[1].trim();
+          }
+        }
+        if (!merged.responsable && !merged.responsableId && !merged.ejecutivo && !merged.usuario) {
+          const userExec = extractExpenseUserFromText(msg);
+          if (userExec.ejecutivo) merged.responsable = userExec.ejecutivo;
+          else if (userExec.usuario) merged.responsable = userExec.usuario;
+        }
+        if (merged.priority === undefined && /\burgente\b|\bprioridad\s+alta\b/i.test(msg)) {
+          merged.priority = 3;
+        }
+      }
+    }
+
+    if (action === 'createClient' || action === 'createCompany') {
+      for (const msg of userMessages) {
+        const normMsg = normalizeSpokenSpanishText(msg).trim();
+        if (!merged.correo && !merged.email) {
+          const emailMatch = normMsg.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+          if (emailMatch) merged.correo = emailMatch[0].trim();
+        }
+        if (!merged.telefono && !merged.phone && !merged.celular && !merged.tel) {
+          const phoneMatch = normMsg.match(/(?:tel[eé]fono|cel(?:ular)?|n[uú]mero|tel)[:\s]*([+\d\s\-()]{7,18})/i) || normMsg.match(/\b(\d{10}|\d{7,15})\b/);
+          if (phoneMatch && phoneMatch[1]) merged.telefono = phoneMatch[1].trim();
+        }
+        if (!merged.ejecutivo && !merged.ejecutivoId && !merged.user && !merged.userId && !merged.usuario && !merged.usuarioId) {
+          const userExec = extractExpenseUserFromText(normMsg);
+          if (userExec.ejecutivo) merged.ejecutivo = userExec.ejecutivo;
+          else if (userExec.usuario) merged.usuario = userExec.usuario;
+        }
+        if (action === 'createClient') {
+          if (!merged.empresa && !merged.company && !merged.compania && !merged.cuenta) {
+            const empMatch = normMsg.match(/(?:de\s+la\s+empresa|en\s+la\s+empresa|empresa|compañ[ií]a|cuenta)\s+["']?([^"',\.]+?)["']?(?:\s+con\s+|\s+correo|\s+tel|\s+puesto|,|$)/i);
+            if (empMatch && empMatch[1]) merged.empresa = empMatch[1].trim();
+          }
+          if (!merged.puesto && !merged.cargo && !merged.position) {
+            const puestoMatch = normMsg.match(/(?:puesto|cargo)\s+(?:de\s+)?["']?([^"',\.]+?)["']?(?:\s+en\s+|\s+de\s+la\s+empresa|\s+con\s+|\s+correo|\s+tel|,|$)/i);
+            if (puestoMatch && puestoMatch[1]) merged.puesto = puestoMatch[1].trim();
+          }
+          if (!merged.category && !merged.categoria) {
+            const catMatch = normMsg.match(/\b(?:categor[ií]a|tipo)\s+(lead|prospecto|contacto|cliente)\b/i);
+            if (catMatch && catMatch[1]) merged.category = catMatch[1].trim();
+          }
+        } else {
+          if (!merged.website && !merged.web && !merged.sitioWeb) {
+            const webMatch = normMsg.match(/(?:web(?:site)?|sitio\s+web|p[aá]gina)\s*[:\s]*((?:https?:\/\/|www\.)[^\s,]+|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s,]*)?)/i);
+            if (webMatch && webMatch[1]) merged.website = webMatch[1].trim();
+          }
+          if (!merged.direccion && !merged.address && !merged.ubicacion) {
+            const dirMatch = normMsg.match(/(?:direcci[oó]n|ubicaci[oó]n|domicilio)\s*[:\s]+["']?([^"',\.]+)["']?/i);
+            if (dirMatch && dirMatch[1]) merged.direccion = dirMatch[1].trim();
+          }
+        }
+      }
+    }
+
     return merged;
   }
 
@@ -825,7 +1061,19 @@ export class WebchatActionExecutorService {
    * solicita la información faltante al usuario mostrando las opciones activas disponibles
    * y utilizando los nombres dinámicos de etiqueta configurados en el CRM (GET /api/opportunity-labels).
    */
-  async handleCreateOpportunity(params: any, user: User): Promise<WebchatResponse> {
+  async handleCreateOpportunity(
+    params: any,
+    user: User,
+    conversationHistory: ConversationHistoryMessage[] = [],
+    originalQuestion: string = '',
+  ): Promise<WebchatResponse> {
+    if (conversationHistory.length > 0) {
+      params = this.mergeHistoryContext(
+        'createOpportunity',
+        { ...params, __rawUserInput: originalQuestion },
+        conversationHistory,
+      );
+    }
     const isExec = this.isExecutive(user.role);
     const missingFields: string[] = [];
     const customLabels = await this.getOpportunityCustomLabels();
@@ -834,8 +1082,8 @@ export class WebchatActionExecutorService {
     let targetExecutiveId = user.id;
     let targetExecutiveName = user.username;
 
-    if (!isExec && (params.ejecutivo || params.ejecutivoId || params.responsable)) {
-      const execSearch = params.ejecutivo || params.ejecutivoId || params.responsable;
+    if (!isExec && (params.ejecutivo || params.ejecutivoId || params.usuario || params.responsable)) {
+      const execSearch = params.ejecutivo || params.ejecutivoId || params.usuario || params.responsable;
       const foundUser = await this.resolveUser(execSearch);
       if (foundUser) {
         targetExecutiveId = foundUser.id;
@@ -844,7 +1092,10 @@ export class WebchatActionExecutorService {
     }
 
     // 2. Nombre del Proyecto
-    const nombreProyecto = (params.nombreProyecto || params.nombre_proyecto || params.title || params.proyecto || '').trim();
+    let nombreProyecto = (params.nombreProyecto || params.nombre_proyecto || params.title || params.proyecto || '').trim();
+    if (/^(?:(?:crea(?:r)?|genera(?:r)?|registra(?:r)?)\s+)?(?:una?\s+)?(?:nuev[oa]\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)$/i.test(nombreProyecto)) {
+      nombreProyecto = '';
+    }
     if (!nombreProyecto || nombreProyecto.length < 3) {
       missingFields.push('• Nombre del Proyecto: Indica el nombre o concepto de la oportunidad (ej. "Implementación CRM", "Renovación de Licencias").');
     }
@@ -921,13 +1172,28 @@ export class WebchatActionExecutorService {
       params.division ||
       params.area;
 
-    const resolvedBL = await this.resolveBusinessLine(lineaNegocioHint);
+    const matchCatalogFromQuestion = <T extends { strname: string; id: string }>(items: T[]): { id: string; name: string } | null => {
+      if (!originalQuestion || !items || items.length === 0) return null;
+      const qNorm = ` ${normalizeText(originalQuestion)} `;
+      for (const item of items) {
+        const iNorm = normalizeText(item.strname);
+        if (iNorm.length >= 3 && qNorm.includes(` ${iNorm} `)) {
+          return { id: item.id, name: item.strname };
+        }
+      }
+      return null;
+    };
+
+    let resolvedBL = await this.resolveBusinessLine(lineaNegocioHint);
     if (!resolvedBL) {
       const activeBLs = await this.businessLineRepo.find({ where: { blnstatus: true }, order: { strname: 'ASC' } });
-      const optionsStr = activeBLs.length > 0
-        ? activeBLs.map(b => `  - ${b.strname}`).join('\n')
-        : '  - General';
-      missingFields.push(`• ${customLabels.lineaNegocio}: Selecciona una de las opciones activas en el CRM:\n${optionsStr}`);
+      resolvedBL = !lineaNegocioHint ? matchCatalogFromQuestion(activeBLs) : null;
+      if (!resolvedBL) {
+        const optionsStr = activeBLs.length > 0
+          ? activeBLs.map(b => `  - ${b.strname}`).join('\n')
+          : '  - General';
+        missingFields.push(`• ${customLabels.lineaNegocio}: Selecciona una de las opciones activas en el CRM:\n${optionsStr}`);
+      }
     }
 
     // 7. Tipo de Entrega / Etiqueta Dinámica (validar contra catálogo real de la BD)
@@ -941,13 +1207,16 @@ export class WebchatActionExecutorService {
       params.modalidad ||
       params.servicio;
 
-    const resolvedDT = await this.resolveDeliveryType(tipoEntregaHint);
+    let resolvedDT = await this.resolveDeliveryType(tipoEntregaHint);
     if (!resolvedDT) {
       const activeDTs = await this.deliveryTypeRepo.find({ where: { blnstatus: true }, order: { strname: 'ASC' } });
-      const optionsStr = activeDTs.length > 0
-        ? activeDTs.map(d => `  - ${d.strname}`).join('\n')
-        : '  - Estándar';
-      missingFields.push(`• ${customLabels.tipoEntrega}: Selecciona una de las opciones disponibles:\n${optionsStr}`);
+      resolvedDT = !tipoEntregaHint ? matchCatalogFromQuestion(activeDTs) : null;
+      if (!resolvedDT) {
+        const optionsStr = activeDTs.length > 0
+          ? activeDTs.map(d => `  - ${d.strname}`).join('\n')
+          : '  - Estándar';
+        missingFields.push(`• ${customLabels.tipoEntrega}: Selecciona una de las opciones disponibles:\n${optionsStr}`);
+      }
     }
 
     // 8. Licenciamiento / Etiqueta Dinámica (validar contra catálogo real de la BD)
@@ -961,13 +1230,16 @@ export class WebchatActionExecutorService {
       params[customLabels.licenciamiento] ||
       params[customLabels.licenciamiento.toLowerCase()];
 
-    const resolvedLic = await this.resolveLicensing(licensingHint);
+    let resolvedLic = await this.resolveLicensing(licensingHint);
     if (!resolvedLic) {
       const activeLics = await this.licensingRepo.find({ where: { blnstatus: true }, order: { strname: 'ASC' } });
-      const optionsStr = activeLics.length > 0
-        ? activeLics.map(l => `  - ${l.strname}`).join('\n')
-        : '  - Estándar';
-      missingFields.push(`• ${customLabels.licenciamiento}: Selecciona una de las opciones disponibles:\n${optionsStr}`);
+      resolvedLic = !licensingHint ? matchCatalogFromQuestion(activeLics) : null;
+      if (!resolvedLic) {
+        const optionsStr = activeLics.length > 0
+          ? activeLics.map(l => `  - ${l.strname}`).join('\n')
+          : '  - Estándar';
+        missingFields.push(`• ${customLabels.licenciamiento}: Selecciona una de las opciones disponibles:\n${optionsStr}`);
+      }
     }
 
     // 9. Si faltan datos requeridos, DETENER Y SOLICITAR INFORMACIÓN AL USUARIO
@@ -991,9 +1263,12 @@ export class WebchatActionExecutorService {
     }
 
     // 10. Crear Oportunidad mediante OpportunitiesService con datos completos y reales
+    const safeMontoLic = Math.min(99999999.99, Math.max(0, montoLic));
+    const safeMontoServ = Math.min(99999999.99, Math.max(0, montoServ));
+    const safeMontoTotal = Math.min(99999999.99, Math.max(0, montoTotal));
     const createdOpp = await this.opportunitiesService.create({
-      nombre_proyecto: nombreProyecto,
-      description,
+      nombre_proyecto: nombreProyecto.slice(0, 255),
+      description: description.slice(0, 1000),
       moneda,
       linea_negocio_id: resolvedBL!.id,
       tipo_entrega_id: resolvedDT!.id,
@@ -1001,12 +1276,12 @@ export class WebchatActionExecutorService {
       cliente_id: clienteId,
       companyId,
       ejecutivo_id: targetExecutiveId,
-      monto_total: montoTotal,
-      monto_licenciamiento: montoLic,
-      monto_servicios: montoServ,
+      monto_total: safeMontoTotal,
+      monto_licenciamiento: safeMontoLic,
+      monto_servicios: safeMontoServ,
       productItems: resolvedProducts.items.length > 0 ? resolvedProducts.items : undefined,
       productIds: resolvedProducts.items.length > 0 ? resolvedProducts.items.map(i => i.productId) : undefined,
-      priority: params.priority !== undefined ? Number(params.priority) : 1,
+      priority: params.priority !== undefined ? Math.min(3, Math.max(0, Math.trunc(Number(params.priority)) || 0)) : 1,
       canal_origen: 'webchat',
     } as any, user);
 
@@ -1723,7 +1998,19 @@ export class WebchatActionExecutorService {
    * Modifica una actividad existente validando pertenencia (RBAC) y checkAvailability si cambia la fecha.
    * Permite encontrar la actividad por ID, ventana horaria (ej. "a las 3", "las 15:00"), nombre actual o agenda de hoy.
    */
-  async handleModifyActivity(params: any, user: User): Promise<WebchatResponse> {
+  async handleModifyActivity(
+    params: any,
+    user: User,
+    conversationHistory: ConversationHistoryMessage[] = [],
+    originalQuestion: string = '',
+  ): Promise<WebchatResponse> {
+    if (conversationHistory.length > 0) {
+      params = this.mergeHistoryContext(
+        'modifyActivity',
+        { ...params, __rawUserInput: originalQuestion },
+        conversationHistory,
+      );
+    }
     const isExec = this.isExecutive(user.role);
 
     // 1. Extraer y normalizar parámetros de búsqueda y actualización
@@ -1763,8 +2050,8 @@ export class WebchatActionExecutorService {
 
         if (isExec) {
           qb.andWhere('activity.userId = :userId', { userId: user.id });
-        } else if (params.user || params.ejecutivo || params.userId) {
-          const targetUser = await this.resolveUser(params.user || params.ejecutivo || params.userId);
+        } else if (params.user || params.ejecutivo || params.userId || params.usuario) {
+          const targetUser = await this.resolveUser(params.user || params.ejecutivo || params.userId || params.usuario);
           if (targetUser) qb.andWhere('activity.userId = :userId', { userId: targetUser.id });
         }
 
@@ -1793,8 +2080,8 @@ export class WebchatActionExecutorService {
 
       if (isExec) {
         qb.andWhere('activity.userId = :userId', { userId: user.id });
-      } else if (params.user || params.ejecutivo || params.userId) {
-        const targetUser = await this.resolveUser(params.user || params.ejecutivo || params.userId);
+      } else if (params.user || params.ejecutivo || params.userId || params.usuario) {
+        const targetUser = await this.resolveUser(params.user || params.ejecutivo || params.userId || params.usuario);
         if (targetUser) qb.andWhere('activity.userId = :userId', { userId: targetUser.id });
       }
 
@@ -1816,7 +2103,7 @@ export class WebchatActionExecutorService {
         .leftJoinAndSelect('activity.typeActivity', 'typeActivity')
         .where('activity.date BETWEEN :start AND :end', { start: startOfDay.toISOString(), end: endOfDay.toISOString() });
 
-      if (isExec || !params.user) {
+      if (isExec || !(params.user || params.ejecutivo || params.userId || params.usuario)) {
         qb.andWhere('activity.userId = :userId', { userId: user.id });
       }
 
@@ -1870,8 +2157,12 @@ export class WebchatActionExecutorService {
       nextActivityName = newActivityRaw.trim();
     } else if (genericActivity) {
       const cleanGeneric = genericActivity.trim();
-      // Si genericActivity es diferente del nombre actual y no fue el criterio exclusivo de búsqueda
-      if (cleanGeneric.toLowerCase() !== activity.activity.trim().toLowerCase()) {
+      const isBareTimeOrReschedule =
+        /^(?:mejor\s+|cambia(?:r)?\s+(?:a|para)\s+|mueve(?:la)?\s+a\s+|pasa(?:la)?\s+a\s+)?(?:hoy|ma[ñn]ana|pasado\s+ma[ñn]ana)?\s*(?:a\s+las?\s+|para\s+las?\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i.test(
+          cleanGeneric,
+        ) || /^(?:el|la|opci[oó]n|#)?\s*\d+$/.test(cleanGeneric);
+      // Si genericActivity es diferente del nombre actual y no es solo un cambio de horario o selección numérica
+      if (!isBareTimeOrReschedule && cleanGeneric.toLowerCase() !== activity.activity.trim().toLowerCase()) {
         nextActivityName = cleanGeneric;
       }
     }
@@ -1956,7 +2247,19 @@ export class WebchatActionExecutorService {
    * Crea un ticket validando campos requeridos sin inventar información.
    * Si falta el título, la descripción o el tipo de incidencia, solicita los datos al usuario.
    */
-  async handleCreateTicket(params: any, user: User): Promise<WebchatResponse> {
+  async handleCreateTicket(
+    params: any,
+    user: User,
+    conversationHistory: ConversationHistoryMessage[] = [],
+    originalQuestion: string = '',
+  ): Promise<WebchatResponse> {
+    if (conversationHistory.length > 0) {
+      params = this.mergeHistoryContext(
+        'createTicket',
+        { ...params, __rawUserInput: originalQuestion },
+        conversationHistory,
+      );
+    }
     const isExec = this.isExecutive(user.role);
     const missingFields: string[] = [];
 
@@ -1964,8 +2267,8 @@ export class WebchatActionExecutorService {
     let responsableId = user.id;
     let responsableName = user.username;
 
-    if (!isExec && (params.responsable || params.responsableId || params.ejecutivo)) {
-      const foundUser = await this.resolveUser(params.responsable || params.responsableId || params.ejecutivo);
+    if (!isExec && (params.responsable || params.responsableId || params.ejecutivo || params.usuario)) {
+      const foundUser = await this.resolveUser(params.responsable || params.responsableId || params.ejecutivo || params.usuario);
       if (foundUser) {
         responsableId = foundUser.id;
         responsableName = foundUser.username;
@@ -2009,8 +2312,9 @@ export class WebchatActionExecutorService {
 
     // Si faltan datos requeridos, DETENER Y SOLICITAR INFORMACIÓN AL USUARIO
     if (missingFields.length > 0) {
+      const summaryHeader = title ? `\n\nTengo anotado:\n- Título: ${title}` : '';
       return {
-        answer: `Para poder levantar el ticket de soporte, por favor proporciona los siguientes datos requeridos:\n\n${missingFields.join('\n\n')}`,
+        answer: `Para poder levantar el ticket de soporte, por favor proporciona los siguientes datos requeridos:${summaryHeader}\n\n${missingFields.join('\n\n')}`,
       };
     }
 
@@ -2024,16 +2328,19 @@ export class WebchatActionExecutorService {
     }
 
     // 7. Crear el Ticket con datos reales
+    const rawContactName = clientEntity ? `${clientEntity.nombre} ${clientEntity.apellido || ''}`.trim() : (params.contacto || undefined);
+    const rawContactEmail = clientEntity?.correo || params.correo || undefined;
+    const rawContactPhone = clientEntity?.telefono || params.telefono || undefined;
     const createdTicket = await this.ticketsService.create({
-      strtitle: title,
+      strtitle: title.slice(0, 255),
       description,
-      tipo_incidencia: tipoIncidencia,
+      tipo_incidencia: tipoIncidencia.slice(0, 255),
       priority,
       cliente_id: clienteId,
       responsable_id: responsableId,
-      contactName: clientEntity ? `${clientEntity.nombre} ${clientEntity.apellido || ''}`.trim() : (params.contacto || undefined),
-      contactEmail: clientEntity?.correo || params.correo || undefined,
-      contactPhone: clientEntity?.telefono || params.telefono || undefined,
+      contactName: rawContactName ? String(rawContactName).slice(0, 255) : undefined,
+      contactEmail: rawContactEmail ? String(rawContactEmail).slice(0, 255) : undefined,
+      contactPhone: rawContactPhone ? String(rawContactPhone).slice(0, 50) : undefined,
     } as any, user);
 
     const priorityNames = ['Baja', 'Normal', 'Media', 'Alta'];
@@ -2469,101 +2776,7 @@ export class WebchatActionExecutorService {
   }
 
   private normalizeSpokenContactText(text: string): string {
-    if (!text || typeof text !== 'string') return text;
-    let result = text.trim();
-
-    if (/\barroba\b/i.test(result)) {
-      result = result
-        .replace(/\s+arroba\s+/gi, '@')
-        .replace(/(\S+)\s+punto\s+(\S+)/gi, '$1.$2')
-        .replace(/(\S+)\s+guion\s+bajo\s+(\S+)/gi, '$1_$2')
-        .replace(/(\S+)\s+guion\s+(\S+)/gi, '$1-$2');
-    }
-
-    const unitsAndTeens: Record<string, number> = {
-      cero: 0, un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
-      seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12,
-      trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17,
-      dieciocho: 18, diecinueve: 19, veinte: 20, veintiun: 21, veintiuno: 21,
-      veintidos: 22, veintitres: 23, veinticuatro: 24, veinticinco: 25,
-      veintiseis: 26, veintisiete: 27, veintiocho: 28, veintinueve: 29,
-    };
-    const tens: Record<string, number> = {
-      treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60,
-      setenta: 70, ochenta: 80, noventa: 90,
-    };
-    const hundreds: Record<string, number> = {
-      cien: 100, ciento: 100, doscientos: 200, doscientas: 200,
-      trescientos: 300, trescientas: 300, cuatrocientos: 400, cuatrocientas: 400,
-      quinientos: 500, quinientas: 500, seiscientos: 600, seiscientas: 600,
-      setecientos: 700, setecientas: 700, ochocientos: 800, ochocientas: 800,
-      novecientos: 900, novecientas: 900,
-    };
-
-    const normWord = (w: string) =>
-      w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
-    const tokens = result.split(/\s+/);
-
-    const parseSubHundred = (idx: number): { val: string; nextIdx: number } | null => {
-      if (idx >= tokens.length) return null;
-      const w = normWord(tokens[idx]);
-      if (unitsAndTeens[w] !== undefined) {
-        return { val: String(unitsAndTeens[w]), nextIdx: idx + 1 };
-      }
-      if (tens[w] !== undefined) {
-        const base = tens[w];
-        if (idx + 2 < tokens.length && normWord(tokens[idx + 1]) === 'y') {
-          const u = normWord(tokens[idx + 2]);
-          if (unitsAndTeens[u] !== undefined && unitsAndTeens[u] >= 1 && unitsAndTeens[u] <= 9) {
-            return { val: String(base + unitsAndTeens[u]), nextIdx: idx + 3 };
-          }
-        }
-        return { val: String(base), nextIdx: idx + 1 };
-      }
-      return null;
-    };
-
-    const parseNumberGroup = (idx: number): { val: string; nextIdx: number } | null => {
-      if (idx >= tokens.length) return null;
-      const w = normWord(tokens[idx]);
-      if (/^\d+$/.test(w)) {
-        return { val: w, nextIdx: idx + 1 };
-      }
-      if (hundreds[w] !== undefined) {
-        const hVal = hundreds[w];
-        if (w === 'cien') {
-          return { val: '100', nextIdx: idx + 1 };
-        }
-        const sub = parseSubHundred(idx + 1);
-        if (sub) {
-          return { val: String(hVal + parseInt(sub.val, 10)), nextIdx: sub.nextIdx };
-        }
-        return { val: String(hVal), nextIdx: idx + 1 };
-      }
-      return parseSubHundred(idx);
-    };
-
-    const out: string[] = [];
-    let i = 0;
-    while (i < tokens.length) {
-      const groups: string[] = [];
-      let curr = i;
-      while (curr < tokens.length) {
-        const g = parseNumberGroup(curr);
-        if (!g) break;
-        groups.push(g.val);
-        curr = g.nextIdx;
-      }
-      const joined = groups.join('');
-      if (groups.length >= 2 && joined.length >= 7 && joined.length <= 15) {
-        out.push(joined);
-        i = curr;
-      } else {
-        out.push(tokens[i]);
-        i++;
-      }
-    }
-    return out.join(' ');
+    return normalizeSpokenSpanishText(text);
   }
 
   private splitFullName(rawName: string, rawLastName?: string): { nombre: string; apellido: string } {
@@ -2598,15 +2811,27 @@ export class WebchatActionExecutorService {
    * Crea un cliente/contacto en el CRM permitiendo guardado parcial (solo requiere el nombre).
    * Respeta RBAC: los ejecutivos asignan automáticamente el registro a su propio usuario.
    */
-  async handleCreateClient(params: any, user: User, originalQuestion?: string): Promise<WebchatResponse> {
+  async handleCreateClient(
+    params: any,
+    user: User,
+    originalQuestion?: string,
+    conversationHistory: ConversationHistoryMessage[] = [],
+  ): Promise<WebchatResponse> {
+    if (conversationHistory.length > 0) {
+      params = this.mergeHistoryContext(
+        'createClient',
+        { ...params, __rawUserInput: originalQuestion },
+        conversationHistory,
+      );
+    }
     const isExec = this.isExecutive(user.role);
 
     // 1. Asignación de Ejecutivo (RBAC)
     let targetExecutiveId = user.id;
     let targetExecutiveName = user.username;
 
-    if (!isExec && (params.ejecutivo || params.ejecutivoId || params.user || params.userId)) {
-      const foundUser = await this.resolveUser(params.ejecutivo || params.ejecutivoId || params.user || params.userId);
+    if (!isExec && (params.ejecutivo || params.ejecutivoId || params.user || params.userId || params.usuario || params.usuarioId)) {
+      const foundUser = await this.resolveUser(params.ejecutivo || params.ejecutivoId || params.user || params.userId || params.usuario || params.usuarioId);
       if (foundUser) {
         targetExecutiveId = foundUser.id;
         targetExecutiveName = foundUser.username;
@@ -2695,12 +2920,12 @@ export class WebchatActionExecutorService {
 
     // 6. Guardar el cliente en BD (incluso si faltan datos opcionales)
     const createdClient = await this.clientsService.create({
-      nombre,
-      apellido: apellido || undefined,
-      correo,
-      telefono,
-      puesto,
-      empresa,
+      nombre: nombre.slice(0, 255),
+      apellido: apellido ? apellido.slice(0, 255) : undefined,
+      correo: correo ? correo.slice(0, 255) : undefined,
+      telefono: telefono ? telefono.slice(0, 50) : undefined,
+      puesto: puesto ? puesto.slice(0, 255) : undefined,
+      empresa: empresa ? empresa.slice(0, 255) : undefined,
       companyId,
       category,
       estatus: true,
@@ -2940,15 +3165,27 @@ export class WebchatActionExecutorService {
    * Crea una empresa/cuenta corporativa permitiendo guardado parcial (solo requiere el nombre).
    * Respeta RBAC: los ejecutivos asignan automáticamente la empresa a su propio usuario.
    */
-  async handleCreateCompany(params: any, user: User, originalQuestion?: string): Promise<WebchatResponse> {
+  async handleCreateCompany(
+    params: any,
+    user: User,
+    originalQuestion?: string,
+    conversationHistory: ConversationHistoryMessage[] = [],
+  ): Promise<WebchatResponse> {
+    if (conversationHistory.length > 0) {
+      params = this.mergeHistoryContext(
+        'createCompany',
+        { ...params, __rawUserInput: originalQuestion },
+        conversationHistory,
+      );
+    }
     const isExec = this.isExecutive(user.role);
 
     // 1. Asignación de Ejecutivo (RBAC)
     let targetExecutiveId = user.id;
     let targetExecutiveName = user.username;
 
-    if (!isExec && (params.ejecutivo || params.ejecutivoId || params.user || params.userId)) {
-      const foundUser = await this.resolveUser(params.ejecutivo || params.ejecutivoId || params.user || params.userId);
+    if (!isExec && (params.ejecutivo || params.ejecutivoId || params.user || params.userId || params.usuario || params.usuarioId)) {
+      const foundUser = await this.resolveUser(params.ejecutivo || params.ejecutivoId || params.user || params.userId || params.usuario || params.usuarioId);
       if (foundUser) {
         targetExecutiveId = foundUser.id;
         targetExecutiveName = foundUser.username;
@@ -3003,14 +3240,14 @@ export class WebchatActionExecutorService {
     }
 
     // 4. Campos opcionales
-    const correo = this.normalizeSpokenContactText(String(params.correo || params.email || embeddedEmail || '')).trim() || undefined;
-    const telefono = this.normalizeSpokenContactText(String(params.telefono || params.phone || params.celular || params.tel || embeddedPhone || '')).trim() || undefined;
-    const website = (params.website || params.web || params.sitioWeb || '').trim() || undefined;
-    const direccion = (params.direccion || params.address || params.ubicacion || '').trim() || undefined;
+    const correo = this.normalizeSpokenContactText(String(params.correo || params.email || embeddedEmail || '')).trim().slice(0, 255) || undefined;
+    const telefono = this.normalizeSpokenContactText(String(params.telefono || params.phone || params.celular || params.tel || embeddedPhone || '')).trim().slice(0, 50) || undefined;
+    const website = (params.website || params.web || params.sitioWeb || '').trim().slice(0, 255) || undefined;
+    const direccion = (params.direccion || params.address || params.ubicacion || '').trim().slice(0, 512) || undefined;
 
     // 5. Crear Empresa en BD
     const createdCompany = await this.companiesService.create({
-      nombre,
+      nombre: nombre.slice(0, 255),
       correo,
       telefono,
       website,
@@ -3118,25 +3355,25 @@ export class WebchatActionExecutorService {
     }
 
     // 2. Correo
-    const newEmail = (params.nuevoCorreo || params.newEmail || params.correo || params.email || '').trim();
+    const newEmail = (params.nuevoCorreo || params.newEmail || params.correo || params.email || '').trim().slice(0, 255);
     if (newEmail && newEmail.toLowerCase() !== (company.correo || '').toLowerCase()) {
       updateDto.correo = newEmail;
     }
 
     // 3. Teléfono
-    const newPhone = (params.nuevoTelefono || params.newPhone || params.telefono || params.phone || params.celular || params.tel || '').trim();
+    const newPhone = (params.nuevoTelefono || params.newPhone || params.telefono || params.phone || params.celular || params.tel || '').trim().slice(0, 50);
     if (newPhone && newPhone !== (company.telefono || '')) {
       updateDto.telefono = newPhone;
     }
 
     // 4. Sitio Web
-    const newWebsite = (params.nuevoWebsite || params.newWebsite || params.website || params.web || params.sitioWeb || '').trim();
+    const newWebsite = (params.nuevoWebsite || params.newWebsite || params.website || params.web || params.sitioWeb || '').trim().slice(0, 255);
     if (newWebsite && newWebsite !== (company.website || '')) {
       updateDto.website = newWebsite;
     }
 
     // 5. Dirección
-    const newAddress = (params.nuevaDireccion || params.newAddress || params.direccion || params.address || params.ubicacion || '').trim();
+    const newAddress = (params.nuevaDireccion || params.newAddress || params.direccion || params.address || params.ubicacion || '').trim().slice(0, 512);
     if (newAddress && newAddress !== (company.direccion || '')) {
       updateDto.direccion = newAddress;
     }
@@ -3588,161 +3825,12 @@ export class WebchatActionExecutorService {
     return null;
   }
 
-  private parseSpokenSpanishNumber(raw: string): number | null {
-    if (!raw) return null;
-    const normalized = this.normalizeString(raw)
-      .replace(/[,$]/g, '')
-      .replace(/\b(?:pesos|mxn|usd|dolares|de|y)\b/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!normalized) return null;
-    if (/^\d+(?:\.\d{1,2})?$/.test(normalized)) {
-      return Number(normalized);
-    }
-
-    const wordMap: Record<string, number> = {
-      cero: 0,
-      un: 1,
-      uno: 1,
-      una: 1,
-      dos: 2,
-      tres: 3,
-      cuatro: 4,
-      cinco: 5,
-      seis: 6,
-      siete: 7,
-      ocho: 8,
-      nueve: 9,
-      diez: 10,
-      once: 11,
-      doce: 12,
-      trece: 13,
-      catorce: 14,
-      quince: 15,
-      dieciseis: 16,
-      diecisiete: 17,
-      dieciocho: 18,
-      diecinueve: 19,
-      veinte: 20,
-      veintiun: 21,
-      veintiuno: 21,
-      veintiuna: 21,
-      veintidos: 22,
-      veintitres: 23,
-      veinticuatro: 24,
-      veinticinco: 25,
-      veintiseis: 26,
-      veintisiete: 27,
-      veintiocho: 28,
-      veintinueve: 29,
-      treinta: 30,
-      cuarenta: 40,
-      cincuenta: 50,
-      sesenta: 60,
-      setenta: 70,
-      ochenta: 80,
-      noventa: 90,
-      cien: 100,
-      ciento: 100,
-      doscientos: 200,
-      doscientas: 200,
-      trescientos: 300,
-      trescientas: 300,
-      cuatrocientos: 400,
-      cuatrocientas: 400,
-      quinientos: 500,
-      quinientas: 500,
-      seiscientos: 600,
-      seiscientas: 600,
-      setecientos: 700,
-      setecientas: 700,
-      ochocientos: 800,
-      ochocientas: 800,
-      novecientos: 900,
-      novecientas: 900,
-    };
-
-    const tokens = normalized.split(' ');
-    let current = 0;
-    let total = 0;
-    let matchedWord = false;
-
-    for (const tok of tokens) {
-      if (tok === 'mil') {
-        matchedWord = true;
-        total += (current || 1) * 1000;
-        current = 0;
-      } else if (tok === 'millon' || tok === 'millones') {
-        matchedWord = true;
-        total += (current || 1) * 1000000;
-        current = 0;
-      } else if (wordMap[tok] !== undefined) {
-        matchedWord = true;
-        current += wordMap[tok];
-      }
-    }
-
-    if (!matchedWord) return null;
-    return total + current;
-  }
-
   private extractAmountFromSentence(text: string): number | null {
-    if (!text) return null;
-    const m =
-      text.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/i) ||
-      text.match(/\bmonto(?:\s+de)?\s*:?\s*\$?\s*([\d,]+(?:\.\d{1,2})?)\b/i) ||
-      text.match(
-        /\b(?:de|por|a)\s+\$?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)?\b(?!\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b)/i,
-      ) ||
-      text.match(/\b([\d,]+(?:\.\d{1,2})?)\s*(?:pesos|mxn|usd|d[oó]lares)\b/i);
-
-    if (m && m[1]) {
-      const n = Number(m[1].replace(/,/g, ''));
-      if (!Number.isNaN(n) && n > 0) return n;
-    }
-
-    const spokenPhraseMatch = text.match(
-      /\b(?:por|de|monto(?:\s+de)?)\s+((?:(?:un[oa]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieci\w+|veinti?\w+|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien(?:to)?|doscient[oa]s|trescient[oa]s|cuatrocient[oa]s|quinient[oa]s|seiscient[oa]s|setecient[oa]s|ochocient[oa]s|novecient[oa]s|mil|mill[oó]n|millones)(?:\s+(?:y\s+)?)){1,6})(?=\s+(?:pesos|mxn|usd|en|para|con|el|la|hoy|ayer)|$|[,.])/i,
-    );
-    if (spokenPhraseMatch && spokenPhraseMatch[1]) {
-      const parsedSpoken = this.parseSpokenSpanishNumber(spokenPhraseMatch[1]);
-      if (parsedSpoken !== null && parsedSpoken > 0) return parsedSpoken;
-    }
-
-    return null;
+    return extractExpenseAmountFromText(text);
   }
 
   private extractConceptFromExpenseSentence(text: string): string | null {
-    if (!text) return null;
-    if (!/\b(crea(?:r)?|registra(?:r)?|apunta(?:r)?|anota(?:r)?|carga(?:r)?|captura(?:r)?|agrega(?:r)?|genera(?:r)?|gastos?|vi[aá]ticos?|reembolsos?)\b/i.test(text)) {
-      return null;
-    }
-    const explicit = text.match(
-      /\bconcepto\s*:?\s*["']?([^,.;"'\n]+?)["']?(?=\s+(?:monto|por\s+\$?\d|de\s+\$?\d|fecha|hoy|ayer|cliente|oportunidad)|$|[,.])/i,
-    );
-    if (explicit && explicit[1]) {
-      return explicit[1].trim();
-    }
-    const cleaned = text
-      .replace(
-        /^(?:crea(?:r)?|registra(?:r)?|apunta(?:r)?|anota(?:r)?|carga(?:r)?|captura(?:r)?|agrega(?:r)?|genera(?:r)?)\s+(?:un\s+|unos\s+)?(?:nuevo\s+)?(?:gastos?|vi[aá]ticos?|reembolsos?)\s*(?:de|por|en)?\s*/i,
-        '',
-      )
-      .replace(/\$?\s*[\d,]+(?:\.\d{1,2})?\s*(?:pesos|mxn|usd|d[oó]lares)?/gi, ' ')
-      .replace(/\b(?:para\s+la\s+|de\s+la\s+|a\s+la\s+|en\s+la\s+)?(?:oportunidad|cotizaci[oó]n|proyecto)\s+[^,.;]+/gi, ' ')
-      .replace(/\b(?:para\s+el\s+|del\s+|con\s+(?:el\s+)?|al?\s+)cliente\s+[^,.;]+/gi, ' ')
-      .replace(/\b(?:para\s+el\s+|asignad[oa]\s+(?:a|al)\s+)?ejecutivo\s+[^,.;]+/gi, ' ')
-      .replace(
-        /\b(?:fecha(?:\s+(?:del|a|para|en|:))?\s*)?(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|hoy|ayer|anteayer|antier|hace\s+\d+\s+d[ií]as?|\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+de\s+\d{4})?|(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+pasado)\b/gi,
-        ' ',
-      )
-      .replace(/\s+/g, ' ')
-      .trim()
-      .replace(/^(?:de|por|en|con|para|y)\s+/i, '')
-      .replace(/\s+(?:de|por|en|con|para|a|del|al|y)$/i, '')
-      .trim();
-
-    return cleaned.length >= 2 ? cleaned : null;
+    return extractExpenseConceptFromText(text);
   }
 
   private parseExpenseAmount(rawVal: any, fallbackText?: string): number | null {
@@ -3750,15 +3838,15 @@ export class WebchatActionExecutorService {
       if (typeof rawVal === 'number' && !Number.isNaN(rawVal)) {
         return rawVal;
       }
-      const rawStr = String(rawVal).trim();
+      const rawStr = normalizeSpokenSpanishText(String(rawVal)).trim();
       const cleanedNumStr = rawStr
-        .replace(/[,$]/g, '')
+        .replace(/[,$€£₽]/g, '')
         .replace(/\b(?:pesos|mxn|usd|d[oó]lares)\b/gi, '')
         .trim();
       if (/^-?\d+(?:\.\d{1,2})?$/.test(cleanedNumStr)) {
         return Number(cleanedNumStr);
       }
-      const parsedWord = this.parseSpokenSpanishNumber(rawStr);
+      const parsedWord = parseSpokenSpanishAmount(rawStr);
       if (parsedWord !== null) {
         return parsedWord;
       }
@@ -4037,7 +4125,17 @@ export class WebchatActionExecutorService {
       conversationHistory,
     );
 
-    // 1. Asignación de responsable (RBAC: Ejecutivo siempre bajo su propio ID; Admin/Superadmin puede asignar)
+    // 1. Extraer concepto, monto y fecha antes de resolver responsable para preservar contexto ante clarificaciones
+    let concepto = (mergedParams.concepto || mergedParams.concept || mergedParams.descripcion || '').toString().trim();
+    if (isInvalidOrGenericExpenseConcept(concepto)) {
+      concepto = '';
+    }
+
+    const monto = this.parseExpenseAmount(mergedParams.monto ?? mergedParams.amount ?? mergedParams.importe, originalQuestion);
+    const fechaYmd =
+      this.resolveExpenseDateInput(mergedParams.fecha || mergedParams.date) || this.getTodayInTzYYYYMMDD();
+
+    // 2. Asignación de responsable (RBAC: Ejecutivo siempre bajo su propio ID; Admin/Superadmin puede asignar)
     let assignedExecutiveUser: User | null = null;
     let targetExecutiveName = user.username || user.email || 'Usuario';
 
@@ -4048,29 +4146,28 @@ export class WebchatActionExecutorService {
       if (foundUser) {
         assignedExecutiveUser = foundUser;
         targetExecutiveName = foundUser.username || foundUser.email || foundUser.id;
+      } else {
+        const summaryLines = [
+          concepto ? `- Concepto: ${concepto}` : null,
+          monto !== null && monto !== undefined && !Number.isNaN(monto) && monto > 0
+            ? `- Monto: $${Number(monto).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN`
+            : null,
+        ].filter(Boolean);
+        return {
+          answer: `⚠️ No encontré ningún usuario o ejecutivo que coincida con "${execSearch}" para asignar como responsable del gasto.${summaryLines.length ? `\n\nTengo anotado:\n${summaryLines.join('\n')}` : ''}\n\nPor favor verifica el username o nombre del usuario.`,
+        };
       }
     }
 
-    // 2. Validar concepto y monto
-    let concepto = (mergedParams.concepto || mergedParams.concept || mergedParams.descripcion || '').toString().trim();
-    if (/^\s*\$?\d+(?:[.,]\d{1,2})?\s*(?:pesos|mxn|usd)?\s*$/i.test(concepto)) {
-      concepto = '';
-    }
-
-    const monto = this.parseExpenseAmount(mergedParams.monto ?? mergedParams.amount ?? mergedParams.importe, originalQuestion);
-    const fechaYmd =
-      this.resolveExpenseDateInput(mergedParams.fecha || mergedParams.date) || this.getTodayInTzYYYYMMDD();
-
     if (!concepto && (monto === null || monto === undefined)) {
       return {
-        answer:
-          '⚠️ Para registrar el gasto necesito al menos el concepto, el monto y el cliente u oportunidad al que pertenece.\n\nPor ejemplo: "Registra gasto de comida por $500 para el cliente Carlos"',
+        answer: `⚠️ Para registrar el gasto necesito al menos el concepto, el monto y el cliente u oportunidad al que pertenece.${assignedExecutiveUser ? `\n\n- Responsable: ${targetExecutiveName}` : ''}\n\nPor ejemplo: "Registra gasto de comida por $500 para el cliente Carlos"`,
       };
     }
 
     if (!concepto) {
       return {
-        answer: `¿Cuál es el concepto del gasto por $${Number(monto).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN?\n\n(Nota: Fecha registrada: ${fechaYmd}. Ejemplo: "Comida con cliente", "Gasolina", "Vuelo")`,
+        answer: `¿Cuál es el concepto del gasto por $${Number(monto).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN?\n\n(Nota: Fecha registrada: ${fechaYmd}${assignedExecutiveUser ? `\n- Responsable: ${targetExecutiveName}` : ''}\nEjemplo: "Comida con cliente", "Gasolina", "Vuelo")`,
       };
     }
 
@@ -4080,7 +4177,7 @@ export class WebchatActionExecutorService {
           ? '⚠️ El monto del gasto debe ser mayor a $0.'
           : '';
       return {
-        answer: `${detail ? detail + '\n\n' : ''}¿Cuál es el monto del gasto de "${concepto}"? (ej. "$500 pesos")`,
+        answer: `${detail ? detail + '\n\n' : ''}¿Cuál es el monto del gasto de "${concepto}"? (ej. "$500 pesos")${assignedExecutiveUser ? `\n- Responsable: ${targetExecutiveName}` : ''}`,
       };
     }
 
@@ -4095,12 +4192,17 @@ export class WebchatActionExecutorService {
         .map((m) => m.content)
         .reverse()[0] || '';
     const isAwaitingAssociationReply =
-      /todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades) posibles|para asociar el gasto/i.test(
+      /todo gasto debe asociarse a|¿a qu[eé] \*{0,2}cliente\*{0,2} o \*{0,2}oportunidad\*{0,2} deseas asociar este gasto|no se vinculan directamente a empresas|se encontraron m[uú]ltiples (?:clientes|oportunidades) posibles|no encontr[eé] ning[uú]n (?:cliente|oportunidad)(?:\s+ni\s+oportunidad)?\s+que\s+coincida|para asociar el gasto/i.test(
         lastAssistant,
       );
 
     let bareTurn2Hint: string | undefined;
-    if (!rawClientHint && !rawOppHint && !rawEmpresaHint && isAwaitingAssociationReply && originalQuestion.trim()) {
+    const explicitUserInTurn = extractExpenseUserFromText(originalQuestion || '');
+    const isProvidingUserOnly =
+      Boolean(explicitUserInTurn.usuario || explicitUserInTurn.ejecutivo) &&
+      !/\b(?:cliente|oportunidad|proyecto|empresa)\b/i.test(originalQuestion || '');
+
+    if (!rawClientHint && !rawOppHint && !rawEmpresaHint && isAwaitingAssociationReply && !isProvidingUserOnly && originalQuestion.trim()) {
       const strippedReply = originalQuestion
         .trim()
         .replace(/^(?:para|al?|con|el|la|es|en)\s+/i, '')
@@ -4115,7 +4217,7 @@ export class WebchatActionExecutorService {
 
     if (!rawClientHint && !rawOppHint && !rawEmpresaHint && !bareTurn2Hint) {
       return {
-        answer: `⚠️ Todo gasto debe asociarse a un cliente o a una oportunidad (no ambos).\n\nTengo anotado:\n- Concepto: ${concepto}\n- Monto: $${monto.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN\n- Fecha: ${fechaYmd}\n\n¿A qué cliente o oportunidad deseas asociar este gasto?`,
+        answer: `⚠️ Todo gasto debe asociarse a un cliente o a una oportunidad (no ambos).\n\nTengo anotado:\n- Concepto: ${concepto}\n- Monto: $${monto.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN\n- Fecha: ${fechaYmd}${assignedExecutiveUser ? `\n- Responsable: ${targetExecutiveName}` : ''}\n\n¿A qué cliente o oportunidad deseas asociar este gasto?`,
       };
     }
 
@@ -4155,8 +4257,8 @@ export class WebchatActionExecutorService {
 
       const createDto: any = {
         fecha: fechaYmd,
-        concepto,
-        monto,
+        concepto: concepto.slice(0, 255),
+        monto: Math.min(9999999999999999.99, Math.round(monto * 100) / 100),
         client_id: assoc.client ? assoc.client.id : null,
         opportunity_id: assoc.opportunity ? assoc.opportunity.id : null,
       };
@@ -4301,7 +4403,7 @@ export class WebchatActionExecutorService {
       .toString()
       .trim();
     if (newConceptVal && newConceptVal !== targetExpense.concepto) {
-      updateDto.concepto = newConceptVal;
+      updateDto.concepto = newConceptVal.slice(0, 255);
     }
 
     if (newAmountCandidate !== null && !Number.isNaN(newAmountCandidate)) {
@@ -4310,7 +4412,7 @@ export class WebchatActionExecutorService {
           answer: '⚠️ El nuevo monto del gasto debe ser mayor a $0.',
         };
       }
-      updateDto.monto = newAmountCandidate;
+      updateDto.monto = Math.min(9999999999999999.99, Math.round(newAmountCandidate * 100) / 100);
     }
 
     const isSameDateAsTarget =
@@ -4478,7 +4580,8 @@ export class WebchatActionExecutorService {
       mergedParams.precioBase ?? mergedParams.precio_base ?? mergedParams.precio ?? mergedParams.monto ?? mergedParams.costo,
       originalQuestion,
     );
-    const precioBase = parsedPrice !== null && !Number.isNaN(parsedPrice) && parsedPrice >= 0 ? parsedPrice : 0;
+    const rawPrecioBase = parsedPrice !== null && !Number.isNaN(parsedPrice) && parsedPrice >= 0 ? parsedPrice : 0;
+    const precioBase = Math.min(99999999.99, Math.round(rawPrecioBase * 100) / 100);
 
     const unidadMedida =
       (
@@ -4489,12 +4592,13 @@ export class WebchatActionExecutorService {
         'Pieza'
       )
         .toString()
-        .trim() || 'Pieza';
+        .trim()
+        .slice(0, 100) || 'Pieza';
 
     const descripcion =
-      (mergedParams.descripcion || mergedParams.description || '').toString().trim() || undefined;
+      (mergedParams.descripcion || mergedParams.description || '').toString().trim().slice(0, 5000) || undefined;
     const observaciones =
-      (mergedParams.observaciones || mergedParams.notas || mergedParams.observations || '').toString().trim() || undefined;
+      (mergedParams.observaciones || mergedParams.notas || mergedParams.observations || '').toString().trim().slice(0, 2000) || undefined;
 
     let status = true;
     const rawStatus = mergedParams.status !== undefined ? mergedParams.status : mergedParams.estatus;
@@ -5490,16 +5594,57 @@ export class WebchatActionExecutorService {
 
   async resolveUser(hint: string): Promise<User | null> {
     if (!hint) return null;
-    const clean = hint.trim().toLowerCase();
-    if (this.isValidUuid(clean)) {
-      return this.usersService.findOneById(clean).catch(() => null);
+    const rawTrimmed = normalizeSpokenSpanishText(hint).trim();
+    const cleanRaw = rawTrimmed.toLowerCase();
+    if (this.isValidUuid(cleanRaw)) {
+      return this.usersService.findOneById(cleanRaw).catch(() => null);
     }
     const all: User[] = (await this.usersService.findAllActive().catch(() => [])) || [];
-    const found = all.find((u: User) =>
-      (u.username && u.username.toLowerCase().includes(clean)) ||
-      (u.email && u.email.toLowerCase().includes(clean))
-    );
-    return found || null;
+    const stripAccents = (s: string) =>
+      s
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim();
+
+    const cleanAccentFree = stripAccents(rawTrimmed);
+    const cleanNormalized = normalizeText(rawTrimmed).replace(/\bpunto\b/g, ' ').replace(/\s+/g, ' ').trim();
+    const compactClean = cleanNormalized.replace(/\s+/g, '');
+
+    const exactMatch = all.find((u: User) => {
+      const uname = u.username ? stripAccents(u.username) : '';
+      const uemail = u.email ? stripAccents(u.email) : '';
+      const unameNorm = u.username ? normalizeText(u.username) : '';
+      const uemailNorm = u.email ? normalizeText(u.email) : '';
+      return (
+        uname === cleanAccentFree ||
+        uemail === cleanAccentFree ||
+        (cleanNormalized && (unameNorm === cleanNormalized || uemailNorm === cleanNormalized)) ||
+        (compactClean && unameNorm.replace(/\s+/g, '') === compactClean)
+      );
+    });
+    if (exactMatch) return exactMatch;
+
+    const partialMatches = all.filter((u: User) => {
+      const unameNorm = u.username ? normalizeText(u.username) : '';
+      const uemailNorm = u.email ? normalizeText(u.email) : '';
+      const unameRaw = u.username ? stripAccents(u.username) : '';
+      const uemailRaw = u.email ? stripAccents(u.email) : '';
+      return (
+        unameRaw.includes(cleanAccentFree) ||
+        uemailRaw.includes(cleanAccentFree) ||
+        (cleanNormalized.length >= 2 && (unameNorm.includes(cleanNormalized) || uemailNorm.includes(cleanNormalized)))
+      );
+    });
+    if (partialMatches.length === 1) return partialMatches[0];
+    if (partialMatches.length > 1) {
+      const prefixMatch = partialMatches.find((u: User) => {
+        const unameNorm = u.username ? normalizeText(u.username) : '';
+        return cleanNormalized ? unameNorm.startsWith(cleanNormalized) : false;
+      });
+      return prefixMatch || partialMatches[0];
+    }
+    return null;
   }
 
   async resolveProductItems(params: any): Promise<{ items: Array<{ productId: string; cantidad: number }>; totalPrice: number }> {

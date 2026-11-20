@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UsePipes, ValidationPipe, UseInterceptors, UploadedFile, Res } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, Res, ParseUUIDPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -29,18 +29,22 @@ export class ExpensesController {
     }
 
     @Get(':id')
-    findOne(@Param('id') id: string) {
-        return this.expensesService.findOne(id);
+    findOne(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+        return this.expensesService.findOne(id, user);
     }
 
     @Patch(':id')
-    update(@Param('id') id: string, @Body() updateExpenseDto: UpdateExpenseDto) {
-        return this.expensesService.update(id, updateExpenseDto);
+    update(
+        @Param('id', ParseUUIDPipe) id: string,
+        @Body() updateExpenseDto: UpdateExpenseDto,
+        @GetUser() user: User,
+    ) {
+        return this.expensesService.update(id, updateExpenseDto, user);
     }
 
     @Delete(':id')
-    remove(@Param('id') id: string) {
-        return this.expensesService.remove(id);
+    remove(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+        return this.expensesService.remove(id, user);
     }
 
     @Post(':id/receipt')
@@ -57,24 +61,26 @@ export class ExpensesController {
     })
     @UseInterceptors(FileInterceptor('file'))
     async uploadReceipt(
-        @Param('id') id: string,
+        @Param('id', ParseUUIDPipe) id: string,
         @UploadedFile() file: Express.Multer.File,
+        @GetUser() user: User,
     ) {
-        return this.expensesService.uploadReceiptFile(id, file);
+        return this.expensesService.uploadReceiptFile(id, file, user);
     }
 
     @Delete(':id/receipt')
     @ApiOperation({ summary: 'Eliminar el comprobante (imagen)' })
-    removeReceipt(@Param('id') id: string) {
-        return this.expensesService.removeReceipt(id);
+    removeReceipt(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+        return this.expensesService.removeReceipt(id, user);
     }
 
     @Get(':id/receipt/download')
     @ApiOperation({ summary: 'Descargar el comprobante (imagen)' })
     async downloadReceipt(
-        @Param('id') id: string,
+        @Param('id', ParseUUIDPipe) id: string,
         @Res() res: Response,
+        @GetUser() user: User,
     ) {
-        return this.expensesService.downloadReceipt(id, res);
+        return this.expensesService.downloadReceipt(id, res, user);
     }
 }

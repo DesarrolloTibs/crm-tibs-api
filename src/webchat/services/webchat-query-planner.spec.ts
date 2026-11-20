@@ -194,6 +194,102 @@ describe('WebchatQueryPlannerService & PromptBuilder - Módulo de Gastos', () =>
       expect(analyticalSwitch.domain).toBe('PRODUCTOS');
       expect(analyticalSwitch.actionPlan).toBeNull();
     });
+
+    it('debe normalizar voz en gastos (₽600, usuario marcado como "marco punto tráfico") y evitar concepto/cliente alucinados', () => {
+      // 1. "nuevo gasto" no debe quedar como concepto válido
+      const turn1 = planner.parseRouterClassification(
+        JSON.stringify({
+          intent: 'ACTION_EXECUTION',
+          domain: 'ACTION_EXECUTION',
+          actionPlan: { action: 'createExpense', parameters: { concepto: 'nuevo gasto' } },
+        }),
+        'nuevo gasto',
+        [],
+      );
+      expect(turn1.actionPlan?.action).toBe('createExpense');
+      expect(turn1.actionPlan?.parameters?.concepto).toBeUndefined();
+
+      // 2. Transcripción de voz con ₽600 y confusión LLM usuario -> cliente
+      const turn2 = planner.parseRouterClassification(
+        JSON.stringify({
+          intent: 'ACTION_EXECUTION',
+          domain: 'ACTION_EXECUTION',
+          actionPlan: {
+            action: 'createExpense',
+            parameters: { concepto: 'nuevo gasto', cliente: 'Marcos', monto: 600 },
+          },
+        }),
+        'crea un gasto del usuario marcó con un monto de ₽600',
+        [{ role: 'user', content: 'nuevo gasto' }],
+      );
+      expect(turn2.actionPlan?.action).toBe('createExpense');
+      expect(turn2.actionPlan?.parameters?.monto).toBe(600);
+      expect(turn2.actionPlan?.parameters?.usuario).toBe('marcó');
+      expect(turn2.actionPlan?.parameters?.cliente).toBeUndefined();
+      expect(turn2.actionPlan?.parameters?.concepto).toBeUndefined();
+
+      // 3. Turno de aclaración tras error "No encontré ningún cliente" con username dictado con "punto"
+      const historyAfterError = [
+        { role: 'user' as const, content: 'crea un gasto del usuario marcó con un monto de ₽600' },
+        {
+          role: 'assistant' as const,
+          content: '⚠️ No encontré ningún cliente que coincida con "Marcos".\n\n¿Podrías verificar el nombre o indicarme la oportunidad para asociar el gasto?',
+        },
+      ];
+      const turn3 = planner.parseRouterClassification(
+        'invalid-json-fallback',
+        'el nombre del usuario es marco punto tráfico',
+        historyAfterError,
+      );
+      expect(turn3.intent).toBe('ACTION_EXECUTION');
+      expect(turn3.actionPlan?.action).toBe('createExpense');
+      expect(turn3.actionPlan?.parameters?.usuario).toBe('marco.tráfico');
+      expect(turn3.actionPlan?.parameters?.cliente).toBeUndefined();
+      expect(turn3.actionPlan?.parameters?.concepto).toBeUndefined();
+    });
+
+    it('debe mantener continuidad multi-turno en createOpportunity, modifyActivity y createTicket sin sobrescribir campos previos', () => {
+      // 1. createOpportunity: Turno 2 con opciones de catálogo no debe sobrescribir nombreProyecto
+      const oppHistory = [
+        { role: 'user' as const, content: 'crea oportunidad Red Magic para Grupo Alfa por 50000 USD' },
+        {
+          role: 'assistant' as const,
+          content: 'Para poder crear la oportunidad "Red Magic" para Grupo Alfa, por favor indícame los siguientes datos requeridos:\n\n• Línea de Negocio: ...',
+        },
+      ];
+      const oppTurn2 = planner.parseRouterClassification('invalid-json-fallback', 'Desarrollo, Proyecto, Anual', oppHistory);
+      expect(oppTurn2.intent).toBe('ACTION_EXECUTION');
+      expect(oppTurn2.actionPlan?.action).toBe('createOpportunity');
+      expect(oppTurn2.actionPlan?.parameters?.nombreProyecto).toBeUndefined();
+
+      // 2. modifyActivity: Conflicto de horario mantiene modifyActivity y no mete la hora en activity
+      const actHistory = [
+        { role: 'user' as const, content: 'mueve la reunión con Carlos a las 3 pm' },
+        {
+          role: 'assistant' as const,
+          content: 'Conflicto de Horario: La nueva fecha propuesta (lunes 15:00) ya está ocupada en la agenda.\n\n Horarios libres sugeridos:\n- 16:00',
+        },
+      ];
+      const actTurn2 = planner.parseRouterClassification('invalid-json-fallback', 'a las 4 pm', actHistory);
+      expect(actTurn2.intent).toBe('ACTION_EXECUTION');
+      expect(actTurn2.actionPlan?.action).toBe('modifyActivity');
+      expect(actTurn2.actionPlan?.parameters?.activity).toBeUndefined();
+      expect(actTurn2.actionPlan?.parameters?.newDate).toContain('4 pm');
+
+      // 3. createTicket: Cuando pide solo Descripción del Problema, no pisa el título previo
+      const tktHistory = [
+        { role: 'user' as const, content: 'crea ticket Error login' },
+        {
+          role: 'assistant' as const,
+          content: 'Para poder levantar el ticket de soporte, por favor proporciona los siguientes datos requeridos:\n\nTengo anotado:\n- Título: Error login\n\n• **Descripción del Problema**: Proporciona el detalle de la falla.',
+        },
+      ];
+      const tktTurn2 = planner.parseRouterClassification('invalid-json-fallback', 'al ingresar muestra error 500 en el login', tktHistory);
+      expect(tktTurn2.intent).toBe('ACTION_EXECUTION');
+      expect(tktTurn2.actionPlan?.action).toBe('createTicket');
+      expect(tktTurn2.actionPlan?.parameters?.title).toBeUndefined();
+      expect(tktTurn2.actionPlan?.parameters?.description).toBe('al ingresar muestra error 500 en el login');
+    });
   });
 
   describe('WebchatPromptBuilderService.buildRouterPrompt', () => {

@@ -2032,6 +2032,7 @@ export class ConversationsService {
 
     for (const t of tenants) {
       const schema = t.schema_name;
+      if (!schema || !TenantContextService.validateSchemaName(schema)) continue;
       try {
         let query = `SELECT id FROM "${schema}".channel_configs WHERE channel = $1 AND "isActive" = true`;
         const params: any[] = [dbChannel];
@@ -2068,6 +2069,7 @@ export class ConversationsService {
 
     for (const t of tenants) {
       const schema = t.schema_name;
+      if (!schema || !TenantContextService.validateSchemaName(schema)) continue;
       try {
         const query = `SELECT id FROM "${schema}".channel_configs WHERE channel = $1 AND "verifyToken" = $2 AND "isActive" = true`;
         const res = await this.channelConfigRepository.manager.query(query, [dbChannel, verifyToken]);
@@ -2104,6 +2106,7 @@ export class ConversationsService {
 
     for (const t of tenants) {
       const schema = t.schema_name;
+      if (!schema || !TenantContextService.validateSchemaName(schema)) continue;
       try {
         const query = `
           SELECT id FROM "${schema}".channel_configs 
@@ -2123,7 +2126,7 @@ export class ConversationsService {
 
     // Fallback: Si cleanKey coincide exactamente con un schema_name activo que tiene webchat
     const matchingTenant = tenants.find((t: any) => t.schema_name === cleanKey);
-    if (matchingTenant) {
+    if (matchingTenant && TenantContextService.validateSchemaName(cleanKey)) {
       try {
         const fallbackQuery = `
           SELECT id FROM "${cleanKey}".channel_configs 

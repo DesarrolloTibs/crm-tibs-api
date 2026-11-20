@@ -296,3 +296,14 @@ Se corrigió un desfase crítico en la desestructuración del array resultante d
 * Endpoints de auditoría interna (solo `SuperAdmin`):
   * `GET /api/tenants/audio-usage` (con filtros opcionales `?tenantId=&schemaName=&startDate=&endDate=`).
   * `GET /api/tenants/:id/audio-usage`.
+
+## 9. Hardening SuperAdmin, Planes SaaS, Multi-Tenancy & Credenciales Globales de IA (Bloque 1)
+* **Seguridad de Controladores (`TenantsController` & `PlansController`):**
+  * `PlansController` requiere `AuthGuard('jwt')` en consultas y `SuperAdminGuard` en mutaciones (`POST`, `PUT`, `DELETE`). `CreatePlanDto` acota `plan_name <= 100`, `price <= 99999999.99`, `tokens_limit` entero `>= 0`, `billing_period_months` entero `1..60`.
+  * `TenantsController` requiere `AuthGuard('jwt')` en clase y `SuperAdminGuard` en todas las rutas exclusivas (`provision`, listado/detalle, colas de renovación, `PUT :id/plan`, `PUT :id/allow-extra` con `UpdateAllowExtraDto`, `ibm-audio`, `courtesy-overages`, `audio-usage`, `DELETE :id`).
+  * Las rutas compartidas (`/my-tenant`, `/consumption`, `/consumption/breakdown`, `/billing-cycles`, `/:id/logo`, `PUT :id`) validan aislamiento mediante `resolveAuthorizedSchemaForUser()` / `assertUserCanManageTenant()` y DTOs tipados de query (`TenantConsumptionQueryDto`, `TenantBreakdownQueryDto`, `TenantAudioUsageQueryDto`).
+* **Aprovisionamiento, Slugs, Caché y `BIGINT`:**
+  * `TenantContextService.generateSlug()` trunca a `63` caracteres válidos para PostgreSQL. `TenantProvisionerService` pre-valida existencia y vigencia de `planId` antes del DDL y propaga `HttpException` (`400`/`404`) sin envolverlas en `500`.
+  * `TenantsService` y `SubscriptionValidatorService` validan `validateSchemaName` previo a interpolar esquemas en SQL, invalidan la caché LRU `tenant_active:<schema>` al suspender/eliminar tenants y ampliaron las columnas de tokens de `tenant_billing_cycles` a `BIGINT`.
+* **Credenciales Globales de IA (`POST /api/conversations/ai-config`):**
+  * Validado mediante `UpdateAiConfigDto` (`modelProvider`, `openaiEndpoint` HTTP/HTTPS `<=512`, `maxNewTokens` `100..32768`, `temperature` `0..1`, `historyMessageLimit` `3..50`). `AiAgentOrchestratorService.saveConfig()` bloquea con `403 ForbiddenException` a cualquier usuario no `SuperAdmin` que intente modificar los parámetros globales de `public.ai_agent_configs`.

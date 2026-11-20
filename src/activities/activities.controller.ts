@@ -9,6 +9,7 @@ import {
   UseGuards,
   Query,
   ParseUUIDPipe,
+  ParseIntPipe,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -27,6 +28,7 @@ import { CreateActivityDto } from './dto/create-activity.dto';
 import { UpdateActivityDto } from './dto/update-activity.dto';
 import { CreateTypeActivityDto } from './dto/create-type-activity.dto';
 import { UpdateTypeActivityDto } from './dto/update-type-activity.dto';
+import { GetActivitiesFilterDto } from './dto/get-activities-filter.dto';
 import { GetUser } from 'src/auth/decorators/get-user.decorator';
 import { Activity } from './entities/activity.entity';
 import { User } from 'src/users/entities/user.entity';
@@ -61,19 +63,19 @@ export class ActivitiesController {
   @ApiParam({ name: 'id', type: Number, description: 'ID del tipo de actividad' })
   @ApiBody({ type: UpdateTypeActivityDto })
   async updateType(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() updateTypeActivityDto: UpdateTypeActivityDto,
     @GetUser() user: User,
   ) {
-    return this.activitiesService.updateType(Number(id), updateTypeActivityDto, user);
+    return this.activitiesService.updateType(id, updateTypeActivityDto, user);
   }
 
   @Delete('types/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Eliminar un tipo de actividad (solo Admin)' })
   @ApiParam({ name: 'id', type: Number, description: 'ID del tipo de actividad' })
-  async removeType(@Param('id') id: string, @GetUser() user: User) {
-    return this.activitiesService.removeType(Number(id), user);
+  async removeType(@Param('id', ParseIntPipe) id: number, @GetUser() user: User) {
+    return this.activitiesService.removeType(id, user);
   }
 
   @Post()
@@ -97,14 +99,13 @@ export class ActivitiesController {
   @ApiResponse({ status: 200, description: 'Lista de actividades.', type: [Activity] })
   async findAll(
     @GetUser() user: User,
-    @Query('userId') userId?: string,
-    @Query('opportunityId') opportunityId?: string,
+    @Query() filterDto: GetActivitiesFilterDto,
   ) {
     const tenantSchema = TenantContextService.getTenantSchema() || 'public';
     // Sincronizar cambios externos (Google/Outlook) antes de retornar para que se reflejen de inmediato
     await this.syncCoordinator.syncExternalChangesToCRM(tenantSchema, user.id).catch(() => null);
 
-    return this.activitiesService.findAll(user, userId, opportunityId);
+    return this.activitiesService.findAll(user, filterDto.userId, filterDto.opportunityId);
   }
 
   @Patch(':id')

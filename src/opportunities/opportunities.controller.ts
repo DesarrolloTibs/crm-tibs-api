@@ -11,6 +11,7 @@ import { CreateOpportunityDto } from './dto/create-opportunity.dto';
 import { UpdateOpportunityDto } from './dto/update-opportunity.dto';
 import { ArchiveOpportunityDto } from './dto/archive-opportunity.dto';
 import { GetOpportunitiesFilterDto } from './dto/get-opportunities-filter.dto';
+import { SendQuotationPdfDto, UploadOpportunityFileDto } from './dto/quotation-send.dto';
 import { User } from 'src/users/entities/user.entity';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 
@@ -98,12 +99,9 @@ export class OpportunitiesController {
   @ApiOperation({ summary: 'Generar y enviar el PDF de cotización por el canal de la conversación' })
   async sendQuotationPdf(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body('conversationId') conversationId: string,
+    @Body() sendDto: SendQuotationPdfDto,
   ) {
-    if (!conversationId) {
-      throw new BadRequestException('Se requiere conversationId para enviar la cotización.');
-    }
-    return this.quotationPdfService.sendQuotationToChannel(id, conversationId);
+    return this.quotationPdfService.sendQuotationToChannel(id, sendDto.conversationId);
   }
 
   // ── ARCHIVOS ───────────────────────────────────────────────────────────────
@@ -127,14 +125,13 @@ export class OpportunitiesController {
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File,
     @GetUser() user: User,
-    @Body('title') title?: string,
-    @Body('date') date?: string,
+    @Body() uploadDto: UploadOpportunityFileDto,
   ) {
     if (!file) {
       throw new BadRequestException('Se requiere un archivo.');
     }
     const decodedFileName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-    return this.opportunitiesService.addOpportunityFile(id, decodedFileName, file, user, title, date);
+    return this.opportunitiesService.addOpportunityFile(id, decodedFileName, file, user, uploadDto?.title, uploadDto?.date);
   }
 
   @Get(':id/files/:fileId/download')

@@ -115,3 +115,11 @@ Para mitigar ataques de denegación de servicio (DoS) y fuerza bruta en credenci
 * **Manejo Centralizado de Excepciones:** `GlobalExceptionFilter` intercepta `TokenExpiredError` y `JsonWebTokenError` retornando `401 Unauthorized` estandarizado.
 * **Multi-tenancy Blindado:** `TenantMiddleware` valida y aísla esquemas PostgreSQL mediante `TenantContextService` (`AsyncLocalStorage`) y arroja `403 Forbidden` si la organización está inactiva.
 * **Helmet & CORS:** Protección contra clickjacking, MIME sniffing y CORS configurado con `credentials: true`, permitiendo orígenes seguros de la plataforma y resolución dinámica de orígenes externos para landing pages de tenants que incrustan el WebChat Widget (`widget.js`).
+
+* **Endurecimiento de Pipe Global, CORS, Filtros SQL y WebSockets (Bloque 1):**
+  * `main.ts` ejecuta `ValidationPipe` con `whitelist: true`, `forbidNonWhitelisted: true`, `transform: true` y `enableImplicitConversion: false`, retirando además el override permisivo en `WebchatController`.
+  * En producción (`NODE_ENV=production`), CORS aplica la lista `ALLOWED_ORIGINS` / `FRONTEND_URL` a rutas CRM autenticadas y mantiene apertura únicamente en superficies públicas (`/api/webchat/public`, `/api/tickets/public`, `/api/public/`, `/uploads`).
+  * `GlobalExceptionFilter` traduce códigos PostgreSQL (`23505` -> `409 Conflict`, `23503`/`23502`/`22001`/`22003`/`22P02` -> `400 Bad Request`) sin filtrar `detail` en producción y maneja contextos no HTTP sin excepciones.
+  * `LoginValidationGuard` valida `LoginDto` (correo + password sin mínimo de 8 caracteres para cuentas legacy y sin campos extra) antes de `AuthGuard('local')`; `ResetPasswordDto` exige mínimo 8 caracteres (`<=72`) con letras y números.
+  * Los endpoints `POST /api/rag/upload`, `GET /api/rag/search` (`RagController`) y `GET /api/notifications/trigger-test` (`NotificationsController`) quedaron protegidos con `AuthGuard('jwt')` (y `SuperAdminGuard` o `Admin/SuperAdmin` según corresponda).
+  * `src/common/utils/ws-tenant.util.ts` unifica la autenticación JWT y validación estricta de salas `tenant:<schema>` y `user_<id>` en los 5 Gateways Socket.IO (`/conversations`, `/activities`, `/pipelines`, `/tickets`, `/notifications`), bloqueando cambios entre tenants para no `superadmin`.
