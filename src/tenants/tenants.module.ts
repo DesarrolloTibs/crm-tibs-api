@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MulterModule } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import * as fs from 'fs';
 import { Tenant } from './entities/tenant.entity';
 import { TenantRenewalQueue } from './entities/tenant-renewal-queue.entity';
 import { TenantBillingCycle } from './entities/tenant-billing-cycle.entity';
@@ -13,29 +11,36 @@ import { TenantsController } from './tenants.controller';
 import { TenantProvisionerService } from '../tenancy/tenant-provisioner.service';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { StorageModule } from '../storage/storage.module';
+import {
+  assertSafeUploadParamId,
+  createDiskMulterOptions,
+  resolveSafeFileExtension,
+  TENANT_IMAGE_EXTENSIONS,
+} from '../common/utils/upload.util';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Tenant, TenantRenewalQueue, TenantBillingCycle, User, Plan]),
     SubscriptionsModule,
     StorageModule,
-    MulterModule.register({
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const tenantId = (req.params as any).id || 'global';
-          const uploadPath = `./uploads/tenants/${tenantId}`;
-          if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-          }
-          cb(null, uploadPath);
+    MulterModule.register(
+      createDiskMulterOptions({
+        resolveDestination: (req) => {
+          const tenantId = assertSafeUploadParamId((req.params as any)?.id || 'global', 'Tenant ID');
+          return `./uploads/tenants/${tenantId}`;
         },
-        filename: (req, file, cb) => {
-          const timestamp = Date.now();
-          const ext = file.originalname.split('.').pop() || 'png';
-          cb(null, `logo_${timestamp}.${ext}`);
+        mode: 'image_with_svg',
+        maxFileSizeBytes: 10 * 1024 * 1024,
+        filenameBuilder: (_req, file) => {
+          const ext = resolveSafeFileExtension(
+            file?.originalname || '',
+            TENANT_IMAGE_EXTENSIONS,
+            'png',
+          );
+          return `logo_${Date.now()}.${ext}`;
         },
       }),
-    }),
+    ),
   ],
 
   controllers: [TenantsController],

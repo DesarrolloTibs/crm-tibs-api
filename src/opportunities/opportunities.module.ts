@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MulterModule } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { existsSync, mkdirSync } from 'fs';
 
 import { Opportunity } from './entities/opportunity.entity';
 import { OpportunityFile } from './entities/opportunity-file.entity';
@@ -30,6 +28,10 @@ import { StorageModule } from '../storage/storage.module';
 import { InteractionsModule } from '../interactions/interactions.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PipelinesModule } from '../pipelines/pipelines.module';
+import {
+  assertSafeUploadParamId,
+  createDiskMulterOptions,
+} from '../common/utils/upload.util';
 
 
 @Module({
@@ -49,25 +51,16 @@ import { PipelinesModule } from '../pipelines/pipelines.module';
 
     // para comunicarse con ConversationsService, eliminando la circularidad
 
-    MulterModule.register({
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const opportunityId = req.params.id;
-          const uploadPath = `./uploads/opportunities/${opportunityId}`;
-          if (!existsSync(uploadPath)) {
-            mkdirSync(uploadPath, { recursive: true });
-          }
-          cb(null, uploadPath);
+    MulterModule.register(
+      createDiskMulterOptions({
+        resolveDestination: (req) => {
+          const opportunityId = assertSafeUploadParamId(req.params?.id, 'Opportunity ID');
+          return `./uploads/opportunities/${opportunityId}`;
         },
-        filename: (req, file, cb) => {
-          // Decodificar el nombre del archivo para manejar correctamente
-          // caracteres especiales (acentos, ñ, etc.)
-          const decodedName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-          const uniqueName = `${Date.now()}-${decodedName}`;
-          cb(null, uniqueName);
-        },
+        mode: 'document_or_image',
+        maxFileSizeBytes: 20 * 1024 * 1024,
       }),
-    }),
+    ),
   ],
   controllers: [OpportunitiesController, PublicQuotationController, OpportunityLabelsController, OpportunityCatalogsController],
   providers: [OpportunitiesService, QuotationPdfService, OpportunityLabelsService, OpportunityCatalogsService],

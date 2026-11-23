@@ -77,19 +77,22 @@ Una de las reglas de oro de la arquitectura es que **ningún usuario con rol `su
 * La desactivación invalida inmediatamente cualquier intento de nuevo login en `AuthService.validateUser()`.
 
 ### 3.3. Subida de Fotos de Perfil (`POST /api/users/:id/profile-image`)
-* Utiliza `FileInterceptor('file')` con Multer para recibir imágenes (JPEG, PNG, WebP).
-* Almacenamiento agnóstico:
-  * Si `STORAGE_TYPE === 'azure'`, el archivo se sube al contenedor de Azure Blob Storage mediante `@azure/storage-blob`.
-  * Si `STORAGE_TYPE === 'local'`, se almacena en el directorio `uploads/profiles/`.
-* Normaliza las barras de ruta para compatibilidad entre sistemas operativos Windows y Linux (`path.replace(/\\/g, '/')`).
-* Actualiza la columna `profileImageUrl` del usuario y retorna el objeto actualizado.
+* Utiliza `FileInterceptor('file')` con la fábrica compartida `createDiskMulterOptions` (`src/common/utils/upload.util.ts`) en modo `'image'` (solo `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`; máx. `10 MB`) y validación anti-traversal en `:id` (`assertSafeUploadParamId`).
+* Sanea el nombre de archivo con `sanitizeUploadFilename()` (`${Date.now()}-${nombre_saneado}.${ext}`), eliminando espacios, acentos y caracteres especiales.
+* Almacenamiento agnóstico mediante `StorageService.uploadFile()`:
+  * Si `STORAGE_TYPE === 'azure'`, el archivo se sube a Azure Blob Storage en `uploads/users/:userId/:filename` enviando `blobHTTPHeaders.blobContentType` inferido y eliminando el archivo temporal local.
+  * Si `STORAGE_TYPE === 'local'`, se almacena en el directorio `./uploads/users/:userId/`.
+* Normaliza las barras de ruta para compatibilidad entre sistemas operativos Windows y Linux (`path.replace(/\\\\/g, '/')`), actualiza `profileImageUrl` y elimina la foto previa mediante `StorageService.deleteFile()`.
 
 
 ### 3.4. Almacenamiento Agnóstico en Usuarios, Tenants y Gastos (`StorageService`)
-* **Migración a `StorageService` (Local / Azure Blob Storage):**
-  * **Usuarios (`UsersController` / `UsersService`):** `POST /api/users/:id/profile-image` delega en `usersService.uploadProfileImageFile()`, subiendo la foto a Azure cuando `STORAGE_TYPE=azure` y eliminando la imagen anterior vía `StorageService.deleteFile()`.
-  * **Tenants (`TenantsController` / `TenantsService`):** `POST /api/tenants/:id/logo` delega en `tenantsService.uploadLogoFile()`, subiendo el logo a Azure y limpiando el logo anterior.
-  * **Gastos (`ExpensesController` / `ExpensesService`):** `POST /api/expenses/:id/receipt`, `DELETE /api/expenses/:id/receipt`, `DELETE /api/expenses/:id` y `GET /api/expenses/:id/receipt/download` operan de forma agnóstica con `StorageService.uploadFile()`, `deleteFile()` y `downloadFile()`.
+* **Migración a `StorageService` (Local / Azure Blob Storage) y reglas de `upload.util.ts`:**
+  * **Utilidades compartidas (`src/common/utils/upload.util.ts`):** Centraliza saneamiento de nombres (`sanitizeUploadFilename`), filtros MIME/extensión (`createMulterFileFilter`), límites por módulo (`createDiskMulterOptions`), inferencia de `Content-Type` (`inferMimeTypeFromPath`) y decodificación segura anti-traversal (`decodeSafeUploadPath`).
+  * **Usuarios (`UsersController` / `UsersService`):** `POST /api/users/:id/profile-image` usa modo `'image'` (máx. 10 MB, con timestamp), delega en `usersService.uploadProfileImageFile()`, sube a Azure con `blobHTTPHeaders.blobContentType` cuando `STORAGE_TYPE=azure` y elimina la imagen anterior vía `StorageService.deleteFile()`.
+  * **Tenants (`TenantsController` / `TenantsService`):** `POST /api/tenants/:id/logo` usa modo `'image_with_svg'` (`.png/.jpg/.jpeg/.webp/.gif/.svg/.bmp/.tiff`, máx. 10 MB, nombre `logo_${timestamp}.${ext}` con extensión saneada) y delega en `tenantsService.uploadLogoFile()`.
+  * **Gastos (`ExpensesController` / `ExpensesService`):** `POST /api/expenses/:id/receipt`, `DELETE /api/expenses/:id/receipt`, `DELETE /api/expenses/:id` y `GET /api/expenses/:id/receipt/download` usan modo `'receipt'` (imágenes y `.pdf`, máx. 15 MB, con timestamp) y operan de forma agnóstica con `StorageService`.
+  * **Productos y Oportunidades (`ProductsModule`, `OpportunitiesModule`):** Productos aplica resolución dinámica (`'image'` en `/cover-image`, `'document_or_image'` en `/files`, máx. 20 MB); Oportunidades aplica `'document_or_image'` (máx. 20 MB, bloqueando ejecutables/scripts/HTML/SVG).
+  * **Middleware de fallback en `src/main.ts` (`/uploads` y `/backend/uploads`):** Decodifica rutas URL-encoded (`%20`, etc.) con `decodeSafeUploadPath()`, bloquea traversal `..` y establece `Content-Type` desde `inferMimeTypeFromPath()` al servir archivos locales o transmitir blobs desde Azure.
 
 ### 3.5. Endurecimiento RBAC, Validación y Parcheo Seguro en `UsersController` / `UsersService`
 * **Control de Roles en Endpoints:** `POST /api/users` y `PATCH /api/users/:id/status` exigen rol `Admin` o `SuperAdmin`. `PATCH /api/users/:id` y `POST /api/users/:id/profile-image` restringen a `Executive` a editar únicamente su propio registro sin alterar `role` ni `isActive`.

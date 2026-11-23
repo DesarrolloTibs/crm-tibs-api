@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MulterModule } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { existsSync, mkdirSync } from 'fs';
 
 import { Product } from './entities/product.entity';
 import { ProductFile } from './entities/product-file.entity';
@@ -10,37 +8,33 @@ import { ProductsService } from './products.service';
 import { ProductsController } from './products.controller';
 import { StorageModule } from '../storage/storage.module';
 import { RagModule } from '../rag/rag.module';
+import {
+  assertSafeUploadParamId,
+  createDiskMulterOptions,
+} from '../common/utils/upload.util';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Product, ProductFile]),
     StorageModule,
     RagModule,
-    MulterModule.register({
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const productId = req.params.id;
-          if (!productId) {
-            return cb(new Error('Product ID is missing from parameters'), '');
-          }
-
-          // Distinguir la ruta de destino según la URL
-          let uploadPath = `./uploads/products/${productId}`;
-          if (req.originalUrl.includes('/cover-image') || req.url.includes('/cover-image')) {
-            uploadPath = `./uploads/products/${productId}/cover`;
-          }
-
-          if (!existsSync(uploadPath)) {
-            mkdirSync(uploadPath, { recursive: true });
-          }
-          cb(null, uploadPath);
+    MulterModule.register(
+      createDiskMulterOptions({
+        resolveDestination: (req) => {
+          const productId = assertSafeUploadParamId(req.params?.id, 'Product ID');
+          const isCover =
+            req.originalUrl?.includes('/cover-image') || req.url?.includes('/cover-image');
+          return isCover
+            ? `./uploads/products/${productId}/cover`
+            : `./uploads/products/${productId}`;
         },
-        filename: (req, file, cb) => {
-          const decodedName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-          cb(null, `${Date.now()}-${decodedName}`);
-        },
+        mode: (req) =>
+          req.originalUrl?.includes('/cover-image') || req.url?.includes('/cover-image')
+            ? 'image'
+            : 'document_or_image',
+        maxFileSizeBytes: 20 * 1024 * 1024,
       }),
-    }),
+    ),
   ],
   controllers: [ProductsController],
   providers: [ProductsService],

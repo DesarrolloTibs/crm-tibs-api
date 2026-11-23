@@ -108,7 +108,7 @@ src/
 ├── auth/                   # Autenticación JWT, Passport, login y recuperación de contraseña
 ├── calendar-integrations/  # Google Calendar, Outlook Graph y webhooks
 ├── clients/                # Directorio de clientes, datos fiscales y relaciones comerciales
-├── common/                 # Filtros globales de excepción, interceptores, loggers y eventos
+├── common/                 # Filtros globales, interceptores, loggers, eventos y upload.util.ts (Multer/MIME/path-safety)
 ├── companies/              # Empresas (cuentas maestras) con contactos asociados
 ├── conversations/          # Bandeja de entrada omnicanal, orquestador de IA y Socket.IO
 ├── database/               # Configuración de DataSource TypeORM para migraciones
@@ -125,7 +125,7 @@ src/
 ├── reminders/              # Recordatorios automáticos para ejecutivos y clientes
 ├── reports/                # Indicadores de rendimiento del dashboard y analítica
 ├── stages/                 # Catálogo global de etapas de venta
-├── storage/                # Abstracción de almacenamiento (Local filesystem / Azure Blob)
+├── storage/                # Abstracción de almacenamiento (Local filesystem / Azure Blob con Content-Type)
 ├── subscriptions/          # Control de suscripciones de inquilinos y cron de renovaciones
 ├── tenancy/                # Middleware de multi-tenancy, AsyncLocalStorage y aprovisionador
 ├── tenants/                # CRUD de organizaciones, actualización de planes y consumo
@@ -134,7 +134,7 @@ src/
 ├── users/                  # Administración de usuarios, roles (RBAC) y fotos de perfil
 ├── webchat/                # Widget público de chat embebido y sesión de prospectos
 ├── app.module.ts           # Módulo raíz que integra los 28 submódulos
-├── main.ts                 # Bootstrap de NestJS, Swagger, CORS, Helmet y uploads
+├── main.ts                 # Bootstrap de NestJS, Swagger, CORS, Helmet y fallback /uploads & /backend/uploads
 └── role.enum.ts            # Definición de roles (superadmin, admin, executive)
 ```
 

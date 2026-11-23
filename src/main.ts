@@ -10,6 +10,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { NestAppLogger } from './common/logger/nest-logger';
+import { decodeSafeUploadPath, inferMimeTypeFromPath } from './common/utils/upload.util';
 
 async function bootstrap() {
   // Configurar la zona horaria global del proceso Node.js a la definida en .env
@@ -103,19 +104,21 @@ async function bootstrap() {
   });
 
   // --- Middleware de fallback para /uploads y /backend/uploads (Servir local, Azure o fallback PDF) ---
+  let azureContainerClient: any = null;
+  let azureConfigKey = '';
+
   app.use(['/uploads', '/backend/uploads'], async (req: any, res: any) => {
-    const rawPath = req.path || '';
-    const cleanPath = rawPath.replace(/^\/backend\/uploads/, '').replace(/^\/uploads/, '');
-    const localFile = join(uploadsDir, cleanPath.replace(/^\//, ''));
+    const safePath = decodeSafeUploadPath(req.path || '', uploadsDir);
+    if (!safePath) {
+      res.setHeader('Content-Type', 'text/plain');
+      return res.status(404).send('Archivo no encontrado');
+    }
+
+    const { cleanPath, blobName, localFile } = safePath;
 
     // 1. Si el archivo solicitado existe en el disco local
     if (existsSync(localFile) && statSync(localFile).isFile()) {
-      const ext = localFile.split('.').pop()?.toLowerCase();
-      if (ext === 'pdf') res.setHeader('Content-Type', 'application/pdf');
-      else if (ext === 'png') res.setHeader('Content-Type', 'image/png');
-      else if (ext === 'jpg' || ext === 'jpeg') res.setHeader('Content-Type', 'image/jpeg');
-      else if (ext === 'webp') res.setHeader('Content-Type', 'image/webp');
-      
+      res.setHeader('Content-Type', inferMimeTypeFromPath(localFile));
       return res.sendFile(localFile);
     }
 
@@ -124,7 +127,7 @@ async function bootstrap() {
     if (quotationMatch) {
       const opportunityId = quotationMatch[1];
       const oppDir = join(uploadsDir, 'quotations', opportunityId);
-      
+
       if (existsSync(oppDir)) {
         const pdfFiles = readdirSync(oppDir).filter((f) => f.endsWith('.pdf'));
         if (pdfFiles.length > 0) {
@@ -142,17 +145,24 @@ async function bootstrap() {
       const containerName = process.env.AZURE_STORAGE_CONTAINER || 'uploads';
       if (connectionString) {
         try {
-          const { BlobServiceClient } = require('@azure/storage-blob');
-          const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
-          const containerClient = blobServiceClient.getContainerClient(containerName);
+          const configKey = `${connectionString}::${containerName}`;
+          if (!azureContainerClient || azureConfigKey !== configKey) {
+            const { BlobServiceClient } = require('@azure/storage-blob');
+            const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
+            azureContainerClient = blobServiceClient.getContainerClient(containerName);
+            azureConfigKey = configKey;
+          }
 
-          const blobName = join('uploads', cleanPath).replace(/\\/g, '/');
-          const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-
+          const blockBlobClient = azureContainerClient.getBlockBlobClient(blobName);
           const exists = await blockBlobClient.exists();
           if (exists) {
             const downloadResponse = await blockBlobClient.download(0);
-            res.setHeader('Content-Type', downloadResponse.contentType || 'application/octet-stream');
+            const contentType =
+              downloadResponse.contentType &&
+              downloadResponse.contentType !== 'application/octet-stream'
+                ? downloadResponse.contentType
+                : inferMimeTypeFromPath(cleanPath);
+            res.setHeader('Content-Type', contentType);
             if (downloadResponse.contentLength) {
               res.setHeader('Content-Length', downloadResponse.contentLength);
             }
