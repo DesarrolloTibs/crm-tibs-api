@@ -153,17 +153,22 @@ Para asegurar la total alineación con Meta App Review y la visualización de ac
 ### 5.6. Facebook Login for Business & Meta OAuth2 (`MetaOauthService`)
 Para eliminar la necesidad de configuración manual de credenciales (App ID, Page ID, token permanente y webhook verify token) por parte de los clientes:
 * **Flujo OAuth2 Centralizado con Aislamiento Multi-Tenant:**
-  * `GET /api/conversations/oauth/facebook/auth-url`: Genera la URL oficial de autorización de Meta (`https://www.facebook.com/v19.0/dialog/oauth`) codificando en el parámetro `state` el `tenantSchema`, `userId` y timestamp en Base64.
-  * Scopes solicitados: `pages_show_list`, `pages_manage_metadata`, `pages_messaging`, `instagram_basic`, `instagram_manage_messages`, `public_profile`.
-* **Canje, Auto-Suscripción y Verificación Estándar:**
+  * `GET /api/conversations/oauth/facebook/auth-url`: Genera la URL oficial de autorización de Meta (`https://www.facebook.com/v19.0/dialog/oauth`) codificando en el parámetro `state` el `tenantSchema`, `userId`, `channel` y `timestamp` en Base64.
+  * **Scopes aislados por canal (con soporte completo para Meta Business Portfolio):**
+    * **Facebook (`facebook`):** `pages_show_list`, `pages_read_engagement`, `pages_manage_metadata`, `pages_messaging`, `business_management`, `public_profile`.
+    * **Instagram (`instagram`):** `pages_show_list`, `pages_read_engagement`, `pages_manage_metadata`, `business_management`, `instagram_basic`, `instagram_manage_messages`, `public_profile`.
+* **Canje, Resolución Resiliente de Portafolio, Auto-Suscripción y Verificación Estándar:**
   * `GET /api/conversations/oauth/facebook/callback`:
-    1. Decodifica el `state` y extrae el `tenantSchema`.
+    1. Decodifica el `state`, valida `tenantSchema` y `userId`, y extrae `targetChannel`.
     2. Canjea el código de autorización por un token de usuario y luego por un `Long-Lived User Access Token` (60 días).
-    3. Consulta `GET /me/accounts` obteniendo las Páginas administradas y sus cuentas de Instagram Business vinculadas (`instagram_business_account`).
+    3. Resuelve páginas administradas con `access_token` en 3 niveles (solicitando `instagram_business_account` únicamente cuando `targetChannel === 'instagram'` y registrando errores detallados de Graph API vía `logGraphApiError`):
+       * **Primario:** `GET /me/accounts` (con `business_management` para exponer páginas administradas en Meta Business Portfolio).
+       * **Fallback 1:** `GET /debug_token` filtrando únicamente `target_ids` de permisos `pages_*` (excluyendo nodos `IGUser` / `business_management`) y consultando `GET /{pageId}` (respaldado por `pages_read_engagement`).
+       * **Fallback 2:** `GET /me/businesses` (`owned_pages` y `client_pages`, respaldado por `business_management`). Si Meta autoriza la página pero no emite Page Access Token, retorna un mensaje explícito solicitando Control Total y 2FA en el Portafolio.
     4. Auto-suscribe automáticamente la página seleccionada a los Webhooks de Meta mediante `POST /{page-id}/subscribed_apps?subscribed_fields=messages,messaging_postbacks`.
     5. Usa la verificación por defecto `'meta_oauth_auto'` (`verifyMetaWebhook`) sin requerir variables en `.env`.
     6. Normaliza las consultas de credenciales de canal en TypeORM (`In(['facebook', 'messenger'])`) para asegurar que el canal `'messenger'` y `'facebook'` utilicen las mismas credenciales activas del tenant, resolviendo envíos de salida en tiempo real.
-    7. Ejecuta la persistencia dentro de `TenantContextService.run({ tenantSchema }, ...)` para registrar o actualizar los registros en `channel_configs` (canal `facebook` y canal `instagram`).
+    7. Ejecuta la persistencia dentro de `TenantContextService.run({ tenantSchema }, ...)` para registrar o actualizar los registros en `channel_configs` (canal `facebook` y canal `instagram`), validando conflicto multi-tenant (`checkAssetConflictInOtherTenants`).
     8. Responde con `renderPopupResponse`: emite `window.opener.postMessage({ type: 'META_OAUTH_SUCCESS' })` y cierra la ventana emergente automáticamente.
 
 ### 5.7. Capa Semántica: Resolución de Rangos Temporales e Intervalos Dinámicos (`WebchatCubeExecutorService`)

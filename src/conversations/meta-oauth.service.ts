@@ -53,7 +53,9 @@ export class MetaOauthService {
     if (normalizedChannel === 'instagram') {
       scopes = [
         'pages_show_list',
+        'pages_read_engagement',
         'pages_manage_metadata',
+        'business_management',
         'instagram_basic',
         'instagram_manage_messages',
         'public_profile',
@@ -62,8 +64,10 @@ export class MetaOauthService {
       // Exclusivo para Facebook Messenger
       scopes = [
         'pages_show_list',
+        'pages_read_engagement',
         'pages_manage_metadata',
         'pages_messaging',
+        'business_management',
         'public_profile',
       ];
     }
@@ -121,6 +125,12 @@ export class MetaOauthService {
     }
 
     return null;
+  }
+
+  private logGraphApiError(endpointLabel: string, status: number, payload: any): void {
+    this.logger.warn(
+      `[handleCallback] Error HTTP ${status} en ${endpointLabel}: ${JSON.stringify(payload?.error || payload)}`,
+    );
   }
 
   async handleCallback(
@@ -195,49 +205,75 @@ export class MetaOauthService {
         this.logger.warn(`[handleCallback] No se pudo obtener long-lived token, usando token directo: ${err.message}`);
       }
 
-      // 3. Obtener Páginas de Facebook administradas y sus cuentas de Instagram vinculadas
-      const accountsUrl = `https://graph.facebook.com/v19.0/me/accounts?fields=id,name,access_token,tasks,instagram_business_account{id,username,name,profile_picture_url}&access_token=${longLivedUserToken}`;
-      const accountsRes = await fetch(accountsUrl, { signal: AbortSignal.timeout(8000) });
-      const accountsData: any = await accountsRes.json();
-      let pages: any[] = (accountsData && Array.isArray(accountsData.data)) ? accountsData.data : [];
+      // 3. Obtener Páginas de Facebook administradas (y sus cuentas de Instagram si aplica)
+      const pageFields =
+        targetChannel === 'instagram'
+          ? 'id,name,access_token,instagram_business_account{id,username,name,profile_picture_url}'
+          : 'id,name,access_token';
+      const pages: any[] = [];
+      const pagesWithoutToken: any[] = [];
+      const registerCandidatePage = (rawPage: any) => {
+        if (!rawPage?.id) return;
+        const targetList = rawPage.access_token ? pages : pagesWithoutToken;
+        if (!targetList.some((existing: any) => existing.id === rawPage.id)) {
+          targetList.push(rawPage);
+        }
+      };
 
-      // Fallback 1: Si /me/accounts no devolvió páginas pero el usuario seleccionó páginas en Granular Scopes
+      const accountsUrl = `https://graph.facebook.com/v19.0/me/accounts?fields=${pageFields},tasks&access_token=${longLivedUserToken}`;
+      const accountsRes = await fetch(accountsUrl, { signal: AbortSignal.timeout(8000) });
+      const accountsData: any = await accountsRes.json().catch(() => ({}));
+      if (!accountsRes.ok || accountsData?.error) {
+        this.logGraphApiError('/me/accounts', accountsRes.status, accountsData);
+      }
+      if (accountsData && Array.isArray(accountsData.data)) {
+        accountsData.data.forEach(registerCandidatePage);
+      }
+
+      // Fallback 1: Si /me/accounts no devolvió páginas con token, consultar nodos de página en granular_scopes
       if (pages.length === 0) {
         this.logger.log('[handleCallback] /me/accounts devolvió lista vacía. Consultando granular_scopes en debug_token...');
         try {
           const debugUrl = `https://graph.facebook.com/v19.0/debug_token?input_token=${longLivedUserToken}&access_token=${appId}|${appSecret}`;
           const debugRes = await fetch(debugUrl, { signal: AbortSignal.timeout(6000) });
-          if (debugRes.ok) {
-            const debugData: any = await debugRes.json();
-            this.logger.log(`[handleCallback] debug_token data: ${JSON.stringify(debugData?.data?.granular_scopes || debugData)}`);
+          const debugData: any = await debugRes.json().catch(() => ({}));
+          if (debugRes.ok && !debugData?.error) {
+            this.logger.log(
+              `[handleCallback] debug_token data: is_valid=${debugData?.data?.is_valid}, user_id=${debugData?.data?.user_id}, scopes=${JSON.stringify(debugData?.data?.scopes)}, granular_scopes=${JSON.stringify(debugData?.data?.granular_scopes || debugData)}`,
+            );
             const granularScopes = debugData?.data?.granular_scopes || [];
 
             const targetIds = new Set<string>();
             for (const s of granularScopes) {
-              if (Array.isArray(s.target_ids)) {
+              if (typeof s.scope === 'string' && s.scope.startsWith('pages_') && Array.isArray(s.target_ids)) {
                 s.target_ids.forEach((tid: string) => targetIds.add(tid));
               }
             }
 
             for (const pId of targetIds) {
               try {
-                const pageUrl = `https://graph.facebook.com/v19.0/${pId}?fields=id,name,access_token,instagram_business_account{id,username,name,profile_picture_url}&access_token=${longLivedUserToken}`;
+                const pageUrl = `https://graph.facebook.com/v19.0/${pId}?fields=${pageFields}&access_token=${longLivedUserToken}`;
                 const pageRes = await fetch(pageUrl, { signal: AbortSignal.timeout(6000) });
-                if (pageRes.ok) {
-                  const pData: any = await pageRes.json();
-                  if (pData && pData.id) {
-                    pages.push({
-                      id: pData.id,
-                      name: pData.name,
-                      access_token: pData.access_token || longLivedUserToken,
-                      instagram_business_account: pData.instagram_business_account,
-                    });
-                  }
+                const pData: any = await pageRes.json().catch(() => ({}));
+                if (pageRes.ok && !pData?.error && pData?.id) {
+                  this.logger.log(
+                    `[handleCallback] Nodo granular ${pId} resuelto: name=${pData.name}, hasPageToken=${Boolean(pData.access_token)}, hasIg=${Boolean(pData.instagram_business_account?.id)}`,
+                  );
+                  registerCandidatePage({
+                    id: pData.id,
+                    name: pData.name,
+                    access_token: pData.access_token,
+                    instagram_business_account: pData.instagram_business_account,
+                  });
+                } else {
+                  this.logGraphApiError(`nodo granular ${pId}`, pageRes.status, pData);
                 }
               } catch (err: any) {
                 this.logger.warn(`[handleCallback] Error obteniendo página granular ${pId}: ${err.message}`);
               }
             }
+          } else {
+            this.logGraphApiError('debug_token', debugRes.status, debugData);
           }
         } catch (err: any) {
           this.logger.warn(`[handleCallback] Error en fallback de debug_token: ${err.message}`);
@@ -248,19 +284,23 @@ export class MetaOauthService {
       if (pages.length === 0) {
         this.logger.log('[handleCallback] Consultando páginas en /me/businesses...');
         try {
-          const bizUrl = `https://graph.facebook.com/v19.0/me/businesses?fields=id,name,client_pages{id,name,access_token,instagram_business_account{id,username,name,profile_picture_url}},owned_pages{id,name,access_token,instagram_business_account{id,username,name,profile_picture_url}}&access_token=${longLivedUserToken}`;
+          const bizUrl = `https://graph.facebook.com/v19.0/me/businesses?fields=id,name,client_pages{${pageFields}},owned_pages{${pageFields}}&access_token=${longLivedUserToken}`;
           const bizRes = await fetch(bizUrl, { signal: AbortSignal.timeout(6000) });
-          if (bizRes.ok) {
-            const bizData: any = await bizRes.json();
+          const bizData: any = await bizRes.json().catch(() => ({}));
+          if (bizRes.ok && !bizData?.error) {
             const businesses = bizData.data || [];
+            this.logger.log(`[handleCallback] /me/businesses devolvió ${businesses.length} portafolio(s).`);
             for (const biz of businesses) {
               const bPages = [...(biz.owned_pages?.data || []), ...(biz.client_pages?.data || [])];
-              for (const bp of bPages) {
-                if (bp && bp.id && !pages.some((existing: any) => existing.id === bp.id)) {
-                  pages.push(bp);
+              bPages.forEach((bp: any) => {
+                if (bp?.id && !bp.access_token) {
+                  this.logger.warn(`[handleCallback] Página ${bp.id} (${bp.name}) en portafolio ${biz.id} no devolvió Page Access Token.`);
                 }
-              }
+                registerCandidatePage(bp);
+              });
             }
+          } else {
+            this.logGraphApiError('/me/businesses', bizRes.status, bizData);
           }
         } catch (err: any) {
           this.logger.warn(`[handleCallback] Error en fallback de businesses: ${err.message}`);
@@ -268,6 +308,13 @@ export class MetaOauthService {
       }
 
       if (pages.length === 0) {
+        if (pagesWithoutToken.length > 0) {
+          const pageLabel = pagesWithoutToken[0].name || pagesWithoutToken[0].id;
+          return {
+            success: false,
+            message: `Meta autorizó la página '${pageLabel}', pero no emitió un token de administración de página (Page Access Token). Asegúrate de tener Acceso de Facebook con Control Total sobre la página en Meta Business Portfolio (no solo acceso por tareas) y autenticación en dos pasos activa.`,
+          };
+        }
         return {
           success: false,
           message: 'No se encontraron Páginas de Facebook administradas por esta cuenta. Asegúrate de tener permisos de administrador en al menos una página y haberla seleccionado en el diálogo de Meta.',
